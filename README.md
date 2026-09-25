@@ -9,6 +9,8 @@ recall.
 - Timeline, upload budget, required artefacts: [docs/GUIDELINES.md](docs/GUIDELINES.md)
 - Team rules (notebooks, versioning, leaderboard, experiment plan, git):
   [.claude/rules/project-rules.md](.claude/rules/project-rules.md)
+- Research plan and module blueprints (architecture, contracts, team split, per-module
+  strategy, validation, testing, git, leaderboard): [docs/plan/00_MASTER_PLAN.md](docs/plan/00_MASTER_PLAN.md)
 
 ## Setup
 
@@ -77,8 +79,8 @@ tests/                     pytest on synthetic TSVs
 
 Project foundation is in place: cached loading, the fixed validation split, the
 leaderboard metric with a blocking report, submission writing and validation, the
-experiment registry and notebook template. Model work starts with `v001`, following the
-experiment plan in the project rules.
+experiment registry and notebook template. The research plan is written
+(`docs/plan/`); model work starts with `v001`, following the plan and the project rules.
 
 ## Reproducing the submission
 
