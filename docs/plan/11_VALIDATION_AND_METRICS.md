@@ -278,7 +278,7 @@ stage is new; never rename one or add a synonym.
 | identity | `hypothesis`, `blocking_config`, `feature_groups`, `model_params`, `rule` | notebook header; `asdict(cfg.blocking)`, `list(cfg.feature_groups)`, `asdict(cfg.model)`, `asdict(fitted.rule)` |
 | val scores | `f_beta`, `f_beta_singletons`, `f_beta_matched`, `pair_precision`, `pair_recall` | `score_pairs(matches, val)` |
 | blocking | `cand_recall`, `entity_recall`, `ceiling_f_beta`, `cands_mean`, `cands_p95` | `blocking_report(cands, val)`: its `pair_recall` becomes `cand_recall` and `candidates_*` become `cands_*`, so the matcher's `pair_recall` is not overwritten |
-| robustness | `harder_f_beta`, `tune_f_beta` | `score_pairs` on `harder_fold(val)`; best row of `Fitted.tune_table` (10 §4 names that column `f05`, 13 §2.2 reads `f_beta`: M1 and M5 settle one name on day 1) |
+| robustness | `harder_f_beta`, `tune_f_beta` | `score_pairs` on `harder_fold(val)`; best row of `Fitted.tune_table` (column `f_beta`, as in 10 §4 and 13 §2.2) |
 | errors | `n_fp`, `n_fn`, `n_false_singleton`, `errors` | `tag_errors`: false predicted pairs, true pairs not predicted, matched entities predicted empty, count per category of doc 18 |
 | timings | `load_seconds`, `normalise_seconds`, `blocking_seconds`, `features_seconds`, `fit_seconds`, `tune_seconds`, `score_seconds`, `decide_seconds` | `tracking.timed` with exactly these eight labels; `run_fold` returns the same names |
 | resources, verdict | `peak_rss_gb`, `decision` | max `psutil` RSS seen by `mem_guard` (02 §7); KEEP / DROP / INVESTIGATE |

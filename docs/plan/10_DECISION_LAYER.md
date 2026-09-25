@@ -160,13 +160,13 @@ def tune(scored, s1_ids, truth_pairs, grid=Grid()):
     return DecisionRule(**best[RULE_FIELDS]), table
 ```
 
-`_pick`: among rules with `f05 >= max(f05) - tie_tol`, take the highest `tau_abs`, then the
+`_pick`: among rules with `f_beta >= max(f_beta) - tie_tol`, take the highest `tau_abs`, then the
 highest `tau_rel`, then the highest `tau_single`, then the lowest `max_matches`: ties go to
 the most conservative rule (§9). The four comparisons and two `bincount`s on 3M pairs take
 ≈ 15 ms, so 3,906 rules ≈ 1 min and the 13-rule refinement is free; the cost does not
 depend on the number of entities. `evaluate_rules(scored, s1_ids, truth_pairs, rules)`
 exposes the inner loop for arbitrary rule lists (E-group notebooks and the tests). Table
-columns: `tau_abs, tau_rel, tau_single, max_matches, one_to_one, f05, n_pred,
+columns: `tau_abs, tau_rel, tau_single, max_matches, one_to_one, f_beta, n_pred,
 pair_precision, pair_recall, match_rate, stage`.
 
 ## 5. Tuning data: the tune side of the inner split, nothing else
@@ -285,7 +285,7 @@ probabilities chosen so every rule component changes the answer.
 | `test_tau_rel` | `S1-a` with probs 0.9/0.6/0.4 and `tau_rel=0.7` keeps only 0.9 |
 | `test_tau_single_empties_entity` | `S1-c` with `p_max = 0.55 < tau_single = 0.6` has no rows although `0.55 >= tau_abs` |
 | `test_max_matches_cap` | `max_matches=2` keeps the two highest; equal probs → smaller `entity_id` |
-| `test_tune_equals_metrics` | for 20 seeded random rules, `evaluate_rules(...).f05` equals `metrics.macro_fbeta(pairs_to_lists(decide(scored, rule), s1_ids), truth)` exactly, on a frame with an entity without candidates and a truth pair outside the candidates |
+| `test_tune_equals_metrics` | for 20 seeded random rules, `evaluate_rules(...).f_beta` equals `metrics.macro_fbeta(pairs_to_lists(decide(scored, rule), s1_ids), truth)` exactly, on a frame with an entity without candidates and a truth pair outside the candidates |
 | `test_tie_prefers_conservative` | two `tau_abs` values with equal F0.5 → `tune` returns the higher one |
 | `test_grid_size_and_validation` | default `Grid().rules(True)` has 3,906 entries; `single_delta=(-0.1,)` raises `ValueError` |
 | `test_deterministic` | shuffled input rows and a second run give identical `decide` output and identical `tune` result |
