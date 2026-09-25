@@ -183,15 +183,21 @@ def normalise_split(split: str, cfg: PipelineConfig) -> dict[int, Path]:
 
 def load_normalised(split: str, sources: tuple[int, ...], cfg: PipelineConfig,
                     ids: pd.Series | None = None,
-                    token_map: dict[str, str] | None = None) -> pd.DataFrame:
+                    token_map: dict[str, str] | None = None,
+                    columns: list[str] | None = None,
+                    country: str | None = None) -> pd.DataFrame:
     """Normalised records of ``sources`` in ``split``, optionally only ``ids``, map applied.
 
-    The id filter runs in Arrow before conversion, so only the subset reaches pandas.
+    The id and ``country`` filters run in Arrow before conversion, so only the subset
+    reaches pandas; ``columns`` limits what is read (``entity_id`` always included).
     """
     paths = normalise_split(split, cfg)
+    cols = None if columns is None else list(dict.fromkeys([C.ENTITY_ID, *columns]))
     frames = []
     for s in sources:
-        tbl = pq.read_table(paths[s])
+        tbl = pq.read_table(paths[s], columns=cols)
+        if country is not None:
+            tbl = tbl.filter(pc.equal(tbl[C.COUNTRY], country))
         if ids is not None:
             value_set = pa.array(pd.Index(ids).astype("str"), type=tbl.schema.field(
                 C.ENTITY_ID).type)
@@ -213,9 +219,10 @@ def learn_token_map(cfg: PipelineConfig, train: Fold) -> dict[str, str]:
     path = cfg.cache_dir / f"token_map_{key}.json"
     if path.exists():
         return json.loads(path.read_text())
-    pool_ids = train.pairs[C.ENTITY_ID]
-    s1n = load_normalised("train", (1,), cfg, train.pairs[C.S1_ID].drop_duplicates())
-    pooln = load_normalised("train", (2, 3), cfg, pool_ids)
+    cols = ["name_norm", "non_latin"]  # all the alignment reads: keeps this step ~0.5 GB
+    s1n = load_normalised("train", (1,), cfg, train.pairs[C.S1_ID].drop_duplicates(),
+                          columns=cols)
+    pooln = load_normalised("train", (2, 3), cfg, train.pairs[C.ENTITY_ID], columns=cols)
     tmap = fit_token_map(train.pairs, s1n, pooln, cfg.normalise.token_map_min_count,
                          cfg.normalise.token_map_min_share)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,26 +392,47 @@ def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = 
 def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,
              timings: dict | None = None
              ) -> tuple[Path, Path, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Write both submission files for the test split.
+    """Write both submission files for the test split, one country partition at a time.
 
-    Returns (matching path, candidate path, normalised S1, scored pairs, matches). The
-    candidate file is written from exactly the pairs frame that was scored.
+    Returns (matching path, candidate path, normalised S1, matches with ``prob``, per-S1
+    summary with ``p_max`` and ``n_cands`` for S1 ids that have candidates). Only one
+    partition's pool, pairs and features are in memory at once; the candidate file is
+    written from exactly the pairs that were scored.
     """
     timings = {} if timings is None else timings
+    for k in ("normalise_seconds", "blocking_seconds", "score_seconds", "decide_seconds"):
+        timings[k] = 0.0
     t0 = time.perf_counter()
     s1n = load_normalised("test", (1,), cfg, token_map=fitted.token_map)
-    pooln = load_normalised("test", (2, 3), cfg, token_map=fitted.token_map)
-    timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
-    pairs = prepare(s1n, pooln, cfg, _tag("test", s1n, pooln, fitted.token_map), timings)
-    t0 = time.perf_counter()
-    scored = score(pairs, s1n, pooln, fitted.matcher, cfg)
-    timings["score_seconds"] = round(time.perf_counter() - t0, 2)
-    del pooln
-    t0 = time.perf_counter()
-    matches = sort_matches(decide_by_country(scored, s1n, fitted.rule), scored)
-    timings["decide_seconds"] = round(time.perf_counter() - t0, 2)
+    timings["normalise_seconds"] += round(time.perf_counter() - t0, 2)
+    matches, cands, p_max = [], [], []
+    for country in sorted(s1n[C.COUNTRY].unique()):
+        t0 = time.perf_counter()
+        s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
+        poolc = load_normalised("test", (2, 3), cfg, token_map=fitted.token_map,
+                                country=country)
+        timings["normalise_seconds"] += round(time.perf_counter() - t0, 2)
+        t0 = time.perf_counter()
+        pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, fitted.token_map))
+        timings["blocking_seconds"] += round(time.perf_counter() - t0, 2)
+        t0 = time.perf_counter()
+        scored = score(pairs, s1c, poolc, fitted.matcher, cfg)
+        timings["score_seconds"] += round(time.perf_counter() - t0, 2)
+        del poolc
+        t0 = time.perf_counter()
+        matches.append(sort_matches(decide(scored, fitted.rule), scored))
+        p_max.append(scored.groupby(C.S1_ID, sort=False)["prob"].agg(p_max="max",
+                                                                      n_cands="size"))
+        cands.append(pairs[[C.S1_ID, C.ENTITY_ID]])
+        timings["decide_seconds"] += round(time.perf_counter() - t0, 2)
+        del pairs, scored
+        mem_guard(f"run_test {country}")
+    match_frame = pd.concat(matches, ignore_index=True)
+    cand_frame = pd.concat(cands, ignore_index=True)
+    del cands
     s1_ids = load_source("test", 1, cfg.dataset_dir, columns=[C.ENTITY_ID])[C.ENTITY_ID]
-    paths = write_pairs(matches[[C.S1_ID, C.ENTITY_ID]], pairs[[C.S1_ID, C.ENTITY_ID]],
-                        s1_ids.tolist(), out_dir)
+    paths = write_pairs(match_frame[[C.S1_ID, C.ENTITY_ID]], cand_frame, s1_ids.tolist(),
+                        out_dir)
+    del cand_frame
     mem_guard("run_test")
-    return (*paths, s1n, scored, matches)
+    return (*paths, s1n, match_frame, pd.concat(p_max))
