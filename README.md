@@ -46,7 +46,7 @@ make cache    # ~1 min: every TSV to Parquet in <dataset>/.cache/
 | Command | What it does |
 |---|---|
 | `make cache` | parse all TSVs once into a Parquet cache |
-| `make experiment NAME=<slug>` | next `experiments/vNNN_<slug>/` from the template |
+| `make experiment NAME=<slug> V=<n>` | `experiments/vNNN_<slug>/` from the template; `V` from your reserved range |
 | `make nb NB=<notebook>` | execute a notebook headless, saving outputs in place |
 | `make public V=vNNN SCORE=<f>` | record a leaderboard score in `experiments.csv` |
 | `make validate` | check `output/*.tsv` with our checker and the organisers' validator |
@@ -61,6 +61,15 @@ src/entity_resolution/     shared, tested library used by every notebook
 ├── data.py                TSV loaders, Parquet cache, fast ID filtering
 ├── split.py               fixed validation split (20% of Source 1, hashed)
 ├── metrics.py             macro F0.5, breakdown, blocking candidate report
+├── token_maps.py          legal forms, street tokens, regions (hand-typed domain knowledge)
+├── normalize.py           name/address normalisation, learned transliteration map
+├── blocking.py            candidate generation: exact keys + TF-IDF top-k, per country
+├── features.py            47 pair features, chunked
+├── trainset.py            inner fit/tune split, S1 sampling, pair labels
+├── model.py               LightGBM / logistic / heuristic matcher
+├── decision.py            1-to-1 set rule and its macro F0.5 grid tuning
+├── evaluate.py            vectorised metric, blocking report, slices, error samples
+├── pipeline.py            fit / run_fold / run_test: the stages wired together
 ├── submission.py          write and validate the two output files
 └── tracking.py            experiment registry, timings
 experiments/
@@ -68,6 +77,7 @@ experiments/
 ├── vNNN_<slug>/           one folder per experiment: notebook, metrics.json, artifacts/
 └── experiments.csv        one row per version: change, local/public F0.5, commit
 LEADERBOARD.md             every leaderboard upload, with budget
+TRACKER.md                 who does what, task status per day
 docs/                      challenge brief and guidelines
 tests/                     pytest on synthetic TSVs
 .githooks/                 identity, commit format, size and data guards
@@ -77,12 +87,26 @@ tests/                     pytest on synthetic TSVs
 
 ## Status
 
-Project foundation is in place: cached loading, the fixed validation split, the
-leaderboard metric with a blocking report, submission writing and validation, the
-experiment registry and notebook template. The research plan is written
-(`docs/plan/`); model work starts with `v001`, following the plan and the project rules.
+The V1 pipeline of the research plan is in place (`src/entity_resolution/`, tested) and
+`v001_base_model` is its first run. Progress per member: [TRACKER.md](TRACKER.md).
 
 ## Reproducing the submission
 
-To be written with the pipeline: exact commands from raw `dataset/` to
-`output/matching_results.tsv` and `output/candidate_pairs.tsv`, then `make validate`.
+From a clean clone with the organisers' zip unzipped into `dataset/` (see Setup):
+
+```bash
+make setup                   # pinned environment (requirements.txt)
+make cache                   # raw TSVs -> Parquet, ~1 min
+make nb NB=experiments/v001_base_model/v001_base_model.ipynb
+make validate                # our checker + the organisers' validator on output/
+```
+
+The notebook runs every stage through `entity_resolution.pipeline`: normalisation (cached
+per split under `dataset/.cache/pipeline/norm/`), the transliteration map learned from the
+train fold's pairs, blocking per country (cached under `dataset/.cache/pipeline/pairs/`),
+features, LightGBM trained on the fit side of the train fold, the decision rule tuned on the
+tune side, one scoring of the validation fold, and test inference writing
+`output/matching_results.tsv` and `output/candidate_pairs.tsv`. Model, rule, token map and
+configuration are saved under `experiments/v001_base_model/artifacts/`. Seeds are fixed
+(split 42, inner split 4242, samples 7, LightGBM 42, deterministic mode), so a rerun
+reproduces the files.
