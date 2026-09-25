@@ -2,7 +2,7 @@
 PYTHON ?= python3.12
 PY := .venv/bin/python
 
-.PHONY: setup hooks lint test score
+.PHONY: setup hooks lint test score validate
 
 setup:  ## .venv with pinned runtime deps + editable package + dev tools
 	$(PYTHON) -m venv .venv
@@ -20,3 +20,6 @@ test:
 
 score:  ## macro F0.5 breakdown: make score PRED=<matching.tsv> TRUTH=<ground_truth.tsv>
 	$(PY) -m entity_resolution.metrics --pred $(PRED) --truth $(TRUTH)
+
+validate:  ## check output/*.tsv against the submission rules for the test split
+	$(PY) -m entity_resolution.submission --output-dir output --dataset-dir dataset

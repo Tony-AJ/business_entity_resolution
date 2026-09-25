@@ -7,4 +7,5 @@ Modules:
     config      paths, file schema, metric constants
     data        TSV loaders for source files and ground truth
     metrics     macro F0.5 per Source 1 entity, singletons included
+    submission  write + validate matching_results.tsv / candidate_pairs.tsv
 """
