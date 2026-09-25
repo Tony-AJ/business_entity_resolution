@@ -22,6 +22,10 @@ dist/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# Secrets and personal overrides
-.env
+# Personal AI assistant rules and settings: each teammate keeps their own
+CLAUDE.md
+CLAUDE.local.md
 .claude/settings.local.json
+
+# Secrets
+.env
