@@ -19,6 +19,16 @@ def test_sources_load_as_plain_strings(dataset_dir):
     assert s1.loc[0, C.ADDRESS] == "12 Main St, Springfield, IL"
 
 
+def test_csv_style_quotes_are_decoded(dataset_dir):
+    # Real files escape quotes CSV-style: """ehpad Club SAS" means "ehpad Club SAS.
+    path = dataset_dir / "test" / "test_source1.tsv"
+    with path.open("a") as f:
+        f.write('S1-00012\t"""ehpad Club SAS"\t"Fédération du ""ehpad"\tFrance\n')
+    row = load_source("test", 1, dataset_dir).set_index(C.ENTITY_ID).loc["S1-00012"]
+    assert row[C.NAME] == '"ehpad Club SAS'
+    assert row[C.ADDRESS] == 'Fédération du "ehpad'
+
+
 def test_unseen_country_is_kept(dataset_dir):
     test = load_sources("test", dataset_dir)
     assert set(test) == {1, 2, 3}
