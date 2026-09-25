@@ -12,9 +12,6 @@ dependencies = [
     "pandas>=3.0",
     "numpy>=2.0",
     "pyarrow>=20",  # Arrow-backed strings: ~12M records per split must fit in RAM
-    "scikit-learn>=1.9",  # blocking.py: TfidfVectorizer for the top-k retrieval passes
-    "scipy>=1.18",  # blocking.py: sparse matrices between TF-IDF and sparse_dot_topn
-    "sparse-dot-topn>=1.2",  # blocking.py: chunked sparse top-k cosine retrieval
 ]
 
 [project.optional-dependencies]
