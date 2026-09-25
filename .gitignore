@@ -1,1 +1,27 @@
+# Challenge data and generated submissions stay local (regenerable, large)
 dataset/
+output/
+*.zip
+
+# Trained models
+models/
+*.joblib
+*.pkl
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Secrets and personal overrides
+.env
+.claude/settings.local.json
