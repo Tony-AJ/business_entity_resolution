@@ -19,6 +19,8 @@ dependencies = [
     "scipy>=1.13",
     "sparse-dot-topn>=1.1",   # multi-threaded sparse top-k retrieval for blocking (Apache-2.0)
     "lightgbm>=4.5",          # pairwise matcher (MIT)
+    "jellyfish>=1.1",         # Soundex token codes, phonetic features (MIT)
+    "metaphone>=0.6",         # Double Metaphone token codes, phonetic features (BSD)
 ]
 
 [project.optional-dependencies]

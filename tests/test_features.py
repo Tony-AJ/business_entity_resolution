@@ -103,7 +103,7 @@ def _toy() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def test_registry_names_unique_and_count():
     every = feature_names(ALL_GROUPS)
-    assert len(every) == len(set(every)) == 48
+    assert len(every) == len(set(every)) == 54
     assert feature_names() == [c for g in DEFAULT_GROUPS for c in FEATURE_COLUMNS[g]]
     assert len(feature_names()) == 47 and "pool_context" not in DEFAULT_GROUPS
     assert set(FEATURE_COLUMNS) == set(REGISTRY) and NAN_FEATURES <= set(every)
