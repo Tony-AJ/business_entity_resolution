@@ -1,6 +1,24 @@
 import pytest
 
-from entity_resolution.metrics import breakdown, entity_fbeta, macro_fbeta, main
+from entity_resolution.metrics import (
+    breakdown,
+    candidate_report,
+    entity_fbeta,
+    macro_fbeta,
+    main,
+)
+
+
+def test_candidate_report():
+    truth = {"S1-1": {"S2-1", "S3-1"}, "S1-2": set(), "S1-3": {"S2-3"}}
+    candidates = {"S1-1": ["S2-1", "S2-9"], "S1-2": ["S2-5"], "S1-3": []}
+    r = candidate_report(candidates, truth, pool_size=10)
+    assert r["pair_recall"] == pytest.approx(1 / 3)
+    assert r["entity_recall"] == 0.5
+    # perfect matcher on these candidates: S1-1 gets {S2-1} (P=1, R=.5), S1-2 1.0, S1-3 0.0
+    assert r["ceiling_f_beta"] == pytest.approx((entity_fbeta({"S2-1"}, truth["S1-1"]) + 1) / 3)
+    assert (r["candidates_mean"], r["candidates_max"], r["candidate_pairs"]) == (1.0, 2, 3)
+    assert r["reduction_ratio"] == pytest.approx(0.9)
 
 
 def test_problem_statement_example():

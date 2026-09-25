@@ -9,8 +9,21 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DATASET = ROOT / "dataset"
+STUDENT_RESOURCE = ROOT / "dataset" / "student_resource"  # organisers' zip, unzipped
+DATASET_CANDIDATES = (ROOT / "dataset", STUDENT_RESOURCE / "dataset")
+
+
+def _find_dataset() -> Path:
+    """First known layout holding a train/ folder: flat dataset/ or the unzipped zip."""
+    return next((p for p in DATASET_CANDIDATES if (p / "train").is_dir()), DATASET_CANDIDATES[0])
+
+
+DATASET = _find_dataset()
+OFFICIAL_VALIDATOR = STUDENT_RESOURCE / "utils" / "validate_submission.py"
 OUTPUT = ROOT / "output"
+EXPERIMENTS = ROOT / "experiments"          # one vNNN_<slug>/ folder per experiment
+EXPERIMENTS_CSV = EXPERIMENTS / "experiments.csv"
+LEADERBOARD = ROOT / "LEADERBOARD.md"
 
 SEED = 42
 

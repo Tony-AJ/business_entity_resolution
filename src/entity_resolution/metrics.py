@@ -17,6 +17,8 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 from statistics import fmean
 
+import numpy as np
+
 from .config import BETA
 from .data import read_id_lists
 
@@ -67,6 +69,48 @@ def breakdown(pred: IdLists, truth: IdLists, beta: float = BETA) -> dict[str, fl
         "pair_recall": tp / n_true if n_true else nan,
         "entities": len(scores),
         "singletons": len(singles),
+    }
+
+
+def candidate_report(candidates: IdLists, truth: IdLists, pool_size: int | None = None,
+                     beta: float = BETA) -> dict[str, float | int]:
+    """Blocking quality on labelled data: what the candidate set keeps and what it costs.
+
+    pair_recall        true pairs kept among the candidates / all true pairs
+    entity_recall      matched entities with at least one true match kept
+    ceiling_f_beta     macro F_beta of a perfect matcher that only sees the candidates;
+                       the best score any model can reach on top of this blocking
+    candidates_*       candidates per Source 1 entity (mean, p95, max)
+    reduction_ratio    1 - candidate pairs / all possible pairs (needs ``pool_size``,
+                       the number of Source 2 + 3 records)
+
+    Candidates for entities missing from ``truth`` are ignored.
+    """
+    if not truth:
+        raise ValueError("truth is empty")
+    counts, ceiling = [], []
+    kept = n_true = hit_entities = matched_entities = 0
+    for k, t in truth.items():
+        t, c = set(t), set(candidates.get(k, ()))
+        hit = t & c
+        counts.append(len(c))
+        kept += len(hit)
+        n_true += len(t)
+        if t:
+            matched_entities += 1
+            hit_entities += bool(hit)
+        ceiling.append(entity_fbeta(hit, t, beta))  # a perfect matcher predicts exactly `hit`
+    n = np.asarray(counts)
+    nan = float("nan")
+    return {
+        "pair_recall": kept / n_true if n_true else nan,
+        "entity_recall": hit_entities / matched_entities if matched_entities else nan,
+        "ceiling_f_beta": fmean(ceiling),
+        "candidates_mean": float(n.mean()),
+        "candidates_p95": float(np.percentile(n, 95)),
+        "candidates_max": int(n.max()),
+        "candidate_pairs": int(n.sum()),
+        "reduction_ratio": 1 - n.sum() / (len(n) * pool_size) if pool_size else nan,
     }
 
 

@@ -11,10 +11,12 @@ requires-python = ">=3.12"
 dependencies = [
     "pandas>=3.0",
     "numpy>=2.0",
+    "pyarrow>=20",  # Arrow-backed strings: ~12M records per split must fit in RAM
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+notebooks = ["ipykernel", "nbconvert", "nbformat"]
+dev = ["pytest", "ruff", "jupytext"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

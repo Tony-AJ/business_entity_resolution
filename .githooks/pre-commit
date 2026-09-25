@@ -5,9 +5,10 @@
 # Blocks, before anything reaches history:
 #   1. AI identities (Claude / Anthropic) as author or committer
 #   2. any identity other than `guard.requiredEmail`, when that key is set in
-#      this clone's local git config (opt-in, per developer; see README.md)
+#      this clone's local git config (opt-in, per developer; see .claude/rules/project-rules.md)
 #   3. dataset, output, model and secret files
-#   4. oversized commits: > MAX_COMMIT_LINES (default 400) changed lines
+#   4. any file over MAX_FILE_KB (default 2048 KB)
+#   5. oversized commits: > MAX_COMMIT_LINES (default 400) changed lines, notebooks excluded
 set -eu
 
 fail() {
@@ -42,13 +43,26 @@ if [ -n "$bad" ]; then
 $bad"
 fi
 
+max_kb=${MAX_FILE_KB:-2048}
+big=$(git diff --cached --name-only --diff-filter=ACMR | while IFS= read -r f; do
+  size=$(git cat-file -s ":$f")
+  [ "$size" -le $((max_kb * 1024)) ] || printf '%s (%s KB)\n' "$f" $((size / 1024))
+done)
+if [ -n "$big" ]; then
+  fail "files over $max_kb KB (trim heavy notebook outputs, keep data out of git):
+$big"
+fi
+
 # A merge brings in already-reviewed commits; only size-check new work.
 if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
   exit 0
 fi
 
+# Notebook JSON (outputs, metadata) says little about code size, so notebooks are
+# bounded by the byte limit above instead of the line count.
 max=${MAX_COMMIT_LINES:-400}
-lines=$(git diff --cached --numstat | awk '$1 != "-" { n += $1 + $2 } END { print n + 0 }')
+lines=$(git diff --cached --numstat -- . ':(exclude)*.ipynb' \
+  | awk '$1 != "-" { n += $1 + $2 } END { print n + 0 }')
 if [ "$lines" -gt "$max" ] && [ "${ALLOW_LARGE_COMMIT:-0}" != 1 ]; then
   fail "$lines changed lines (limit $max). Split into smaller, focused commits."
 fi
