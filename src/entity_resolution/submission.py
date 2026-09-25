@@ -18,7 +18,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from . import config as C
-from .data import load_sources, read_id_lists
+from .data import read_id_lists, read_tsv, source_path
 
 MATCHABLE_SOURCES = (2, 3)
 
@@ -46,18 +46,30 @@ def write_submission(
             write_id_lists(out_dir / C.CANDIDATE_FILE, candidates, s1_ids, C.CANDIDATE_IDS))
 
 
-def split_ids(split: str = "test", dataset_dir: Path = C.DATASET) -> tuple[list[str], set[str]]:
-    """Source 1 IDs of a split, and the Source 2/3 IDs its ID lists may use."""
-    sources = load_sources(split, dataset_dir)
-    s1_ids = sources[1][C.ENTITY_ID].tolist()
-    valid = {i for s in MATCHABLE_SOURCES for i in sources[s][C.ENTITY_ID]}
-    return s1_ids, valid
+def split_ids(
+    split: str = "test", dataset_dir: Path = C.DATASET, check_ids: bool = False
+) -> tuple[list[str], set[str] | None]:
+    """Source 1 IDs of a split and, with ``check_ids``, the Source 2/3 IDs lists may use.
+
+    Reads only the ID column. The full Source 2/3 ID set costs about 1 GB of RAM on the
+    real test split, so, like the official validator, that check is opt-in; without it
+    list entries are checked by ID prefix only.
+    """
+    def ids(source: int) -> list[str]:
+        path = source_path(split, source, dataset_dir)
+        return read_tsv(path, usecols=[C.ENTITY_ID])[C.ENTITY_ID].tolist()
+
+    valid = {i for s in MATCHABLE_SOURCES for i in ids(s)} if check_ids else None
+    return ids(1), valid
 
 
 def check_id_lists(
-    path: Path, column: str, s1_ids: Collection[str], valid_ids: Collection[str]
+    path: Path, column: str, s1_ids: Collection[str], valid_ids: Collection[str] | None
 ) -> tuple[list[str], dict[str, list[str]] | None]:
-    """Rule violations in one file, plus its rows (None when it cannot be parsed)."""
+    """Rule violations in one file, plus its rows (None when it cannot be parsed).
+
+    ``valid_ids=None`` checks list entries by their S2-/S3- prefix instead of existence.
+    """
     try:
         header, rows = read_id_lists(path)
     except (OSError, ValueError) as e:
@@ -66,6 +78,11 @@ def check_id_lists(
     errors = []
     if header != [C.S1_ID, column]:
         errors.append(f"{name}: header must be {C.S1_ID}<TAB>{column}, got {header}")
+    prefixes = tuple(C.SOURCE_PREFIX[s] for s in MATCHABLE_SOURCES)
+
+    def invalid(i: str) -> bool:
+        return i not in valid_ids if valid_ids is not None else not i.startswith(prefixes)
+
     counts = Counter(s1 for s1, _ in rows)
     expected = set(s1_ids)
     for label, bad in (
@@ -74,7 +91,7 @@ def check_id_lists(
         ("rows for unknown Source 1 entities", counts.keys() - expected),
         ("lists with repeated IDs", {s1 for s1, ids in rows if len(ids) != len(set(ids))}),
         ("IDs that are not Source 2/3 records of this split",
-         {i for _, ids in rows for i in ids if i not in valid_ids}),
+         {i for _, ids in rows for i in ids if invalid(i)}),
     ):
         if bad:
             errors.append(f"{name}: {len(bad)} {label}, e.g. {sorted(bad)[:3]}")
@@ -82,7 +99,8 @@ def check_id_lists(
 
 
 def validate(
-    matching: Path, candidates: Path, s1_ids: Collection[str], valid_ids: Collection[str]
+    matching: Path, candidates: Path, s1_ids: Collection[str],
+    valid_ids: Collection[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """(errors, warnings) for a submission pair; no errors means safe to upload."""
     errors, matched = check_id_lists(matching, C.MATCHED_IDS, s1_ids, valid_ids)
@@ -103,8 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--output-dir", type=Path, default=C.OUTPUT)
     ap.add_argument("--dataset-dir", type=Path, default=C.DATASET)
     ap.add_argument("--split", choices=C.SPLITS, default="test")
+    ap.add_argument("--check-ids", action="store_true",
+                    help="verify every listed ID exists in the split (about 1 GB RAM on test)")
     args = ap.parse_args(argv)
-    s1_ids, valid = split_ids(args.split, args.dataset_dir)
+    s1_ids, valid = split_ids(args.split, args.dataset_dir, args.check_ids)
     errors, warnings = validate(args.output_dir / C.MATCHING_FILE,
                                 args.output_dir / C.CANDIDATE_FILE, s1_ids, valid)
     for w in warnings:

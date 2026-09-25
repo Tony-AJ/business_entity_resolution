@@ -14,9 +14,10 @@ import pandas as pd
 from . import config as C
 
 
-def read_tsv(path: Path) -> pd.DataFrame:
+def read_tsv(path: Path, usecols: list[str] | None = None) -> pd.DataFrame:
     """Read a challenge TSV with every field as a string; empty fields stay ""."""
-    return pd.read_csv(path, sep=C.SEP, dtype=str, na_filter=False, encoding="utf-8")
+    return pd.read_csv(path, sep=C.SEP, dtype=str, na_filter=False, encoding="utf-8",
+                       usecols=usecols)
 
 
 def source_path(split: str, source: int, dataset_dir: Path = C.DATASET) -> Path:

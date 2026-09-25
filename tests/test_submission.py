@@ -9,7 +9,7 @@ HEADER = "source1_entity_id\tmatched_entity_ids\n"
 
 @pytest.fixture
 def ids(dataset_dir):
-    return split_ids("test", dataset_dir)
+    return split_ids("test", dataset_dir, check_ids=True)
 
 
 @pytest.fixture
@@ -49,6 +49,15 @@ def test_each_rule_is_enforced(written, ids, body, error):
     matching.write_text(HEADER + body)
     errors, _ = validate(matching, candidates, *ids)
     assert any(error in e for e in errors), errors
+
+
+def test_default_mode_checks_prefixes_only(written, dataset_dir):
+    s1_ids, valid = split_ids("test", dataset_dir)
+    assert valid is None
+    matching, candidates = written
+    matching.write_text(HEADER + "S1-00010\tS2-99999\nS1-00011\tS1-00010\n")
+    errors, _ = validate(matching, candidates, s1_ids)
+    assert len(errors) == 1 and "['S1-00010']" in errors[0]  # S1 self-match only
 
 
 def test_wrong_header_is_an_error(written, ids):

@@ -1,6 +1,8 @@
 # Dev entry points. First time in a clone: make setup hooks
 PYTHON ?= python3.12
 PY := .venv/bin/python
+DATASET = $(shell $(PY) -c 'from entity_resolution.config import DATASET; print(DATASET)')
+OFFICIAL_VALIDATOR := dataset/student_resource/utils/validate_submission.py
 
 .PHONY: setup hooks lint test score validate
 
@@ -21,5 +23,7 @@ test:
 score:  ## macro F0.5 breakdown: make score PRED=<matching.tsv> TRUTH=<ground_truth.tsv>
 	$(PY) -m entity_resolution.metrics --pred $(PRED) --truth $(TRUTH)
 
-validate:  ## check output/*.tsv against the submission rules for the test split
-	$(PY) -m entity_resolution.submission --output-dir output --dataset-dir dataset
+validate:  ## output/*.tsv vs submission rules: our checker, then the organisers' validator
+	$(PY) -m entity_resolution.submission --output-dir output
+	$(PY) $(OFFICIAL_VALIDATOR) --matching output/matching_results.tsv \
+		--candidate output/candidate_pairs.tsv --test-dir $(DATASET)/test
