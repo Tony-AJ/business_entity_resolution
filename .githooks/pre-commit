@@ -5,7 +5,7 @@
 # Blocks, before anything reaches history:
 #   1. AI identities (Claude / Anthropic) as author or committer
 #   2. any identity other than `guard.requiredEmail`, when that key is set in
-#      this clone's local git config (opt-in, per developer; see README.md)
+#      this clone's local git config (opt-in, per developer; see .claude/rules/project-rules.md)
 #   3. dataset, output, model and secret files
 #   4. any file over MAX_FILE_KB (default 2048 KB)
 #   5. oversized commits: > MAX_COMMIT_LINES (default 400) changed lines, notebooks excluded

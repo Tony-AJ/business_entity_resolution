@@ -91,7 +91,8 @@ Tag every experiment with its plan ID in `group`.
   lines, notebooks excluded), `exp(vNNN): ...` for experiment runs, and merge commits
   rather than squashes. Enable the hooks once per clone with `make hooks`.
 - Commit under your own git identity. The hooks reject AI identities and AI co-author
-  trailers.
+  trailers; `git config guard.requiredEmail <your email>` also makes them reject any
+  other identity in your clone.
 - Never commit data, outputs, artifacts or any file over 2 MB.
 
 ## 8. Deliverables
