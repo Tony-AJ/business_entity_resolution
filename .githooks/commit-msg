@@ -4,7 +4,8 @@
 #   * rejects AI attribution: Co-Authored-By Claude/Anthropic trailers,
 #     Claude-Session trailers, "Generated with Claude Code" footers
 #   * enforces Conventional Commits: `type(scope)!: summary`, <= 72 chars,
-#     type in feat fix docs style refactor perf test build ci chore revert
+#     type in feat fix docs style refactor perf test build ci chore revert exp
+#     (exp = an experiment run: notebook, metrics.json and its experiments.csv row)
 set -eu
 
 fail() {
@@ -25,7 +26,7 @@ case "$subject" in
 esac
 
 if ! printf '%s\n' "$subject" \
-  | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: [^ ]'; then
+  | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|exp)(\([a-z0-9._/-]+\))?!?: [^ ]'; then
   fail "subject must follow Conventional Commits, e.g. 'feat(blocking): add name-token index'
   got: $subject"
 fi
