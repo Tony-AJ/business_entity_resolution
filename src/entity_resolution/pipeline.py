@@ -399,13 +399,24 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     del X_fit, y_fit, X_stop, y_stop
     mem_guard("matcher fit")
 
-    # decision rule on the tune side (all S1 unless n_tune_s1): scored chunk by chunk
+    rule, table = _tune_rule(cfg, matcher, train, tune_fold, token_map, info, timings)
+    fitted = Fitted(matcher, rule, table, cfg, token_map, {**info, "timings": dict(timings)})
+    if out is not None:
+        fitted.save(out)
+    mem_guard("fit done")
+    return fitted
+
+
+def _tune_rule(cfg: PipelineConfig, matcher: Matcher, train: Fold, tune_fold: Fold,
+               token_map: dict, info: dict, timings: dict) -> tuple[DecisionRule, pd.DataFrame]:
+    """Decision rule on the tune side (all S1 unless n_tune_s1), scored chunk by chunk."""
     tune_s1 = tune_fold.s1 if cfg.n_tune_s1 is None else sample_s1(tune_fold.s1, cfg.n_tune_s1)
     if cfg.tune_pool not in ("fold", "train"):
         raise ValueError(f"tune_pool must be 'fold' or 'train', got {cfg.tune_pool!r}")
     rule_fold = tune_fold if cfg.tune_pool == "fold" else Fold(  # every train S1 exists
         "tune", train.s1, train.s2, train.s3, tune_fold.pairs)
-    s1n, pooln, pairs = _side("tune", tune_s1, rule_fold, cfg, token_map, info, timings)
+    name = "tune" if cfg.tune_pool == "fold" else "tunedense"
+    s1n, pooln, pairs = _side(name, tune_s1, rule_fold, cfg, token_map, info, timings)
     t0 = time.perf_counter()
     scored = score(pairs, s1n, pooln, matcher, cfg)
     timings["score_seconds"] = round(time.perf_counter() - t0, 2)
@@ -413,11 +424,28 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     t0 = time.perf_counter()
     rule, table = tune(scored, tune_s1[C.ENTITY_ID], tune_fold.pairs, cfg.grid)
     timings["tune_seconds"] = round(time.perf_counter() - t0, 2)
-    fitted = Fitted(matcher, rule, table, cfg, token_map, {**info, "timings": dict(timings)})
+    return rule, table
+
+
+def retune(cfg: PipelineConfig, fitted: Fitted, train: Fold, out: Path | None = None,
+           timings: dict | None = None) -> Fitted:
+    """A new decision rule for an already trained matcher (E-group versions, 10 §6).
+
+    Keeps ``fitted``'s matcher and token map; only the tune-side scoring and the grid run
+    again under ``cfg`` (e.g. ``tune_pool="train"``). ``cfg`` must share the fitted
+    version's features, else the matcher refuses the frame.
+    """
+    timings = {} if timings is None else timings
+    info = {k: v for k, v in fitted.info.items() if k != "timings"}
+    _, tune_fold = inner_split(train)
+    rule, table = _tune_rule(cfg, fitted.matcher, train, tune_fold, fitted.token_map, info,
+                             timings)
+    out_fitted = Fitted(fitted.matcher, rule, table, cfg, fitted.token_map,
+                        {**info, "timings": dict(timings), "retuned_from": asdict(fitted.rule)})
     if out is not None:
-        fitted.save(out)
-    mem_guard("fit done")
-    return fitted
+        out_fitted.save(out)
+    mem_guard("retune done")
+    return out_fitted
 
 
 # ---------------------------------------------------------------- run_* ----

@@ -146,3 +146,17 @@ def test_dense_tune_pool_fits(dataset_dir: Path, tmp_path: Path) -> None:
         assert "tune_pool" in str(e)
     else:
         raise AssertionError("an unknown tune_pool must be refused")
+
+
+def test_retune_keeps_matcher_and_saves(dataset_dir: Path, tmp_path: Path) -> None:
+    """retune re-runs only the rule grid (here against the whole train pool)."""
+    from dataclasses import replace
+
+    from entity_resolution.pipeline import retune
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    train = load_fold("train", dataset_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    again = retune(replace(cfg, tune_pool="train"), fitted, train, tmp_path / "art2")
+    assert again.matcher is fitted.matcher and again.token_map == fitted.token_map
+    assert (tmp_path / "art2" / "rule.json").exists()
+    assert "retuned_from" in again.info
