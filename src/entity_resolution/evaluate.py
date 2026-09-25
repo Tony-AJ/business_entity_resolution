@@ -32,6 +32,7 @@ import pyarrow.compute as pc
 
 from . import config as C
 from .data import isin
+from .normalize import NORM_COLUMNS
 from .split import Fold, hash_unit
 
 B2 = C.BETA * C.BETA  # 0.25: the same float operations as metrics.entity_fbeta
@@ -291,3 +292,155 @@ def harder_fold(fold: Fold, drop_frac: float = 0.2, seed: int = 99) -> Fold:
 
 
 # ---------------------------------------------------------- slice report ----
+def _slice_row(family: str, name: str, mask: np.ndarray, tp: np.ndarray, n_pred: np.ndarray,
+               n_true: np.ndarray, f: np.ndarray) -> dict:
+    """One slice: macro F0.5 over its entities, pair P/R and counts summed over them."""
+    tp_s, pred_s, true_s = int(tp[mask].sum()), int(n_pred[mask].sum()), int(n_true[mask].sum())
+    nan = float("nan")
+    return {"family": family, "slice": name, "entities": int(mask.sum()), "f_beta": _fmean(f[mask]),
+            "pair_precision": tp_s / pred_s if pred_s else nan,
+            "pair_recall": tp_s / true_s if true_s else nan,
+            "n_true": true_s, "n_pred": pred_s, "tp": tp_s}
+
+
+def slice_report(pred_pairs: pd.DataFrame, fold: Fold, s1n: pd.DataFrame,
+                 pooln: pd.DataFrame) -> pd.DataFrame:
+    """Macro F0.5, pair P/R and counts per slice of the fold's S1 entities (11 §7).
+
+    One row per slice (``SLICE_COLUMNS``). Families: ``country`` (one row per value present,
+    never an enumerated list), ``source`` (``S2``/``S3``: pred and truth projected to that
+    source's ids, entities with a true or predicted pair there), ``non_latin`` (>= 1 true match
+    whose pool row is non-Latin), ``domain_form`` (same, only when ``pooln`` has that column),
+    ``ambiguous`` (S1 ``name_core`` shared by > 1 fold S1 record of its country; "" never is),
+    ``singleton``, ``n_matches`` (0, 1, 2, 3-4, 5+ true matches), ``postcode`` (S1 has one),
+    ``addr_empty`` (S1 address empty, or >= 1 true match with an empty pool address).
+    Families that partition the entities end with an ``all`` row. Empty slices have NaN
+    ``f_beta``. ``s1n`` / ``pooln`` are the normalised frames (``NORM_COLUMNS``, unique
+    ``entity_id``), looked up by id; with candidates in place of predictions, ``pair_recall``
+    is per-slice candidate recall.
+    """
+    for label, frame in (("s1n", s1n), ("pooln", pooln)):
+        if list(frame.columns[:len(NORM_COLUMNS)]) != NORM_COLUMNS:
+            raise ValueError(f"{label} must start with NORM_COLUMNS, got {list(frame.columns)}")
+    sets, tp, n_pred, n_true = _counts(pred_pairs, fold)
+    n, f = len(fold.s1), entity_f05_from_counts(tp, n_pred, n_true)
+    at = positions(fold.s1[C.ENTITY_ID], s1n[C.ENTITY_ID])
+    if (at < 0).any():
+        raise ValueError(f"s1n lacks {int((at < 0).sum()):,} S1 entities of fold {fold.name!r}")
+    s1x = s1n[[C.COUNTRY, "name_core", "postcode", "addr_tokens"]].take(at).reset_index(drop=True)
+
+    # pool rows of the true matches: entity position and pooln row per distinct truth pair
+    t_ent = sets.true // sets.n_codes
+    t_row = positions(sets.pool_ids.take(sets.true % sets.n_codes), pooln[C.ENTITY_ID])
+    if (t_row < 0).any():
+        raise ValueError(f"pooln lacks {int((t_row < 0).sum()):,} pool records matched in "
+                         f"fold {fold.name!r}")
+
+    def any_true_match(flag: np.ndarray) -> np.ndarray:
+        """Entities with at least one true match whose pool row has ``flag`` set."""
+        return np.bincount(t_ent[flag], minlength=n) > 0
+
+    def pool_flag(column: str) -> np.ndarray:
+        """Entities with at least one true match whose pool row has boolean ``column`` set."""
+        return any_true_match(pooln[column].take(t_row).to_numpy(dtype=bool))
+
+    counts = (tp, n_pred, n_true, f)
+    everyone = np.ones(n, dtype=bool)
+    rows = []
+
+    def partition(family: str, slices: list[tuple[str, np.ndarray]]) -> None:
+        """Rows of a family whose slices partition the entities, then its ``all`` row."""
+        rows.extend(_slice_row(family, name, mask, *counts) for name, mask in slices)
+        rows.append(_slice_row(family, "all", everyone, *counts))
+
+    def yes_no(family: str, flag: np.ndarray) -> None:
+        """A boolean family: slices ``yes`` (flag set) and ``no``."""
+        partition(family, [("yes", flag), ("no", ~flag)])
+
+    codes, countries = pd.factorize(s1x[C.COUNTRY], sort=True, use_na_sentinel=False)
+    partition("country", [(str(c), codes == i) for i, c in enumerate(countries)])
+
+    for src in (2, 3):  # S2 / S3 projection: keys whose pool id carries the source prefix
+        prefix = C.SOURCE_PREFIX[src]
+        in_src = pc.starts_with(_as_arrow(sets.pool_ids), prefix).fill_null(False)
+        in_src = np.asarray(in_src, dtype=bool)
+        pk = sets.pred[in_src[sets.pred % sets.n_codes]]
+        tk = sets.true[in_src[sets.true % sets.n_codes]]
+        sp = np.bincount(pk // sets.n_codes, minlength=n)
+        st = np.bincount(tk // sets.n_codes, minlength=n)
+        stp = np.bincount(tk[_member(tk, pk)] // sets.n_codes, minlength=n)
+        rows.append(_slice_row("source", prefix.rstrip("-"), (sp > 0) | (st > 0), stp, sp, st,
+                               entity_f05_from_counts(stp, sp, st)))
+
+    yes_no("non_latin", pool_flag("non_latin"))
+    if "domain_form" in pooln.columns:           # optional column of 05 §11 (R3 fired)
+        yes_no("domain_form", pool_flag("domain_form"))
+
+    core = s1x["name_core"]
+    country_code = pd.factorize(s1x[C.COUNTRY], use_na_sentinel=False)[0].astype(np.int64)
+    core_code, cores = pd.factorize(core, use_na_sentinel=False)
+    group = pd.factorize(country_code * max(len(cores), 1) + core_code)[0]
+    yes_no("ambiguous", (np.bincount(group)[group] > 1) & (core != "").to_numpy(dtype=bool))
+
+    single = n_true == 0
+    partition("singleton", [("singleton", single), ("matched", ~single)])
+    bins = np.digitize(n_true, N_MATCH_EDGES)
+    partition("n_matches", [(name, bins == i) for i, name in enumerate(N_MATCH_SLICES)])
+    yes_no("postcode", (s1x["postcode"] != "").to_numpy(dtype=bool))
+    empty_r = any_true_match(pooln["addr_tokens"].take(t_row).to_numpy() == 0)
+    yes_no("addr_empty", (s1x["addr_tokens"].to_numpy() == 0) | empty_r)
+    return pd.DataFrame(rows, columns=SLICE_COLUMNS)
+
+
+# --------------------------------------------------------- error samples ----
+def _raw(frames: list[pd.DataFrame], ids: pd.Series) -> pd.DataFrame:
+    """Raw name and address of ``ids`` (NaN when an id is in none of ``frames``), in order."""
+    cols = [C.ENTITY_ID, C.NAME, C.ADDRESS]
+    found = pd.concat([df.reindex(columns=cols)[isin(df[C.ENTITY_ID], ids)] for df in frames],
+                      ignore_index=True)
+    table = found.drop_duplicates(C.ENTITY_ID).set_index(C.ENTITY_ID)
+    return table.reindex(ids.to_numpy()).reset_index(drop=True)
+
+
+def error_samples(pred_pairs: pd.DataFrame, fold: Fold, kind: str, n: int = 20,
+                  scored: pd.DataFrame | None = None, seed: int = 0) -> pd.DataFrame:
+    """Up to ``n`` wrong or missing pairs of one kind, both raw records side by side.
+
+    Kinds (18 §2): ``false_merge`` a predicted pair that is not true, of an entity with true
+    matches; ``missed`` a true pair not predicted while its entity predicted something;
+    ``false_singleton`` the true pairs of a matched entity predicted empty; ``singleton_merge``
+    the predicted pairs of a true singleton. Rows are drawn by a hash of the pair (``seed``),
+    so the draw depends on the ids only, not on row order. Columns ``SAMPLE_COLUMNS``: ``prob``
+    comes from ``scored`` (NaN when absent or not scored); names and addresses are the raw
+    ``business_name`` / ``business_address`` of ``fold.s1`` and ``fold.s2`` / ``fold.s3``.
+    """
+    if kind not in ERROR_KINDS:
+        raise ValueError(f"kind must be one of {ERROR_KINDS}, got {kind!r}")
+    sets, _, n_pred, n_true = _counts(pred_pairs, fold)
+    if kind in ("false_merge", "singleton_merge"):
+        keys = sets.pred[~_member(sets.pred, sets.true)]        # predicted, not true
+        has_truth = n_true[keys // sets.n_codes] > 0
+        keys = keys[has_truth if kind == "false_merge" else ~has_truth]
+    else:
+        keys = sets.true[~_member(sets.true, sets.pred)]        # true, not predicted
+        predicted = n_pred[keys // sets.n_codes] > 0
+        keys = keys[predicted if kind == "missed" else ~predicted]
+    pairs = pd.DataFrame({
+        C.S1_ID: fold.s1[C.ENTITY_ID].take(keys // sets.n_codes).reset_index(drop=True),
+        C.ENTITY_ID: pd.Series(sets.pool_ids.take(keys % sets.n_codes)),
+    })
+    if len(pairs) > n:                            # the n smallest pair hashes: order-free draw
+        h = pd.util.hash_pandas_object(pairs, index=False, hash_key=f"{seed:016d}"[-16:])
+        pairs = pairs.take(np.sort(np.argsort(h.to_numpy(), kind="stable")[:max(n, 0)]))
+    pairs = pairs.sort_values([C.S1_ID, C.ENTITY_ID], ignore_index=True)
+
+    prob = np.full(len(pairs), np.nan)
+    if scored is not None and len(pairs):
+        sub = scored.loc[isin(scored[C.S1_ID], pairs[C.S1_ID]), [C.S1_ID, C.ENTITY_ID, "prob"]]
+        sub = sub.drop_duplicates([C.S1_ID, C.ENTITY_ID])
+        prob = pairs.merge(sub, on=[C.S1_ID, C.ENTITY_ID], how="left")["prob"].to_numpy(
+            dtype=np.float64, na_value=np.nan)
+    left = _raw([fold.s1], pairs[C.S1_ID])
+    right = _raw([fold.s2, fold.s3], pairs[C.ENTITY_ID])
+    return pairs.assign(prob=prob, name_l=left[C.NAME], addr_l=left[C.ADDRESS],
+                        name_r=right[C.NAME], addr_r=right[C.ADDRESS])[SAMPLE_COLUMNS]
