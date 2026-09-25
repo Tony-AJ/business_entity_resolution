@@ -90,8 +90,10 @@ ADDRESS_TOKENS = {
 }
 
 # Regions: every written form (full name, postal code, anyascii of the native-script name)
-# -> one canonical code. A code shared by two countries (AR = Arkansas / Arunachal Pradesh)
-# is harmless because true pairs always share the country (01 §4).
+# -> one canonical code. A code shared by two countries (AR = Arkansas / Arunachal Pradesh,
+# CT = Connecticut / Chhattisgarh, OR = Oregon / Odisha) is harmless because true pairs
+# always share the country (01 §4); a code must never map to a different code, or two
+# spellings of the same state disagree (a later table would overwrite an earlier alias).
 _US_STATES = {
     "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas", "ca": "california",
     "co": "colorado", "ct": "connecticut", "de": "delaware", "dc": "district of columbia",
@@ -108,12 +110,12 @@ _US_STATES = {
 }
 _INDIA_STATES = {
     "ap": ["andhra pradesh", "amdhrprdes", "amdhr prdes"], "ar": ["arunachal pradesh"],
-    "as": ["assam"], "br": ["bihar"], "cg": ["chhattisgarh", "chattisgarh", "ct"],
+    "as": ["assam"], "br": ["bihar"], "ct": ["chhattisgarh", "chattisgarh", "cg"],
     "ga": ["goa"], "gj": ["gujarat", "gujrat"], "hr": ["haryana", "hriyana"],
     "hp": ["himachal pradesh"], "jh": ["jharkhand"], "ka": ["karnataka", "krnatk"],
     "kl": ["kerala", "kerlm"], "mp": ["madhya pradesh", "mdhy prdes"],
     "mh": ["maharashtra", "mharastr"], "mn": ["manipur"], "ml": ["meghalaya"],
-    "mz": ["mizoram"], "nl": ["nagaland"], "od": ["odisha", "orissa", "odisa", "or"],
+    "mz": ["mizoram"], "nl": ["nagaland"], "or": ["odisha", "orissa", "odisa", "od"],
     "pb": ["punjab", "pmjab"], "rj": ["rajasthan", "rajsthan"], "sk": ["sikkim"],
     "tn": ["tamil nadu", "tamilnadu", "tmilnatu"], "ts": ["telangana", "telmgan", "tg"],
     "tr": ["tripura"], "up": ["uttar pradesh", "uttr prdes"],

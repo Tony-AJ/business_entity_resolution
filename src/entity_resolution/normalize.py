@@ -34,7 +34,7 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
                 "region", "addr_last", "addr_tokens", "name_addr"]
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
-RULES_VERSION = 1
+RULES_VERSION = 2
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
 NON_LATIN_RE = r"[\x{0370}-\x{1DBF}\x{2C00}-\x{2DFF}\x{3000}-\x{D7FF}]"
@@ -70,8 +70,13 @@ DEFAULT = NormaliseConfig()
 
 # --------------------------------------------------------------- primitives ----
 def _arrow(s: pd.Series) -> pa.Array:
-    """The Series as a non-null Arrow string array ("" for missing)."""
-    return pa.array(s.fillna("").astype("str"), type=pa.string())
+    """The Series as one non-null Arrow string array ("" for missing).
+
+    A Series read from Parquet or concatenated holds several Arrow chunks; the list and
+    dictionary kernels below need a single contiguous array.
+    """
+    arr = pa.array(s.fillna("").astype("str"), type=pa.string())
+    return arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr
 
 
 def _series(arr: pa.Array | pa.ChunkedArray, index: pd.Index) -> pd.Series:
@@ -189,8 +194,9 @@ def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
     arr = pc.replace_substring_regex(
         arr, r"([a-z0-9])\.(?:com|net|org|co\.in|in|co|io|fr|biz|info|us)\b", r"\1")
     norm = _join_initials(_punct(arr))
-    # a single glued token ending in "com" is a domain written without its dot
-    norm = pc.replace_substring_regex(norm, r"^([a-z0-9]{4,})com$", r"\1")
+    # a long single glued token ending in "com" is a domain written without its dot
+    # ("orthopedichealthcom"); short words keep it ("intercom", "telecom")
+    norm = pc.replace_substring_regex(norm, r"^([a-z0-9]{7,})com$", r"\1")
     out = _name_columns(norm, non_latin, cfg, token_map)
     out.insert(1, "domain_form", raw_domain.to_numpy(zero_copy_only=False))
     out.index = names.index
@@ -261,6 +267,8 @@ def normalise_addresses(addr: pd.Series, cfg: NormaliseConfig = DEFAULT) -> pd.D
     # a component is a region when its words (numbers aside: "New York 14610") are one
     flat_words = _collapse(pc.replace_substring_regex(flat_norm, r"\b\d+\b", " "))
     flat_nums = _collapse(pc.replace_substring_regex(flat_norm, r"\b[a-z+]\w*\b", " "))
+    if not regions:  # an empty override: no component is a region
+        regions = {"\x00": "\x00"}
     keys = pa.array(list(regions), type=pa.string())
     codes = pa.array(list(regions.values()), type=pa.string())
     hit = pc.index_in(flat_words, value_set=keys)
@@ -344,10 +352,10 @@ def fit_token_map(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFr
     if not same.any():
         return {}
     df = pd.DataFrame({"r": rt[same].explode().to_numpy(), "l": lt[same].explode().to_numpy()})
+    total = df["r"].value_counts()  # every aligned occurrence, identical ones included
     df = df[df["r"] != df["l"]]
     counts = df.value_counts()                           # (r, l) -> n, largest first
     best = counts[~counts.index.get_level_values(0).duplicated()]
-    total = df["r"].value_counts()
     r = best.index.get_level_values(0)
     share = best.to_numpy() / total.reindex(r).to_numpy()
     keep = (best.to_numpy() >= min_count) & (share >= min_share)
