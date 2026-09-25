@@ -22,7 +22,7 @@ runs of equal strings are converted to Python and tokenised only once.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import numpy as np
 import pandas as pd
@@ -31,7 +31,8 @@ import pyarrow.compute as pc
 import scipy.sparse as sp
 from rapidfuzz import distance, fuzz, process
 
-from .blocking import PASS_BITS, SIM_COLUMNS
+from . import config as C
+from .blocking import PAIR_COLUMNS, PASS_BITS, SIM_COLUMNS
 
 FeatureGroup = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame]
 
@@ -281,3 +282,356 @@ def _rank_and_gap(sim: np.ndarray, starts: np.ndarray,
     rank[order] = tie_start - starts[group[order]] + 1
     best = np.fmax.reduceat(sim, starts)  # fmax ignores NaN; NaN only if the group has none
     return rank, best[group] - sim
+
+
+# ------------------------------------------------------------ feature groups ----
+def _blocking(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Blocking evidence (06 §2): which passes proposed the pair, and their cosines.
+
+    pass_exact       an exact key pass proposed it (name_core, name_sorted or name_squash)
+    pass_name_char   the name char-gram top-k pass (P2) proposed it
+    pass_name_addr   the name + address word top-k pass (P3) proposed it
+    sim_*            the pass cosines copied from the pairs; NaN when that pass did not
+                     propose the pair
+    """
+    bits = pairs["pass"].to_numpy()
+    return _frame(pairs.index, {
+        "pass_exact": (bits & _EXACT_BITS) != 0,
+        "pass_name_char": (bits & PASS_BITS["name_char"]) != 0,
+        "pass_name_addr": (bits & PASS_BITS["name_addr_word"]) != 0,
+        **{c: pairs[c].to_numpy(dtype=np.float32, na_value=np.nan) for c in SIM_COLUMNS},
+    })
+
+
+def _name_fuzzy(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Fuzzy name similarity (rapidfuzz), NaN when either name is empty.
+
+    nm_*          on name_norm: ratio, partial_ratio, token_sort_ratio, token_set_ratio and
+                  Jaro-Winkler
+    core_*        on name_core (legal forms removed): ratio, token_set_ratio, Jaro-Winkler and
+                  Levenshtein
+    squash_ratio  ratio on name_squash (letters and digits only: domain and handle forms)
+
+    07 lists ``core_indel``, the Indel normalised similarity; rapidfuzz defines ``fuzz.ratio``
+    as exactly that (x100), so it would duplicate ``core_ratio``. ``core_lev`` (Levenshtein: a
+    substitution is one edit, normalised by the longer name) is the distinct edit-distance
+    view in its place.
+    """
+    scores: list[np.ndarray] = []
+    for column, scorers in (("name_norm", (_RATIO, _PARTIAL, _TOKEN_SORT, _TOKEN_SET,
+                                           _JARO_WINKLER)),
+                            ("name_core", (_RATIO, _TOKEN_SET, _JARO_WINKLER, _LEVENSHTEIN)),
+                            ("name_squash", (_RATIO,))):
+        scores += _fuzzy(_arrow(left[column]), _arrow(right[column]), scorers)
+    return _frame(pairs.index, dict(zip(FEATURE_COLUMNS["name_fuzzy"], scores, strict=True)))
+
+
+def _name_tokens(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Word overlap of the core names and equality of the derived name keys.
+
+    tok_jaccard, tok_dice  Jaccard and Dice of the name_core token sets; NaN if either is empty
+    tok_common             distinct tokens shared (0 when a side is empty)
+    tok_len_l, tok_len_r   distinct tokens on each side
+    first_eq               equal non-empty name_first
+    sorted_eq              equal non-empty name_sorted (the same words in any order)
+    prefix4_eq             equal non-empty first 4 characters of name_squash
+    """
+    common, n_l, n_r, _, _ = _token_sets(_arrow(left["name_core"]), _arrow(right["name_core"]))
+    both = (n_l > 0) & (n_r > 0)
+    squash_l, squash_r = _arrow(left["name_squash"]), _arrow(right["name_squash"])
+    return _frame(pairs.index, {
+        "tok_jaccard": _ratio(common, n_l + n_r - common, both),
+        "tok_dice": _ratio(2 * common, n_l + n_r, both),
+        "tok_common": common,
+        "tok_len_l": n_l,
+        "tok_len_r": n_r,
+        "first_eq": _eq(_arrow(left["name_first"]), _arrow(right["name_first"]))[0],
+        "sorted_eq": _eq(_arrow(left["name_sorted"]), _arrow(right["name_sorted"]))[0],
+        "prefix4_eq": _eq(pc.utf8_slice_codeunits(squash_l, 0, 4),
+                          pc.utf8_slice_codeunits(squash_r, 0, 4))[0],
+    })
+
+
+def _legal(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Legal-form agreement.
+
+    legal_eq                          equal and non-empty legal_form
+    legal_missing_l, legal_missing_r  that side has no legal form
+    """
+    legal_l, legal_r = _arrow(left["legal_form"]), _arrow(right["legal_form"])
+    return _frame(pairs.index, {
+        "legal_eq": _eq(legal_l, legal_r)[0],
+        "legal_missing_l": _empty(legal_l),
+        "legal_missing_r": _empty(legal_r),
+    })
+
+
+def _numeric(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Numbers in the addresses: house numbers and postcodes separate same-name decoys.
+
+    num_jaccard     Jaccard of the addr_nums token sets
+    num_shared_any  1 if any number is shared
+    num_first_eq    1 if the first numbers (usually the house number) are equal
+    postcode_eq     1 if the postcodes are equal
+    Each is NaN when either side has no number (no postcode, for postcode_eq), else 0/1 or a
+    share, so "no evidence" never reads as "disagreement".
+    """
+    common, n_l, n_r, first_l, first_r = _token_sets(_arrow(left["addr_nums"]),
+                                                     _arrow(right["addr_nums"]))
+    both = (n_l > 0) & (n_r > 0)
+    post_eq, post_both = _eq(_arrow(left["postcode"]), _arrow(right["postcode"]))
+    return _frame(pairs.index, {
+        "num_jaccard": _ratio(common, n_l + n_r - common, both),
+        "num_shared_any": _tristate(common > 0, both),
+        "num_first_eq": _tristate(first_l == first_r, both),
+        "postcode_eq": _tristate(post_eq, post_both),
+    })
+
+
+def _address(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Address agreement: names rank the candidates, addresses decide (01 §12).
+
+    ad_token_set, ad_partial, ad_ratio  rapidfuzz token_set_ratio, partial_ratio and ratio on
+                                        addr_norm
+    ad_jaccard                          Jaccard of the addr_norm token sets
+    ad_contain                          share of the S1 address tokens found in the pool
+                                        address (dropped components; asymmetric by design)
+    region_eq, last_eq                  equal non-empty region / addr_last (city hint)
+    addr_empty_r                        the pool address is empty: name-only evidence
+    The similarities are NaN when either address is empty; the flags are 0/1.
+    """
+    addr_l, addr_r = _arrow(left["addr_norm"]), _arrow(right["addr_norm"])
+    token_set, partial, ratio = _fuzzy(addr_l, addr_r, (_TOKEN_SET, _PARTIAL, _RATIO))
+    common, n_l, n_r, _, _ = _token_sets(addr_l, addr_r)
+    both = (n_l > 0) & (n_r > 0)
+    return _frame(pairs.index, {
+        "ad_token_set": token_set,
+        "ad_partial": partial,
+        "ad_ratio": ratio,
+        "ad_jaccard": _ratio(common, n_l + n_r - common, both),
+        "ad_contain": _ratio(common, n_l, both),
+        "region_eq": _eq(_arrow(left["region"]), _arrow(right["region"]))[0],
+        "last_eq": _eq(_arrow(left["addr_last"]), _arrow(right["addr_last"]))[0],
+        "addr_empty_r": _empty(addr_r),
+    })
+
+
+def _context(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Competition inside the S1 group: what the decision layer will see (07 §1).
+
+    ctx_rank_name, ctx_gap_name  rank of sim_name_char in the group (1 = best, ties share
+                                 the best rank, NaN last) and the group best minus this value
+                                 (NaN where this pair has no sim_name_char)
+    ctx_rank_addr, ctx_gap_addr  the same on ad_token_set
+    ctx_n_cands                  candidates in the group
+
+    ``pairs`` must hold whole S1 groups, which iter_chunks guarantees. ad_token_set comes
+    from the chunk when build_features already computed it (address group), else from here.
+    """
+    n = len(pairs)
+    if n == 0:  # reduceat rejects empty input
+        return _frame(pairs.index, {c: np.zeros(0) for c in FEATURE_COLUMNS["context"]})
+    starts = _group_starts(_arrow(pairs[C.S1_ID]))
+    sizes = np.diff(np.append(starts, n))
+    group = np.repeat(np.arange(len(starts)), sizes)
+    if _AD_TOKEN_SET in pairs.columns:
+        addr = pairs[_AD_TOKEN_SET].to_numpy(dtype=np.float32)
+    else:
+        (addr,) = _fuzzy(_arrow(left["addr_norm"]), _arrow(right["addr_norm"]), (_TOKEN_SET,))
+    name = pairs["sim_name_char"].to_numpy(dtype=np.float32, na_value=np.nan)
+    rank_name, gap_name = _rank_and_gap(name, starts, group)
+    rank_addr, gap_addr = _rank_and_gap(addr, starts, group)
+    return _frame(pairs.index, {
+        "ctx_rank_name": rank_name,
+        "ctx_gap_name": gap_name,
+        "ctx_rank_addr": rank_addr,
+        "ctx_gap_addr": gap_addr,
+        "ctx_n_cands": sizes[group],
+    })
+
+
+def _meta(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Record-level context.
+
+    is_s3           the pool record comes from Source 3
+    non_latin_r     the pool record was transliterated (05 §5)
+    len_ratio_name  shorter / longer name_core length; NaN if either name is empty
+    """
+    len_l = pc.utf8_length(_arrow(left["name_core"])).to_numpy()
+    len_r = pc.utf8_length(_arrow(right["name_core"])).to_numpy()
+    return _frame(pairs.index, {
+        "is_s3": _np(pc.starts_with(_arrow(pairs[C.ENTITY_ID]), C.SOURCE_PREFIX[3])),
+        "non_latin_r": right["non_latin"].to_numpy(dtype=bool),
+        "len_ratio_name": _ratio(np.minimum(len_l, len_r), np.maximum(len_l, len_r),
+                                 (len_l > 0) & (len_r > 0)),
+    })
+
+
+def _pool_context(pairs: pd.DataFrame, left: pd.DataFrame,
+                  right: pd.DataFrame) -> pd.DataFrame:
+    """ctx_pool_indegree: in how many S1 groups the pool record is a candidate (decoy hubs).
+
+    Pairs are unique, so this is the pool id's pair count. build_features counts it once over
+    the whole pairs frame before chunking and passes it in the chunk; blocking partitions by
+    country, so that count is partition-wide. Called on its own, the group counts in ``pairs``.
+    """
+    if _INDEGREE in pairs.columns:
+        degree = pairs[_INDEGREE].to_numpy()
+    else:
+        codes = _np(pc.dictionary_encode(_arrow(pairs[C.ENTITY_ID])).indices)
+        degree = np.bincount(codes, minlength=1)[codes]
+    return _frame(pairs.index, {_INDEGREE: degree})
+
+
+REGISTRY: dict[str, FeatureGroup] = {
+    "blocking": _blocking,
+    "name_fuzzy": _name_fuzzy,
+    "name_tokens": _name_tokens,
+    "legal": _legal,
+    "numeric": _numeric,
+    "address": _address,  # computed before context, which reuses its ad_token_set
+    "context": _context,
+    "meta": _meta,
+    "pool_context": _pool_context,
+}
+
+# pool_context is opt-in: training pairs come from sampled S1 entities (07 §5), so an
+# in-degree counted on them is biased low against val and test, where every S1 competes.
+DEFAULT_GROUPS: tuple[str, ...] = tuple(g for g in REGISTRY if g != "pool_context")
+
+
+# ----------------------------------------------------------------- building ----
+def feature_names(groups: Sequence[str] = DEFAULT_GROUPS) -> list[str]:
+    """Feature columns of ``groups``, in order: the column contract the model stores (08)."""
+    groups = tuple(groups)
+    unknown = [g for g in groups if g not in REGISTRY]
+    if unknown:
+        raise ValueError(f"unknown feature groups {unknown}; known: {list(REGISTRY)}")
+    if len(set(groups)) != len(groups):
+        raise ValueError(f"feature groups repeat: {list(groups)}")
+    return [name for g in groups for name in FEATURE_COLUMNS[g]]
+
+
+def _slices(starts: np.ndarray, n: int, chunk_rows: int) -> Iterator[slice]:
+    """Slices of at least ``chunk_rows`` rows (except the last) that end on group ends."""
+    ends = np.append(starts[1:], n)  # exclusive end row of every group
+    start = 0
+    while start < n:
+        # first group end at or after start + chunk_rows (the frame end at the latest)
+        stop = int(ends[np.searchsorted(ends, min(start + chunk_rows, n))])
+        yield slice(start, stop)
+        start = stop
+
+
+def iter_chunks(pairs: pd.DataFrame, chunk_rows: int) -> Iterator[slice]:
+    """Row slices of about ``chunk_rows`` pairs that never split a Source 1 group.
+
+    Pairs are grouped by ``source1_entity_id`` (blocking sorts them). A slice takes
+    ``chunk_rows`` rows, then extends to the end of the group it stopped in, so a group larger
+    than ``chunk_rows`` becomes one slice. Raises ValueError when ``chunk_rows < 1`` or when an
+    S1 id occurs in two separate runs (its group would be split).
+    """
+    if chunk_rows < 1:
+        raise ValueError(f"chunk_rows must be >= 1, got {chunk_rows}")
+    return _slices(_group_starts(_column(pairs[C.S1_ID])), len(pairs), chunk_rows)
+
+
+def _positions(ids: pa.ChunkedArray, records: pd.DataFrame, column: str) -> np.ndarray:
+    """Row of ``records`` holding each id (one pyarrow hash lookup); ValueError if missing."""
+    pos = pc.index_in(ids, value_set=_arrow(records[C.ENTITY_ID]))
+    if pos.null_count:
+        example = ids.filter(pc.is_null(pos))[0].as_py()
+        raise ValueError(f"{pos.null_count} pair {column} values are not in the normalised "
+                         f"records, e.g. {example!r}")
+    return _np(pos)
+
+
+def _inputs(group: str, groups: tuple[str, ...]) -> tuple[str, ...]:
+    """Normalised columns ``group`` reads when computed together with ``groups``."""
+    if group == "context" and "address" in groups:
+        return ()  # ad_token_set comes from the address group
+    return _INPUTS.get(group, _ALL_INPUTS)
+
+
+def _aligned(columns: dict[str, pa.ChunkedArray], n: int) -> pd.DataFrame:
+    """Pair-aligned record columns as a frame (index reset); strings stay Arrow-backed."""
+    if not columns:
+        return pd.DataFrame(index=pd.RangeIndex(n))
+    return pa.table(columns).to_pandas()
+
+
+def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                   groups: Sequence[str] = DEFAULT_GROUPS,
+                   chunk_rows: int = 2_000_000) -> pd.DataFrame:
+    """Feature frame of the candidate ``pairs``: float32, index ``pairs.index``.
+
+    ``pairs`` holds ``PAIR_COLUMNS``, grouped by ``source1_entity_id``; ``s1n`` and ``pooln``
+    are the normalised records its ids point to. Columns are ``feature_names(groups)``. Work
+    runs in chunks of about ``chunk_rows`` pairs that never split an S1 group, and fills one
+    preallocated float32 array (4 bytes x features x pairs: at test scale, call it per slice
+    of ``iter_chunks`` and score each). The pool in-degree (``pool_context``) is counted over
+    all of ``pairs``, so pass a whole partition or fold when requesting it. Raises
+    ValueError for an unknown group, a missing column or a pair id absent from the records.
+    """
+    groups = tuple(groups)
+    names = feature_names(groups)
+    if chunk_rows < 1:
+        raise ValueError(f"chunk_rows must be >= 1, got {chunk_rows}")
+    missing = [c for c in PAIR_COLUMNS if c not in pairs.columns]
+    if missing:
+        raise ValueError(f"pairs lack columns {missing}")
+    need = list(dict.fromkeys(c for g in groups for c in _inputs(g, groups)))
+    for label, records in (("s1n", s1n), ("pooln", pooln)):
+        lacking = [c for c in [C.ENTITY_ID, *need] if c not in records.columns]
+        if lacking:
+            raise ValueError(f"{label} lacks normalised columns {lacking}")
+    out = np.empty((len(pairs), len(names)), dtype=np.float32)
+    if len(pairs):
+        _fill(out, pairs, s1n, pooln, groups, chunk_rows)
+    return pd.DataFrame(out, index=pairs.index, columns=names, copy=False)
+
+
+def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+          groups: tuple[str, ...], chunk_rows: int) -> None:
+    """Compute ``groups`` chunk by chunk into ``out`` (one row per pair, feature_names order).
+
+    Per chunk, each normalised column is aligned to the pairs once (an Arrow take), handed to
+    the groups that read it and released after the last of them, so only a few aligned
+    string columns are alive at a time.
+    """
+    s1_ids, pool_ids = _column(pairs[C.S1_ID]), _column(pairs[C.ENTITY_ID])
+    s1_pos = _positions(s1_ids, s1n, C.S1_ID)
+    pool_pos = _positions(pool_ids, pooln, C.ENTITY_ID)
+    order = sorted(groups, key=lambda g: (_COMPUTE_ORDER + (g,)).index(g))  # unknown ones last
+    inputs = {g: _inputs(g, groups) for g in order}
+    last = {c: i for i, g in enumerate(order) for c in inputs[g]}  # last group reading c
+    s1_cols = {c: _column(s1n[c]) for c in last}
+    pool_cols = {c: _column(pooln[c]) for c in last}
+    carried = {}
+    if "pool_context" in groups:  # partition-wide, before chunking (07 §4)
+        carried[_INDEGREE] = np.bincount(pool_pos, minlength=len(pooln))[pool_pos]
+    bounds = np.cumsum([0, *(len(FEATURE_COLUMNS[g]) for g in groups)])
+    where = {g: slice(int(bounds[i]), int(bounds[i + 1])) for i, g in enumerate(groups)}
+    for sl in _slices(_group_starts(s1_ids), len(pairs), chunk_rows):
+        chunk = pairs.iloc[sl][PAIR_COLUMNS]
+        if carried:
+            chunk = chunk.assign(**{name: values[sl] for name, values in carried.items()})
+        at_l, at_r = pa.array(s1_pos[sl]), pa.array(pool_pos[sl])
+        live_l: dict[str, pa.ChunkedArray] = {}
+        live_r: dict[str, pa.ChunkedArray] = {}
+        for i, g in enumerate(order):
+            for c in inputs[g]:
+                if c not in live_l:
+                    live_l[c], live_r[c] = s1_cols[c].take(at_l), pool_cols[c].take(at_r)
+            left = _aligned({c: live_l[c] for c in inputs[g]}, len(chunk))
+            right = _aligned({c: live_r[c] for c in inputs[g]}, len(chunk))
+            feats = REGISTRY[g](chunk, left, right)
+            if list(feats.columns) != FEATURE_COLUMNS[g]:
+                raise RuntimeError(f"group {g!r} returned {list(feats.columns)}, "
+                                   f"expected {FEATURE_COLUMNS[g]}")
+            out[sl, where[g]] = feats.to_numpy(dtype=np.float32)
+            if g == "address" and "context" in groups:
+                chunk = chunk.assign(**{_AD_TOKEN_SET: feats[_AD_TOKEN_SET].to_numpy()})
+            for c in inputs[g]:
+                if last[c] == i:  # no later group reads it
+                    del live_l[c], live_r[c]
