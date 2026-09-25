@@ -3,86 +3,84 @@
 Amazon ML Challenge 2026. Business records from three sources share no identifiers. For
 every Source 1 entity, find all Source 2 / Source 3 records that describe the same
 business. Scoring is macro F0.5 per Source 1 entity, so precision counts twice as much as
-recall. Data, output format and rules: [docs/PROBLEM_STATEMENT.md](docs/PROBLEM_STATEMENT.md).
+recall.
+
+- Task, data, output format: [docs/PROBLEM_STATEMENT.md](docs/PROBLEM_STATEMENT.md)
+- Timeline, upload budget, required artefacts: [docs/GUIDELINES.md](docs/GUIDELINES.md)
+- Team rules (notebooks, versioning, leaderboard, experiment plan, git):
+  [.claude/rules/project-rules.md](.claude/rules/project-rules.md)
 
 ## Setup
 
 Requires Python 3.12.
 
 ```bash
-make setup    # .venv: pinned requirements.txt + editable package + pytest, ruff
+make setup    # .venv: pinned requirements.txt + editable package + pytest, ruff, jupytext
 make hooks    # enable the versioned git hooks in .githooks/
 ```
 
-Put the organisers' files under `dataset/` (gitignored):
+Unzip the organisers' `student_resource.zip` into `dataset/` (gitignored), giving
+`dataset/student_resource/dataset/{train,test}/`. A flat `dataset/{train,test}/` works
+too. Then parse everything once:
 
+```bash
+make cache    # ~1 min: every TSV to Parquet in <dataset>/.cache/
 ```
-dataset/
-├── train/   train_source{1,2,3}.tsv, train_ground_truth.tsv
-└── test/    test_source{1,2,3}.tsv
-```
+
+## Experiment workflow
+
+1. `make experiment NAME=name_tfidf` creates `experiments/vNNN_name_tfidf/` with the
+   documented notebook template.
+2. Fill the notebook: hypothesis, method, evaluation on the fixed validation fold, error
+   analysis. Run it in VS Code/Jupyter, or headless with `make nb NB=<path>`.
+3. Its last cell calls `log_result(...)`, writing `metrics.json` and the version's row in
+   `experiments/experiments.csv`.
+4. Commit it: `exp(vNNN): <change>, local F0.5 0.xxxx`.
+5. Shortlisted versions only: run test inference, `make validate`, upload, add an entry
+   to [LEADERBOARD.md](LEADERBOARD.md), then `make public V=vNNN SCORE=0.xxxx`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `make test` | unit tests on tiny synthetic TSVs; no dataset needed |
-| `make lint` | ruff over `src/` and `tests/` |
-| `make score PRED=<tsv> TRUTH=<tsv>` | macro F0.5 of a matching file against ground truth, split into singletons, matched entities and pair precision/recall |
-| `make validate` | checks `output/*.tsv` against every submission rule for the test split |
+| `make cache` | parse all TSVs once into a Parquet cache |
+| `make experiment NAME=<slug>` | next `experiments/vNNN_<slug>/` from the template |
+| `make nb NB=<notebook>` | execute a notebook headless, saving outputs in place |
+| `make public V=vNNN SCORE=<f>` | record a leaderboard score in `experiments.csv` |
+| `make validate` | check `output/*.tsv` with our checker and the organisers' validator |
+| `make score PRED=<tsv> TRUTH=<tsv>` | macro F0.5 of a matching file against labels |
+| `make test` / `make lint` | pytest on synthetic data / ruff |
 
 ## Layout
 
 ```
-src/entity_resolution/
-├── config.py       paths, file schema, metric constants
-├── data.py         TSV loaders: string dtype, NA detection off, header and ID checks
-├── metrics.py      macro F0.5, singletons included
-└── submission.py   write and validate matching_results.tsv / candidate_pairs.tsv
-tests/              pytest; synthetic fixtures in conftest.py
-docs/               challenge brief
-.githooks/          pre-commit and commit-msg hooks
+src/entity_resolution/     shared, tested library used by every notebook
+├── config.py              paths, file schema, constants
+├── data.py                TSV loaders, Parquet cache, fast ID filtering
+├── split.py               fixed validation split (20% of Source 1, hashed)
+├── metrics.py             macro F0.5, breakdown, blocking candidate report
+├── submission.py          write and validate the two output files
+└── tracking.py            experiment registry, timings
+experiments/
+├── _template/             documented notebook template
+├── vNNN_<slug>/           one folder per experiment: notebook, metrics.json, artifacts/
+└── experiments.csv        one row per version: change, local/public F0.5, commit
+LEADERBOARD.md             every leaderboard upload, with budget
+docs/                      challenge brief and guidelines
+tests/                     pytest on synthetic TSVs
+.githooks/                 identity, commit format, size and data guards
 ```
 
-`dataset/`, `output/` and `models/` stay local.
+`dataset/`, `output/`, `models/` and `experiments/*/artifacts/` stay local.
 
 ## Status
 
-Done: data loading, the leaderboard metric, submission writing and validation.
-
-Proposed next steps:
-
-1. validation split held out from train, by Source 1 entity;
-2. name and address normalisation (legal suffixes, abbreviations, transliteration);
-3. blocking / candidate generation, which caps recall;
-4. pairwise matching model with a threshold tuned for F0.5;
-5. one command from `dataset/` to both output files, plus the methodology document.
-
-## Version control
-
-- One branch per task, named `<type>/<topic>` (e.g. `feat/blocking-tfidf`). Merge into
-  `main` through a PR with a merge commit, not a squash, so every commit stays in history.
-- Small commits, one logical change each. The pre-commit hook rejects commits over 400
-  changed lines.
-- Conventional Commits: `type(scope): summary`, at most 72 characters, type one of `feat fix
-  docs style refactor perf test build ci chore revert`.
-- Never commit data, outputs, model binaries or `.env`. `.gitignore` and the pre-commit hook
-  both guard this.
-- Commit under your own git identity. The hooks reject AI assistant identities and AI
-  co-author trailers. For a strict check in your clone, run
-  `git config guard.requiredEmail <your email>` and the hook rejects any other identity.
-- AI assistant rules are personal: keep your own `CLAUDE.md` and
-  `.claude/settings.local.json`. Both are gitignored.
+Project foundation is in place: cached loading, the fixed validation split, the
+leaderboard metric with a blocking report, submission writing and validation, the
+experiment registry and notebook template. Model work starts with `v001`, following the
+experiment plan in the project rules.
 
 ## Reproducing the submission
 
 To be written with the pipeline: exact commands from raw `dataset/` to
-`output/matching_results.tsv` and `output/candidate_pairs.tsv`. Then check both files with
-`make validate`, and with the organisers' validator from their `student_resource/` folder:
-
-```bash
-python3 utils/validate_submission.py \
-  --matching output/matching_results.tsv \
-  --candidate output/candidate_pairs.tsv \
-  --test-dir dataset/test
-```
+`output/matching_results.tsv` and `output/candidate_pairs.tsv`, then `make validate`.
