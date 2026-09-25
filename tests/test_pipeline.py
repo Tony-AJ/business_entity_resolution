@@ -95,3 +95,53 @@ def test_end_to_end_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path) -> N
         assert all(i.startswith(("S2-", "S3-")) for i in ids)
         assert set(ids) <= set(cands[s1])
     assert cands["S1-00010"], "the France entity gets candidates without any country list"
+
+
+def test_add_frequencies_rates_per_country() -> None:
+    """Core-name rates count the whole fold per country, per million; empty names are NaN."""
+    from entity_resolution.pipeline import add_frequencies
+    s1_all = pd.DataFrame({C.COUNTRY: ["US", "US", "US", "US", "India"],
+                           "name_core": ["acme", "acme", "globex", "", "acme"],
+                           "name_first": ["acme", "acme", "globex", "", "acme"]}).astype("str")
+    s1n = s1_all.iloc[[0, 3]].reset_index(drop=True)  # a sample of the fold
+    pooln = pd.DataFrame({C.COUNTRY: ["US", "US", "India", "India"],
+                          "name_core": ["acme", "initech", "acme", "acme"],
+                          "name_first": ["acme", "initech", "acme", "acme"]}).astype("str")
+    s1f, poolf = add_frequencies(s1n, pooln, s1_all)
+    assert s1f["freq_same"].iloc[0] == np.float32(2 / 4 * 1e6)       # 2 of 4 US S1 records
+    assert s1f["freq_other"].iloc[0] == np.float32(1 / 2 * 1e6)      # 1 of 2 US pool records
+    assert np.isnan(s1f["freq_same"].iloc[1])                        # empty core name
+    assert poolf["freq_same"].tolist()[2:] == [1e6, 1e6]             # India pool: all acme
+    assert poolf["freq_other"].iloc[1] == 0.0                        # no S1 initech
+    assert poolf["freq_other"].iloc[2] == np.float32(1e6)            # the one India S1 is acme
+
+
+def test_frequency_group_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
+    """With the opt-in frequency group the pipeline still fits, scores and writes valid files."""
+    from dataclasses import replace
+
+    from entity_resolution.features import DEFAULT_GROUPS
+    cfg = replace(tiny_cfg(tmp_path, dataset_dir),
+                  feature_groups=(*DEFAULT_GROUPS, "frequency"))
+    fitted = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "art")
+    metrics, *_ = run_fold(cfg, fitted, load_fold("val", dataset_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_dense_tune_pool_fits(dataset_dir: Path, tmp_path: Path) -> None:
+    """tune_pool='train' blocks the tune side against the whole train pool and still fits."""
+    from dataclasses import replace
+    cfg = replace(tiny_cfg(tmp_path, dataset_dir), tune_pool="train")
+    train = load_fold("train", dataset_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    assert 0.0 <= fitted.tune_table["f_beta"].max() <= 1.0
+    bad = replace(cfg, tune_pool="everything")
+    try:
+        fit(bad, train)
+    except ValueError as e:
+        assert "tune_pool" in str(e)
+    else:
+        raise AssertionError("an unknown tune_pool must be refused")
