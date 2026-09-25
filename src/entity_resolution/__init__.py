@@ -6,4 +6,5 @@ they describe, optimising macro F0.5 (precision-heavy).
 Modules:
     config      paths, file schema, metric constants
     data        TSV loaders for source files and ground truth
+    metrics     macro F0.5 per Source 1 entity, singletons included
 """

@@ -2,7 +2,7 @@
 PYTHON ?= python3.12
 PY := .venv/bin/python
 
-.PHONY: setup hooks lint test
+.PHONY: setup hooks lint test score
 
 setup:  ## .venv with pinned runtime deps + editable package + dev tools
 	$(PYTHON) -m venv .venv
@@ -17,3 +17,6 @@ lint:
 
 test:
 	.venv/bin/pytest
+
+score:  ## macro F0.5 breakdown: make score PRED=<matching.tsv> TRUTH=<ground_truth.tsv>
+	$(PY) -m entity_resolution.metrics --pred $(PRED) --truth $(TRUTH)
