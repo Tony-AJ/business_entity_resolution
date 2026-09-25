@@ -39,8 +39,9 @@ import pyarrow.parquet as pq
 
 from . import config as C
 from .blocking import BlockingConfig, block
-from .data import load_source
-from .decision import SCORED_COLUMNS, DecisionRule, Grid, decide
+from .data import isin, load_source
+from .decision import SCORED_COLUMNS, DecisionRule, Grid, decide, tune
+from .evaluate import blocking_report, score_pairs
 from .features import DEFAULT_GROUPS, build_features, iter_chunks
 from .model import Matcher, MatcherParams
 from .normalize import (
@@ -51,6 +52,8 @@ from .normalize import (
     normalise_records,
 )
 from .split import Fold
+from .submission import write_pairs
+from .trainset import inner_split, label_pairs, sample_s1
 
 TIMING_LABELS = ("load", "normalise", "blocking", "features", "fit", "tune", "score", "decide")
 
@@ -265,3 +268,143 @@ def sort_matches(matches: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
     m = matches.merge(scored, on=[C.S1_ID, C.ENTITY_ID], how="left")
     m = m.sort_values([C.S1_ID, "prob"], ascending=[True, False], kind="stable")
     return m.reset_index(drop=True)
+
+
+# -------------------------------------------------------------------- fit ----
+def _side(name: str, s1: pd.DataFrame, fold: Fold, cfg: PipelineConfig, token_map: dict,
+          info: dict, timings: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Normalised S1 / pool records and candidate pairs of one side of the inner split."""
+    t0 = time.perf_counter()
+    s1n = load_normalised("train", (1,), cfg, s1[C.ENTITY_ID], token_map)
+    pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], token_map)
+    timings[f"{name}_load_seconds"] = round(time.perf_counter() - t0, 2)
+    t0 = time.perf_counter()
+    pairs = prepare(s1n, pooln, cfg, _tag(name, s1n, pooln, token_map))
+    timings[f"{name}_blocking_seconds"] = round(time.perf_counter() - t0, 2)
+    truth = fold.pairs[isin(fold.pairs[C.S1_ID], pd.Index(s1[C.ENTITY_ID]))]
+    if len(s1):  # an empty side (tiny fixtures) has no report
+        info[f"{name}_blocking"] = blocking_report(pairs, Fold(name, s1, fold.s2, fold.s3, truth))
+    info[f"{name}_pairs"] = len(pairs)
+    return s1n, pooln, pairs
+
+
+def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
+        timings: dict | None = None) -> Fitted:
+    """Learn the token map, train the matcher on the fit side, tune the rule on the tune side.
+
+    The validation fold is never touched here (11 §2).
+    """
+    timings = {} if timings is None else timings
+    info: dict = {}
+    t0 = time.perf_counter()
+    normalise_split("train", cfg)
+    token_map = learn_token_map(cfg, train)
+    timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
+    info["token_map_size"] = len(token_map)
+    fit_fold, tune_fold = inner_split(train)
+
+    # fit side: features in memory for LightGBM
+    fit_s1 = sample_s1(fit_fold.s1, cfg.n_fit_s1)
+    s1n, pooln, pairs = _side("fit", fit_s1, fit_fold, cfg, token_map, info, timings)
+    t0 = time.perf_counter()
+    X_fit = build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
+                           chunk_rows=cfg.chunk_rows)
+    y_fit = label_pairs(pairs, fit_fold.pairs)["label"].to_numpy(np.int8)
+    del s1n, pooln, pairs
+    mem_guard("fit features")
+
+    # early-stopping sample of the tune side
+    stop_s1 = sample_s1(tune_fold.s1, cfg.n_stop_s1)
+    s1n, pooln, pairs = _side("stop", stop_s1, tune_fold, cfg, token_map, info, timings)
+    X_stop = build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
+                            chunk_rows=cfg.chunk_rows)
+    y_stop = label_pairs(pairs, tune_fold.pairs)["label"].to_numpy(np.int8)
+    timings["features_seconds"] = round(time.perf_counter() - t0, 2)
+    del s1n, pooln, pairs
+    info["fit_positive_rate"] = float(y_fit.mean()) if len(y_fit) else float("nan")
+    mem_guard("stop features")
+
+    t0 = time.perf_counter()
+    matcher = Matcher(cfg.model).fit(X_fit, pd.Series(y_fit, index=X_fit.index),
+                                     X_stop, pd.Series(y_stop, index=X_stop.index))
+    timings["fit_seconds"] = round(time.perf_counter() - t0, 2)
+    info["fit_info"] = matcher.fit_info_
+    del X_fit, y_fit, X_stop, y_stop
+    mem_guard("matcher fit")
+
+    # decision rule on the tune side (all S1 unless n_tune_s1): scored chunk by chunk
+    tune_s1 = tune_fold.s1 if cfg.n_tune_s1 is None else sample_s1(tune_fold.s1, cfg.n_tune_s1)
+    s1n, pooln, pairs = _side("tune", tune_s1, tune_fold, cfg, token_map, info, timings)
+    t0 = time.perf_counter()
+    scored = score(pairs, s1n, pooln, matcher, cfg)
+    timings["score_seconds"] = round(time.perf_counter() - t0, 2)
+    del s1n, pooln, pairs
+    t0 = time.perf_counter()
+    rule, table = tune(scored, tune_s1[C.ENTITY_ID], tune_fold.pairs, cfg.grid)
+    timings["tune_seconds"] = round(time.perf_counter() - t0, 2)
+    fitted = Fitted(matcher, rule, table, cfg, token_map, {**info, "timings": dict(timings)})
+    if out is not None:
+        fitted.save(out)
+    mem_guard("fit done")
+    return fitted
+
+
+# ---------------------------------------------------------------- run_* ----
+def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = None
+             ) -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Score one labelled fold (val, or a variant of it) with the frozen rule.
+
+    Returns (metrics, candidate pairs, scored pairs, matches). ``metrics`` holds the
+    ``metrics.breakdown`` keys, the blocking keys renamed as in 13 §2.2 and the timings.
+    """
+    timings: dict = {}
+    tag = tag or fold.name
+    t0 = time.perf_counter()
+    s1n = load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID], fitted.token_map)
+    pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], fitted.token_map)
+    timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
+    pairs = prepare(s1n, pooln, cfg, _tag(tag, s1n, pooln, fitted.token_map), timings)
+    t0 = time.perf_counter()
+    scored = score(pairs, s1n, pooln, fitted.matcher, cfg)
+    timings["score_seconds"] = round(time.perf_counter() - t0, 2)
+    t0 = time.perf_counter()
+    matches = decide_by_country(scored, s1n, fitted.rule)
+    timings["decide_seconds"] = round(time.perf_counter() - t0, 2)
+    blocking = blocking_report(pairs, fold)
+    metrics = {**score_pairs(matches, fold),
+               "cand_recall": blocking["pair_recall"],
+               "entity_recall": blocking["entity_recall"],
+               "ceiling_f_beta": blocking["ceiling_f_beta"],
+               "cands_mean": blocking["candidates_mean"],
+               "cands_p95": blocking["candidates_p95"],
+               **timings}
+    mem_guard(f"run_fold {tag}")
+    return metrics, pairs, scored, matches
+
+
+def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,
+             timings: dict | None = None
+             ) -> tuple[Path, Path, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Write both submission files for the test split.
+
+    Returns (matching path, candidate path, normalised S1, scored pairs, matches). The
+    candidate file is written from exactly the pairs frame that was scored.
+    """
+    timings = {} if timings is None else timings
+    t0 = time.perf_counter()
+    s1n = load_normalised("test", (1,), cfg, token_map=fitted.token_map)
+    pooln = load_normalised("test", (2, 3), cfg, token_map=fitted.token_map)
+    timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
+    pairs = prepare(s1n, pooln, cfg, _tag("test", s1n, pooln, fitted.token_map), timings)
+    t0 = time.perf_counter()
+    scored = score(pairs, s1n, pooln, fitted.matcher, cfg)
+    timings["score_seconds"] = round(time.perf_counter() - t0, 2)
+    del pooln
+    t0 = time.perf_counter()
+    matches = sort_matches(decide_by_country(scored, s1n, fitted.rule), scored)
+    timings["decide_seconds"] = round(time.perf_counter() - t0, 2)
+    s1_ids = load_source("test", 1, cfg.dataset_dir, columns=[C.ENTITY_ID])[C.ENTITY_ID]
+    paths = write_pairs(matches[[C.S1_ID, C.ENTITY_ID]], pairs[[C.S1_ID, C.ENTITY_ID]],
+                        s1_ids.tolist(), out_dir)
+    mem_guard("run_test")
+    return (*paths, s1n, scored, matches)
