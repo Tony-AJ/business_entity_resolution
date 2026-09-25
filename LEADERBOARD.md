@@ -38,6 +38,21 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
+## Submission 02: 2026-09-25 ~19:45 IST
+- Version: v101_name_frequency
+- Commit: f64fc9c (src/), results in the `exp(v101)` commit
+- Change vs previous submission: six core-name frequency features (how many S1 / pool records
+  share each side's core name, per million, whole fold) + LightGBM cap 4,000 rounds
+- Model: LightGBM as v001, 53 features, early stop at 1,666 rounds; tune AUC 0.99986
+- Blocking: as v001 (config 66540dae, cached candidates)
+- Threshold / decision rule: tau_abs 0.42, tau_rel 0.0, tau_single 0.52, max_matches 11,
+  one_to_one true (tune F0.5 0.9862)
+- Local F0.5 (validation fold): 0.9858 (harder-val 0.9852, singletons 0.9874)
+- Public F0.5: (fill in after upload)
+- Notes: both validators PASS; test S1 matched France 0.949 / India 0.940 / US 0.943. Expected
+  public ~0.956-0.960: the val gain is precision (false-merge pairs -29%), which counts more
+  at test decoy density. Files in submissions/v101/.
+
 ## Submission 01: 2026-09-25 18:59 IST
 - Version: v001_base_model
 - Commit: 875079a (src/), results in 2f19a54 `exp(v001)`

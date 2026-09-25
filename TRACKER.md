@@ -8,7 +8,7 @@ Update your own rows when a task changes state and commit the change with your w
 Status: `todo` · `doing` · `done` · `blocked`. Owners: M1 lead / integration, M2
 normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision + errors.
 
-Last updated: 2026-09-25 19:05 IST (day 1).
+Last updated: 2026-09-25 19:44 IST (day 1).
 
 ## Day 1 — Fri 25 Sep
 
@@ -28,8 +28,8 @@ Last updated: 2026-09-25 19:05 IST (day 1).
 | 12 | Upload #1 + `LEADERBOARD.md` entry | M1 | INT | done | v001 public F0.5 **0.954** (local 0.9844, offset −0.030) |
 | 13 | Dense-val check: val S1 against the full train pool | M1 | INT | todo | Test pool is ~5× denser than val; estimates the public drop |
 
-| 14a | v101: core-name frequency features + LightGBM cap 4000 | M1 | C5 | doing | Rerun after fixing a self-count bias in the same-side rates; ETA 19:50 |
-| 14b | v102: v101's model, rule re-tuned against a test-sized pool (`retune`, `tune_pool="train"`) | M1 | E2 | todo | Code on `feat/dense-tune`; judged on dense val |
+| 14a | v101: core-name frequency features + LightGBM cap 4000 | M1 | C5 | done | Val 0.9858 (+0.0014), harder 0.9852, false merges −29%; files in `submissions/v101/` (upload #2) |
+| 14b | v102: v101's model, rule re-tuned against a test-sized pool (`retune`, `tune_pool="train"`) | M1 | E2 | doing | Started 19:42; files ~20:45 in `submissions/v102/` |
 
 ## Day 2 — Sat 26 Sep
 
@@ -56,4 +56,5 @@ Last updated: 2026-09-25 19:05 IST (day 1).
 
 | Version | Owner | Plan | Change | Local F0.5 | Cand. recall | Public F0.5 | Status |
 |---|---|---|---|---|---|---|---|
+| v101 | M1 | C5 | v001 + core-name frequency features; LightGBM cap 4000 | 0.9858 | 0.9906 | – | ready |
 | v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | 0.9906 | 0.954 | submitted |
