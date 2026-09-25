@@ -1,0 +1,8 @@
+"""Business Entity Resolution: Amazon ML Challenge 2026.
+
+Match Source 2 / Source 3 business records to the deduplicated Source 1 entities
+they describe, optimising macro F0.5 (precision-heavy).
+
+Modules:
+    config      paths, file schema, metric constants
+"""
