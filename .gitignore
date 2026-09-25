@@ -1,6 +1,8 @@
 # Challenge data and generated submissions stay local (regenerable, large)
 dataset/
 output/
+# one folder per uploaded version: the exact files sent to the portal
+submissions/
 *.zip
 
 # Trained models and per-experiment artifacts (models, candidates, predictions)
