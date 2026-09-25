@@ -38,7 +38,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
-## Submission 01: 2026-09-25 ~19:00 IST
+## Submission 01: 2026-09-25 18:59 IST
 - Version: v001_base_model
 - Commit: 875079a (src/), results in 2f19a54 `exp(v001)`
 - Change vs previous submission: first submission, the full V1 pipeline
@@ -51,7 +51,9 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 - Threshold / decision rule: tau_abs 0.47, tau_rel 0.0, tau_single 0.52, max_matches 11,
   one_to_one true (tuned on all 441k tune-side S1, tune F0.5 0.9846)
 - Local F0.5 (validation fold): 0.9844 (harder-val 0.9838, singletons 0.9840, matched 0.9844)
-- Public F0.5: (fill in after upload)
+- Public F0.5: 0.954 (offset public - local = -0.030; running mean -0.030 over 1 upload)
 - Notes: 1,732,544 rows in both files; our checker (--check-ids) and the organisers' validator
   PASS. Test S1 matched: France 0.950, India 0.941, US 0.943 (val 0.942); matches per S1
-  3.3-3.4 as on val. Uploaded bytes kept in experiments/v001_base_model/artifacts/uploaded.tsv.
+  3.3-3.4 as on val. Uploaded bytes kept in submissions/v001/. The -0.030 offset is the
+  expected shift: test entities meet ~5x more same-name decoys than val entities (the val
+  pool is a 20% sample) and France is unseen; the dense-val check measures the first part.

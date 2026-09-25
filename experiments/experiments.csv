@@ -1,2 +1,2 @@
 version,date,group,change,local_f05,cand_recall,public_f05,commit,notes,owner,parent,decision
-v001,2026-09-25,INT,"base model: normalise+learned map, multi-pass blocking, 47 feats, LightGBM, tuned 1-to-1 rule",0.9844,0.9906,,875079a,cands 33.0/S1; singleton F0.5 0.9840; harder 0.9838,M1,,KEEP
+v001,2026-09-25,INT,"base model: normalise+learned map, multi-pass blocking, 47 feats, LightGBM, tuned 1-to-1 rule",0.9844,0.9906,0.9540,875079a,cands 33.0/S1; singleton F0.5 0.9840; harder 0.9838,M1,,KEEP

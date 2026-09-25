@@ -8,7 +8,7 @@ Update your own rows when a task changes state and commit the change with your w
 Status: `todo` · `doing` · `done` · `blocked`. Owners: M1 lead / integration, M2
 normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision + errors.
 
-Last updated: 2026-09-25 18:26 IST (day 1).
+Last updated: 2026-09-25 19:05 IST (day 1).
 
 ## Day 1 — Fri 25 Sep
 
@@ -25,16 +25,17 @@ Last updated: 2026-09-25 18:26 IST (day 1).
 | 9 | Normalisation cache for train + test | M1 | INT | done | ~5 min per split; rules version 2 |
 | 10 | v001 base model notebook: fit + val score | M1 | INT | done | Val macro F0.5 0.9844 (harder 0.9838, singletons 0.9840), cand recall 0.9906; loss is mostly recall (53.9k missed pairs vs 6.7k false merges); LightGBM hit its 2,000-round cap |
 | 11 | v001 test inference + `make validate` | M1 | INT | done | 1,732,544 rows in both files, both validators PASS; France match rate 0.950 vs India 0.941 / US 0.943 |
-| 12 | Upload #1 + `LEADERBOARD.md` entry | M1 | INT | doing | Entry written; upload `output/matching_results.tsv`, then `make public V=v001 SCORE=...` |
+| 12 | Upload #1 + `LEADERBOARD.md` entry | M1 | INT | done | v001 public F0.5 **0.954** (local 0.9844, offset −0.030) |
 | 13 | Dense-val check: val S1 against the full train pool | M1 | INT | todo | Test pool is ~5× denser than val; estimates the public drop |
 
-| 14a | v101: core-name frequency features + LightGBM cap 4000 | M1 | C5 | doing | Code on `feat/name-frequency`; runs after v001 |
-| 14b | v102: rule tuned against a test-sized pool (`tune_pool="train"`) | M1 | E2 | todo | Option committed; val cannot show the gain, dense val can |
+| 14a | v101: core-name frequency features + LightGBM cap 4000 | M1 | C5 | doing | Rerun after fixing a self-count bias in the same-side rates; ETA 19:50 |
+| 14b | v102: v101's model, rule re-tuned against a test-sized pool (`retune`, `tune_pool="train"`) | M1 | E2 | todo | Code on `feat/dense-tune`; judged on dense val |
 
 ## Day 2 — Sat 26 Sep
 
 | # | Task | Owner | Plan | Status | Notes |
 |---|---|---|---|---|---|
+| 13b | Smaller candidate sets: a cheap first-stage scorer keeps the top ~5–8 candidates per S1 before the matcher (organisers' update: smaller `candidate_pairs.tsv` ranks higher) | M2 + M1 | A5 | todo | Today ~35 candidates per S1 (802 MB); keep candidate recall within 0.002 of 0.99 |
 | 14 | Blocking sweeps: `max_df`, `top_k`, P4 address char pass | M2 | A2–A5 | todo | v010–v039; keep ceiling F0.5 up at ≤ 40 candidates per S1 |
 | 15 | Learned address token map (cities, script tokens) | M2 | B4 | todo | |
 | 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | todo | v040–v059 |
@@ -55,4 +56,4 @@ Last updated: 2026-09-25 18:26 IST (day 1).
 
 | Version | Owner | Plan | Change | Local F0.5 | Cand. recall | Public F0.5 | Status |
 |---|---|---|---|---|---|---|---|
-| v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | 0.9906 | – | logged |
+| v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | 0.9906 | 0.954 | submitted |
