@@ -1,13 +1,44 @@
+import os
+
 import pytest
 
 from entity_resolution import config as C
+from entity_resolution import data
 from entity_resolution.data import (
     load_ground_truth,
     load_source,
     load_sources,
+    load_truth_pairs,
     parse_id_list,
     read_id_lists,
 )
+
+
+def test_parquet_cache_serves_repeat_loads(dataset_dir, monkeypatch):
+    first = load_source("train", 2, dataset_dir)
+    assert (dataset_dir / ".cache" / "train_source2.parquet").is_file()
+    monkeypatch.setattr(data, "read_tsv", lambda *a, **k: pytest.fail("re-parsed TSV"))
+    cached = load_source("train", 2, dataset_dir)
+    assert cached.equals(first)
+    assert list(load_source("train", 2, dataset_dir, columns=[C.ENTITY_ID]).columns) == [
+        C.ENTITY_ID]
+
+
+def test_stale_cache_is_rebuilt(dataset_dir):
+    load_source("train", 2, dataset_dir)
+    path = dataset_dir / "train" / "train_source2.tsv"
+    with path.open("a") as f:
+        f.write("S2-00003\tNew Co\t1 New St\tUS\n")
+    cache = dataset_dir / ".cache" / "train_source2.parquet"
+    os.utime(path, (cache.stat().st_mtime + 5, cache.stat().st_mtime + 5))
+    assert "S2-00003" in set(load_source("train", 2, dataset_dir)[C.ENTITY_ID])
+
+
+def test_truth_pairs_explode_lists_and_drop_singletons(dataset_dir):
+    pairs = load_truth_pairs(dataset_dir)
+    assert list(pairs.columns) == [C.S1_ID, C.ENTITY_ID]
+    assert sorted(map(tuple, pairs.to_numpy().tolist())) == [
+        ("S1-00001", "S2-00001"), ("S1-00001", "S3-00001"), ("S1-00002", "S2-00002")]
 
 
 def test_sources_load_as_plain_strings(dataset_dir):

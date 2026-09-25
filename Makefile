@@ -4,7 +4,7 @@ PY := .venv/bin/python
 DATASET = $(shell $(PY) -c 'from entity_resolution.config import DATASET; print(DATASET)')
 OFFICIAL_VALIDATOR := dataset/student_resource/utils/validate_submission.py
 
-.PHONY: setup hooks lint test score validate
+.PHONY: setup hooks cache lint test score validate
 
 setup:  ## .venv with pinned runtime deps + editable package + dev tools
 	$(PYTHON) -m venv .venv
@@ -13,6 +13,9 @@ setup:  ## .venv with pinned runtime deps + editable package + dev tools
 
 hooks:  ## enable the versioned git hooks (.githooks/) for this clone
 	git config core.hooksPath .githooks
+
+cache:  ## parse every TSV once into <dataset>/.cache/*.parquet (later loads take seconds)
+	$(PY) -m entity_resolution.data
 
 lint:
 	.venv/bin/ruff check src tests
