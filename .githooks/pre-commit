@@ -1,0 +1,54 @@
+#!/bin/sh
+# Versioned pre-commit hook. Enable once per clone: `make hooks`
+# (= git config core.hooksPath .githooks).
+#
+# Blocks, before anything reaches history:
+#   1. AI identities (Claude / Anthropic) as author or committer
+#   2. any identity other than `guard.requiredEmail`, when that key is set in
+#      this clone's local git config (opt-in, per developer; see README.md)
+#   3. dataset, output, model and secret files
+#   4. oversized commits: > MAX_COMMIT_LINES (default 400) changed lines
+set -eu
+
+fail() {
+  printf 'pre-commit: %s\n' "$1" >&2
+  exit 1
+}
+
+author=$(git var GIT_AUTHOR_IDENT)
+committer=$(git var GIT_COMMITTER_IDENT)
+
+for ident in "$author" "$committer"; do
+  if printf '%s' "$ident" | grep -qiE 'claude|anthropic'; then
+    fail "AI identity not allowed: ${ident%>*}>"
+  fi
+done
+
+required=$(git config --get guard.requiredEmail || true)
+if [ -n "$required" ]; then
+  for ident in "$author" "$committer"; do
+    case "$ident" in
+      *"<$required>"*) ;;
+      *) fail "commits in this clone must use <$required>, got: ${ident%>*}>" ;;
+    esac
+  done
+fi
+
+bad=$(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -E '^(dataset|output|models)/|(^|/)\.env$|\.(tsv|parquet|joblib|pkl|zip)$' \
+  | grep -v '^tests/fixtures/' || true)
+if [ -n "$bad" ]; then
+  fail "data, model or secret files must not be committed:
+$bad"
+fi
+
+# A merge brings in already-reviewed commits; only size-check new work.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+  exit 0
+fi
+
+max=${MAX_COMMIT_LINES:-400}
+lines=$(git diff --cached --numstat | awk '$1 != "-" { n += $1 + $2 } END { print n + 0 }')
+if [ "$lines" -gt "$max" ] && [ "${ALLOW_LARGE_COMMIT:-0}" != 1 ]; then
+  fail "$lines changed lines (limit $max). Split into smaller, focused commits."
+fi

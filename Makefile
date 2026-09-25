@@ -1,0 +1,25 @@
+# Dev entry points. First time in a clone: make setup hooks
+PYTHON ?= python3.12
+PY := .venv/bin/python
+
+.PHONY: setup hooks lint test score validate
+
+setup:  ## .venv with pinned runtime deps + editable package + dev tools
+	$(PYTHON) -m venv .venv
+	$(PY) -m pip install -U pip
+	$(PY) -m pip install -r requirements.txt -e ".[dev]"
+
+hooks:  ## enable the versioned git hooks (.githooks/) for this clone
+	git config core.hooksPath .githooks
+
+lint:
+	.venv/bin/ruff check src tests
+
+test:
+	.venv/bin/pytest
+
+score:  ## macro F0.5 breakdown: make score PRED=<matching.tsv> TRUTH=<ground_truth.tsv>
+	$(PY) -m entity_resolution.metrics --pred $(PRED) --truth $(TRUTH)
+
+validate:  ## check output/*.tsv against the submission rules for the test split
+	$(PY) -m entity_resolution.submission --output-dir output --dataset-dir dataset
