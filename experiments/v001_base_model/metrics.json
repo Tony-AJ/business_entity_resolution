@@ -1,0 +1,126 @@
+{
+  "version": "v001",
+  "date": "2026-09-25",
+  "group": "INT",
+  "change": "base model: normalise+learned map, multi-pass blocking, 47 feats, LightGBM, tuned 1-to-1 rule",
+  "local_f05": "0.9844",
+  "cand_recall": "0.9906",
+  "public_f05": "",
+  "commit": "875079a",
+  "notes": "cands 33.0/S1; singleton F0.5 0.9840; harder 0.9838",
+  "owner": "M1",
+  "parent": "",
+  "decision": "KEEP",
+  "metrics": {
+    "hypothesis": "full V1 stack reaches >= 0.97 macro F0.5 on val with cand recall >= 0.98",
+    "blocking_config": {
+      "exact_keys": [
+        "name_core",
+        "name_sorted",
+        "name_squash"
+      ],
+      "exact_max_group": 50,
+      "name_char": {
+        "column": "name_core",
+        "analyzer": "char_wb",
+        "ngram": [
+          3,
+          3
+        ],
+        "top_k": 10,
+        "min_sim": 0.5,
+        "max_df": 0.2,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": 3,
+        "max_df_abs": 20000
+      },
+      "name_addr_word": {
+        "column": "name_addr",
+        "analyzer": "word",
+        "ngram": [
+          1,
+          2
+        ],
+        "top_k": 25,
+        "min_sim": 0.2,
+        "max_df": 0.01,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": null,
+        "max_df_abs": 10000
+      },
+      "addr_char": null,
+      "max_per_s1": 60,
+      "s1_chunk": 50000,
+      "n_threads": 12,
+      "vocab_sample": 500000,
+      "seed": 42
+    },
+    "feature_groups": [
+      "blocking",
+      "name_fuzzy",
+      "name_tokens",
+      "legal",
+      "numeric",
+      "address",
+      "context",
+      "meta"
+    ],
+    "model_params": {
+      "backend": "lgbm",
+      "num_leaves": 63,
+      "learning_rate": 0.05,
+      "n_estimators": 2000,
+      "early_stopping": 100,
+      "feature_fraction": 0.8,
+      "bagging_fraction": 0.8,
+      "bagging_freq": 1,
+      "min_data_in_leaf": 200,
+      "lambda_l2": 1.0,
+      "max_bin": 255,
+      "scale_pos_weight": 1.0,
+      "seed": 42,
+      "num_threads": 12
+    },
+    "rule": {
+      "tau_abs": 0.47,
+      "tau_rel": 0.0,
+      "tau_single": 0.52,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "f_beta": 0.9843647201357917,
+    "f_beta_singletons": 0.9839977313239345,
+    "f_beta_matched": 0.9843864620620459,
+    "pair_precision": 0.9952098480008923,
+    "pair_recall": 0.9637257366399321,
+    "cand_recall": 0.9905702495136199,
+    "entity_recall": 0.9993303716077562,
+    "ceiling_f_beta": 0.9970672416366552,
+    "cands_mean": 32.970534720947676,
+    "cands_p95": 60.0,
+    "harder_f_beta": 0.9838344787763924,
+    "tune_f_beta": 0.9846451411756042,
+    "n_fp": 7086,
+    "n_fn": 53904,
+    "n_false_singleton": 1509,
+    "errors": {
+      "false_merge": 6685,
+      "missed": 53904,
+      "false_singleton": 1509,
+      "singleton_merge": 401
+    },
+    "token_map_size": 536,
+    "best_iteration": 1998,
+    "load_seconds": 6.51,
+    "fit_seconds": 335.79,
+    "tune_seconds": 14.97,
+    "blocking_seconds": 448.19,
+    "score_seconds": 270.24,
+    "decide_seconds": 6.79,
+    "normalise_seconds": 5.46,
+    "peak_rss_gb": 5.92,
+    "decision": "KEEP"
+  }
+}
