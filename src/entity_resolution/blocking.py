@@ -62,6 +62,10 @@ class TopKSpec:
     # search only pool records whose address has at most this many tokens (None = all):
     # the name char pass is for records the address cannot link (empty or city-only)
     pool_max_addr_tokens: int | None = None
+    # cap on a term's document count in the partition, on top of max_df: query cost grows
+    # with the postings of kept terms, so a relative cap alone makes the 5x larger test
+    # partitions 5x slower per query; an absolute cap keeps the cost per S1 constant
+    max_df_abs: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,11 +77,12 @@ class BlockingConfig:
     # char 3-grams cost ~3 ms per S1 against a 0.8M pool when run on every record (hours on
     # test), so the name pass only searches pool records with a short or empty address
     name_char: TopKSpec | None = TopKSpec("name_core", top_k=10, min_sim=0.5,
-                                          pool_max_addr_tokens=3)
+                                          pool_max_addr_tokens=3, max_df_abs=20_000)
     # the workhorse: name + address word uni- and bigrams (bigrams keep the address signal
     # that max_df removes from frequent unigrams: "rajendra nagar", "5 52"); val recall with
     # the exact passes 0.987 India / 0.994 US at ~30 candidates per S1
-    name_addr_word: TopKSpec | None = TopKSpec("name_addr", "word", (1, 2), 25, 0.20, 0.01)
+    name_addr_word: TopKSpec | None = TopKSpec("name_addr", "word", (1, 2), 25, 0.20, 0.01,
+                                               max_df_abs=10_000)
     addr_char: TopKSpec | None = None
     max_per_s1: int = 60
     s1_chunk: int = 50_000
@@ -122,8 +127,11 @@ class TopK:
         both = pd.concat([s1_text, pool_text], ignore_index=True)
         sample = both.sample(min(vocab_sample, len(both)), random_state=seed)
         n = len(sample)
+        max_df = spec.max_df
+        if spec.max_df_abs is not None and len(both):
+            max_df = min(max_df, spec.max_df_abs / len(both))
         # min_df is an absolute count; guard tiny partitions (tests) against max_df < min_df
-        max_df = spec.max_df if spec.max_df * n >= spec.min_df else 1.0
+        max_df = max_df if max_df * n >= spec.min_df else 1.0
         # single-character words count ("d and v", house numbers "5"); char analysers
         # ignore token_pattern, so it is only passed for words
         words = {"token_pattern": r"(?u)\b\w+\b"} if spec.analyzer == "word" else {}
