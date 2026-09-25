@@ -8,6 +8,9 @@ Rules (docs/PROBLEM_STATEMENT.md, Output), checked for both files:
     * every matched ID is also a candidate of that entity (warning, as upstream)
 
 The organisers' ``utils/validate_submission.py`` stays the final gate before upload.
+
+Two writers produce the same bytes: ``write_submission`` from dicts of id lists (small
+inputs), ``write_pairs`` from pair frames (the test split: ~50M candidate pairs).
 """
 from __future__ import annotations
 
@@ -15,12 +18,20 @@ import argparse
 import sys
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from functools import reduce
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 
 from . import config as C
 from .data import read_id_lists, read_tsv, source_path
 
 MATCHABLE_SOURCES = (2, 3)
+PAIR_ID_COLUMNS = (C.S1_ID, C.ENTITY_ID)
+WRITE_BATCH = 100_000  # lines per write(): bounds the id strings alive at once (~130 MB)
 
 
 def write_id_lists(
@@ -44,6 +55,123 @@ def write_submission(
 ) -> tuple[Path, Path]:
     return (write_id_lists(out_dir / C.MATCHING_FILE, matches, s1_ids, C.MATCHED_IDS),
             write_id_lists(out_dir / C.CANDIDATE_FILE, candidates, s1_ids, C.CANDIDATE_IDS))
+
+
+def write_pairs(
+    matches: pd.DataFrame,
+    candidates: pd.DataFrame,
+    s1_ids: Sequence[str],
+    out_dir: Path = C.OUTPUT,
+) -> tuple[Path, Path]:
+    """Both submission files from pair frames, byte-identical to ``write_submission``.
+
+    ``matches`` (``source1_entity_id``, ``entity_id``: ``decision.MATCH_COLUMNS``) and
+    ``candidates`` (at least those two columns: the full candidate-pairs frame) give one
+    row per entry of ``s1_ids``, in that order. Each row lists the entity's pool ids
+    de-duplicated in frame order (matches therefore appear in whatever order the caller
+    sorted them, e.g. by probability) and comma-joined, empty when it has none; rows of
+    other Source 1 ids are ignored, as ``write_submission`` ignores their keys.
+
+    Built for the test split (1.7M Source 1 ids, ~50M candidate pairs): grouping runs in
+    Arrow and lines are written in batches, never through a Python dict of lists. Both
+    frames are checked before anything is written: a missing column, or a listed id
+    that is not a Source 2/3 id (such as an ``S1-`` self-match), raises ValueError.
+    """
+    s1 = _arrow_strings(s1_ids, "s1_ids").combine_chunks()
+    if s1.null_count:
+        raise ValueError(f"s1_ids holds {s1.null_count} missing ids")
+    match_pairs = _pair_table(matches, "matches")          # check both frames
+    candidate_pairs = _pair_table(candidates, "candidates")  # before writing either file
+    return (_write_pair_lists(out_dir / C.MATCHING_FILE, match_pairs, s1, C.MATCHED_IDS),
+            _write_pair_lists(out_dir / C.CANDIDATE_FILE, candidate_pairs, s1,
+                              C.CANDIDATE_IDS))
+
+
+def _arrow_strings(values: object, what: str) -> pa.ChunkedArray:
+    """``values`` as an Arrow ``large_string`` column, zero-copy for pandas ``str`` columns.
+
+    Accepts a Series, Index, list, NumPy array or Arrow array of strings; anything else
+    (numbers, say) is refused rather than cast, since it could never match an id.
+    """
+    arr = values if isinstance(values, pa.Array | pa.ChunkedArray) else pa.array(values)
+    if isinstance(arr, pa.Array):
+        arr = pa.chunked_array([arr])
+    kind = arr.type.value_type if pa.types.is_dictionary(arr.type) else arr.type
+    if not (pa.types.is_null(kind) or pa.types.is_string(kind)
+            or pa.types.is_large_string(kind) or pa.types.is_string_view(kind)):
+        raise TypeError(f"{what} must hold strings, got Arrow type {arr.type}")
+    return arr.cast(pa.large_string())
+
+
+def _pair_table(frame: pd.DataFrame, what: str) -> pa.Table:
+    """The (``source1_entity_id``, ``entity_id``) columns of a pair frame as an Arrow table.
+
+    Refuses a frame without those columns and any ``entity_id`` that is not a Source 2/3
+    id: an ``S1-`` id, an empty string or a missing value is a bug upstream.
+    """
+    missing = [c for c in PAIR_ID_COLUMNS if c not in frame.columns]
+    if missing:
+        raise ValueError(f"{what}: missing columns {missing}, got {list(frame.columns)}")
+    table = pa.table({c: _arrow_strings(frame[c], f"{what}.{c}") for c in PAIR_ID_COLUMNS})
+    ids = table[C.ENTITY_ID]
+    prefixes = [pc.starts_with(ids, C.SOURCE_PREFIX[s]) for s in MATCHABLE_SOURCES]
+    valid = pc.fill_null(reduce(pc.or_, prefixes), False)  # a missing id is invalid too
+    bad = pc.filter(ids, pc.invert(valid))
+    if len(bad):
+        raise ValueError(f"{what}: {len(bad)} listed ids are not Source 2/3 ids, "
+                         f"e.g. {bad.slice(0, 3).to_pylist()}")
+    return table
+
+
+def _write_pair_lists(path: Path, pairs: pa.Table, s1: pa.Array, column: str) -> Path:
+    """One ``<s1 id><TAB><id,id,...>`` line per entry of ``s1``, as ``write_id_lists`` does.
+
+    Pool ids are grouped as int32 dictionary codes, a fraction of the strings' memory,
+    single-threaded so that each Source 1 id keeps its ids in frame order. Each batch of
+    lines then drops repeats and decodes its own ids: only one batch of strings is alive.
+    """
+    encoded = pc.dictionary_encode(pairs[C.ENTITY_ID])
+    # Arrow finalises one dictionary for all chunks, so codes are global; the length
+    # check guards that assumption cheaply
+    dictionary = (encoded.chunk(0).dictionary if encoded.num_chunks
+                  else pa.array([], pa.large_string()))
+    if any(len(chunk.dictionary) != len(dictionary) for chunk in encoded.chunks):
+        raise RuntimeError("dictionary_encode returned per-chunk dictionaries")
+    codes = pa.chunked_array([chunk.indices for chunk in encoded.chunks], pa.int32())
+    del encoded
+    grouped = (pa.table({C.S1_ID: pairs[C.S1_ID], "code": codes})
+               .group_by(C.S1_ID, use_threads=False).aggregate([("code", "list")]))
+    del codes
+    keys = grouped[C.S1_ID].combine_chunks()
+    lists = grouped["code_list"].combine_chunks()
+    del grouped
+    position = pc.index_in(s1, value_set=keys)  # row of `lists` per output id; null: none
+    tab = pa.scalar(C.SEP, pa.large_string())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write(f"{C.S1_ID}{C.SEP}{column}\n")
+        for start in range(0, len(s1), WRITE_BATCH):
+            batch = pc.take(lists, position.slice(start, WRITE_BATCH))
+            lines = pc.binary_join_element_wise(s1.slice(start, WRITE_BATCH),
+                                                _joined_ids(batch, dictionary), tab)
+            f.write("\n".join(lines.to_pylist()) + "\n")
+    return path
+
+
+def _joined_ids(lists: pa.ListArray, dictionary: pa.Array) -> pa.Array:
+    """Comma-joined ids per list of codes, repeats dropped (first kept, as ``dict.fromkeys``).
+
+    Repeats are found exactly, on (list, code) keys; a null list (no pairs) gives "".
+    """
+    codes = pc.list_flatten(lists).to_numpy()
+    parent = pc.list_parent_indices(lists).to_numpy()
+    pair_key = parent.astype(np.int64) * max(len(dictionary), 1) + codes
+    first = ~pd.Series(pair_key).duplicated().to_numpy()
+    sizes = np.bincount(parent[first], minlength=len(lists))
+    offsets = pa.array(np.concatenate(([0], np.cumsum(sizes))).astype(np.int32))
+    names = pc.take(dictionary, pa.array(codes[first]))
+    comma = pa.scalar(C.ID_LIST_SEP, pa.large_string())
+    return pc.binary_join(pa.ListArray.from_arrays(offsets, names), comma)
 
 
 def split_ids(
