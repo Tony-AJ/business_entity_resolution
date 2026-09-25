@@ -108,10 +108,11 @@ def test_add_frequencies_rates_per_country() -> None:
                           "name_core": ["acme", "initech", "acme", "acme"],
                           "name_first": ["acme", "initech", "acme", "acme"]}).astype("str")
     s1f, poolf = add_frequencies(s1n, pooln, s1_all)
-    assert s1f["freq_same"].iloc[0] == np.float32(2 / 4 * 1e6)       # 2 of 4 US S1 records
+    assert s1f["freq_same"].iloc[0] == np.float32(1 / 3 * 1e6)       # 1 other of 3 US S1
     assert s1f["freq_other"].iloc[0] == np.float32(1 / 2 * 1e6)      # 1 of 2 US pool records
     assert np.isnan(s1f["freq_same"].iloc[1])                        # empty core name
-    assert poolf["freq_same"].tolist()[2:] == [1e6, 1e6]             # India pool: all acme
+    assert poolf["freq_same"].iloc[0] == 0.0                         # a unique name reads 0
+    assert poolf["freq_same"].tolist()[2:] == [1e6, 1e6]             # India pool: 1 other of 1
     assert poolf["freq_other"].iloc[1] == 0.0                        # no S1 initech
     assert poolf["freq_other"].iloc[2] == np.float32(1e6)            # the one India S1 is acme
 

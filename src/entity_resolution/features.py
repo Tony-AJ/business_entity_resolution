@@ -492,11 +492,11 @@ def _pool_context(pairs: pd.DataFrame, left: pd.DataFrame,
 def _frequency(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
     """How common each side's core name is (C5): a rare exact name needs less address evidence.
 
-    fq_s1_l          S1 records sharing the S1 record's name_core, per million S1 records of
-                     its country (whole fold, not a training sample)
+    fq_s1_l          other S1 records sharing the S1 record's name_core, per million S1
+                     records of its country (whole fold, not a training sample; 0 = unique)
     fq_pool_l        pool records carrying the S1 record's name_core, per million pool records
     fq_first_pool_l  pool records whose first core token is the S1 record's, per million
-    fq_pool_r        pool records sharing the pool record's name_core, per million
+    fq_pool_r        other pool records sharing the pool record's name_core, per million
     fq_s1_r          S1 records carrying the pool record's name_core, per million
     core_eq          name_core equal and non-empty
     Rates are NaN where the name_core is empty. Per-million rates keep folds of different

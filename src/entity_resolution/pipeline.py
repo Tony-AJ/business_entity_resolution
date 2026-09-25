@@ -251,13 +251,21 @@ def _tag(name: str, s1n: pd.DataFrame, pooln: pd.DataFrame, token_map: dict) -> 
             f"_m{_hash(token_map)}")
 
 
-def _per_million(df: pd.DataFrame, key: str, counts: pd.Series,
-                 totals: pd.Series) -> np.ndarray:
-    """Rate of ``df[key]`` in ``counts`` (by country) per million records; NaN for ""."""
+def _per_million(df: pd.DataFrame, key: str, counts: pd.Series, totals: pd.Series,
+                 self_counted: bool = False) -> np.ndarray:
+    """Rate of ``df[key]`` in ``counts`` (by country) per million records; NaN for "".
+
+    ``self_counted``: the records of ``df`` are themselves in ``counts`` (same side), so one
+    is removed from the count and from the total. Otherwise a unique name would read
+    1 / total, a floor that differs between folds of different sizes (fit, val, test) and
+    would make the same name look commoner on the smaller val fold.
+    """
     idx = pd.MultiIndex.from_arrays([df[C.COUNTRY], df[key]])
-    n = counts.reindex(idx).to_numpy(dtype=np.float64)
+    n = np.nan_to_num(counts.reindex(idx).to_numpy(dtype=np.float64), nan=0.0)
     total = totals.reindex(df[C.COUNTRY]).to_numpy(dtype=np.float64)
-    rate = np.nan_to_num(n, nan=0.0) / np.maximum(total, 1.0) * 1e6
+    if self_counted:
+        n, total = np.maximum(n - 1.0, 0.0), total - 1.0
+    rate = n / np.maximum(total, 1.0) * 1e6
     rate[(df[key] == "").to_numpy()] = np.nan
     return rate.astype(np.float32)
 
@@ -268,7 +276,8 @@ def add_frequencies(s1n: pd.DataFrame, pooln: pd.DataFrame,
 
     ``s1_all`` holds country, name_core and name_first of EVERY S1 record of the fold (a
     training sample would understate how common a name is); ``pooln`` must be the whole
-    pool of the fold. Counts are per country, as rates per million records of that side.
+    pool of the fold. Counts are per country, as rates per million records of that side;
+    same-side rates count the OTHER records with the name (a unique name reads 0).
     """
     def count(df: pd.DataFrame, key: str) -> pd.Series:
         return df.groupby([C.COUNTRY, key], sort=False, observed=True).size()
@@ -276,10 +285,10 @@ def add_frequencies(s1n: pd.DataFrame, pooln: pd.DataFrame,
     s1_tot, pool_tot = s1_all.groupby(C.COUNTRY).size(), pooln.groupby(C.COUNTRY).size()
     s1_core, s1_first = count(s1_all, "name_core"), count(s1_all, "name_first")
     pool_core, pool_first = count(pooln, "name_core"), count(pooln, "name_first")
-    s1n = s1n.assign(freq_same=_per_million(s1n, "name_core", s1_core, s1_tot),
+    s1n = s1n.assign(freq_same=_per_million(s1n, "name_core", s1_core, s1_tot, True),
                      freq_other=_per_million(s1n, "name_core", pool_core, pool_tot),
                      freq_first_other=_per_million(s1n, "name_first", pool_first, pool_tot))
-    pooln = pooln.assign(freq_same=_per_million(pooln, "name_core", pool_core, pool_tot),
+    pooln = pooln.assign(freq_same=_per_million(pooln, "name_core", pool_core, pool_tot, True),
                          freq_other=_per_million(pooln, "name_core", s1_core, s1_tot),
                          freq_first_other=_per_million(pooln, "name_first", s1_first, s1_tot))
     return s1n, pooln
