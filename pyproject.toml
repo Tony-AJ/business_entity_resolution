@@ -12,6 +12,13 @@ dependencies = [
     "pandas>=3.0",
     "numpy>=2.0",
     "pyarrow>=20",  # Arrow-backed strings: ~12M records per split must fit in RAM
+    "psutil>=5",
+    "anyascii>=0.3",          # transliteration of Indic-script names (ISC)
+    "rapidfuzz>=3",           # pairwise string similarities (MIT)
+    "scikit-learn>=1.5",      # TF-IDF vectorisers, calibration utilities (BSD-3)
+    "scipy>=1.13",
+    "sparse-dot-topn>=1.1",   # multi-threaded sparse top-k retrieval for blocking (Apache-2.0)
+    "lightgbm>=4.5",          # pairwise matcher (MIT)
 ]
 
 [project.optional-dependencies]

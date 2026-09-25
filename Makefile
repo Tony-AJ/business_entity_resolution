@@ -23,8 +23,8 @@ lint:
 test:
 	.venv/bin/pytest
 
-experiment:  ## next experiments/vNNN_<slug>/ from the template: make experiment NAME=name_tfidf
-	$(PY) -m entity_resolution.tracking new $(NAME)
+experiment:  ## experiments/vNNN_<slug>/ from the template, NNN = V or next free: make experiment NAME=x V=12
+	$(PY) -m entity_resolution.tracking new $(NAME) $(if $(V),--number $(V))
 
 nb:  ## run a notebook headless, outputs saved in place: make nb NB=experiments/v001_x/v001_x.ipynb
 	.venv/bin/jupyter nbconvert --to notebook --execute --inplace $(NB)
