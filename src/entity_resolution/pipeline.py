@@ -247,6 +247,48 @@ def _tag(name: str, s1n: pd.DataFrame, pooln: pd.DataFrame, token_map: dict) -> 
             f"_m{_hash(token_map)}")
 
 
+def _per_million(df: pd.DataFrame, key: str, counts: pd.Series,
+                 totals: pd.Series) -> np.ndarray:
+    """Rate of ``df[key]`` in ``counts`` (by country) per million records; NaN for ""."""
+    idx = pd.MultiIndex.from_arrays([df[C.COUNTRY], df[key]])
+    n = counts.reindex(idx).to_numpy(dtype=np.float64)
+    total = totals.reindex(df[C.COUNTRY]).to_numpy(dtype=np.float64)
+    rate = np.nan_to_num(n, nan=0.0) / np.maximum(total, 1.0) * 1e6
+    rate[(df[key] == "").to_numpy()] = np.nan
+    return rate.astype(np.float32)
+
+
+def add_frequencies(s1n: pd.DataFrame, pooln: pd.DataFrame,
+                    s1_all: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Add ``features.FREQ_COLUMNS`` (core-name frequencies) to the S1 and pool frames.
+
+    ``s1_all`` holds country, name_core and name_first of EVERY S1 record of the fold (a
+    training sample would understate how common a name is); ``pooln`` must be the whole
+    pool of the fold. Counts are per country, as rates per million records of that side.
+    """
+    def count(df: pd.DataFrame, key: str) -> pd.Series:
+        return df.groupby([C.COUNTRY, key], sort=False, observed=True).size()
+
+    s1_tot, pool_tot = s1_all.groupby(C.COUNTRY).size(), pooln.groupby(C.COUNTRY).size()
+    s1_core, s1_first = count(s1_all, "name_core"), count(s1_all, "name_first")
+    pool_core, pool_first = count(pooln, "name_core"), count(pooln, "name_first")
+    s1n = s1n.assign(freq_same=_per_million(s1n, "name_core", s1_core, s1_tot),
+                     freq_other=_per_million(s1n, "name_core", pool_core, pool_tot),
+                     freq_first_other=_per_million(s1n, "name_first", pool_first, pool_tot))
+    pooln = pooln.assign(freq_same=_per_million(pooln, "name_core", pool_core, pool_tot),
+                         freq_other=_per_million(pooln, "name_core", s1_core, s1_tot),
+                         freq_first_other=_per_million(pooln, "name_first", s1_first, s1_tot))
+    return s1n, pooln
+
+
+def _with_frequencies(cfg: PipelineConfig, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                      s1_all: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """``add_frequencies`` when the frequency group is configured, else the frames as given."""
+    if "frequency" not in cfg.feature_groups:
+        return s1n, pooln
+    return add_frequencies(s1n, pooln, s1n if s1_all is None else s1_all)
+
+
 # ---------------------------------------------------------------- scoring ----
 def score(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame, matcher: Matcher,
           cfg: PipelineConfig) -> pd.DataFrame:
@@ -284,6 +326,11 @@ def _side(name: str, s1: pd.DataFrame, fold: Fold, cfg: PipelineConfig, token_ma
     t0 = time.perf_counter()
     s1n = load_normalised("train", (1,), cfg, s1[C.ENTITY_ID], token_map)
     pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], token_map)
+    if "frequency" in cfg.feature_groups:  # frequencies over the whole fold, not the sample
+        s1_all = load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID],
+                                 columns=[C.COUNTRY, "name_core", "name_first"])
+        s1n, pooln = _with_frequencies(cfg, s1n, pooln, s1_all)
+        del s1_all
     timings[f"{name}_load_seconds"] = round(time.perf_counter() - t0, 2)
     t0 = time.perf_counter()
     pairs = prepare(s1n, pooln, cfg, _tag(name, s1n, pooln, token_map))
@@ -369,6 +416,7 @@ def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = 
     t0 = time.perf_counter()
     s1n = load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID], fitted.token_map)
     pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], fitted.token_map)
+    s1n, pooln = _with_frequencies(cfg, s1n, pooln)  # s1n is the whole fold here
     timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
     pairs = prepare(s1n, pooln, cfg, _tag(tag, s1n, pooln, fitted.token_map), timings)
     t0 = time.perf_counter()
@@ -411,6 +459,7 @@ def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,
         s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
         poolc = load_normalised("test", (2, 3), cfg, token_map=fitted.token_map,
                                 country=country)
+        s1c, poolc = _with_frequencies(cfg, s1c, poolc)  # the whole test S1 of the country
         timings["normalise_seconds"] += round(time.perf_counter() - t0, 2)
         t0 = time.perf_counter()
         pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, fitted.token_map))
