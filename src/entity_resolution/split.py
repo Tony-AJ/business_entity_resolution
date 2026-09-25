@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from . import config as C
-from .data import load_source, load_truth_pairs
+from .data import isin, load_source, load_truth_pairs
 
 VAL_FRACTION = 0.2
 SPLIT_SEED = C.SEED
@@ -82,6 +82,30 @@ class Fold:
                 "singleton_share": round(1 - matched / n_s1, 4) if n_s1 else float("nan")}
 
 
+def val_ids(dataset_dir: Path = C.DATASET, frac: float = VAL_FRACTION,
+            seed: int = SPLIT_SEED) -> pd.Index:
+    """IDs of every validation-fold record (Sources 1, 2 and 3), computed once.
+
+    The hash join over ~12M records takes ~30 s and ~4 GB, so the result is cached
+    in ``<dataset>/.cache/`` per (fraction, seed) and rebuilt when the labels change.
+    """
+    target = dataset_dir / ".cache" / f"val_ids_f{frac}_s{seed}.parquet"
+    labels = dataset_dir / "train" / C.GROUND_TRUTH_FILE
+    if target.exists() and target.stat().st_mtime >= labels.stat().st_mtime:
+        return pd.Index(pd.read_parquet(target)[C.ENTITY_ID])
+    pairs = load_truth_pairs(dataset_dir)
+    s1 = load_source("train", 1, dataset_dir, [C.ENTITY_ID])[C.ENTITY_ID]
+    s1_val = set(s1[s1_val_mask(s1, frac, seed)])
+    ids = [pd.Series(sorted(s1_val))]
+    for source in (2, 3):
+        pool = load_source("train", source, dataset_dir, [C.ENTITY_ID])[C.ENTITY_ID]
+        ids.append(pool[pool_val_mask(pool, pairs, s1_val, frac, seed)])
+    out = pd.concat(ids, ignore_index=True).rename(C.ENTITY_ID).astype("str")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    out.to_frame().to_parquet(target, index=False)
+    return pd.Index(out)
+
+
 def load_fold(fold: str = "val", dataset_dir: Path = C.DATASET,
               columns: list[str] | None = None, frac: float = VAL_FRACTION,
               seed: int = SPLIT_SEED) -> Fold:
@@ -93,18 +117,12 @@ def load_fold(fold: str = "val", dataset_dir: Path = C.DATASET,
         raise ValueError(f"fold must be one of {FOLDS}, got {fold!r}")
     cols = None if columns is None else list(dict.fromkeys([C.ENTITY_ID, *columns]))
     want_val = fold == "val"
-    pairs = load_truth_pairs(dataset_dir)
+    in_val = val_ids(dataset_dir, frac, seed)
 
-    s1 = load_source("train", 1, dataset_dir, cols)
-    s1_val = s1_val_mask(s1[C.ENTITY_ID], frac, seed)
-    val_ids = set(s1.loc[s1_val, C.ENTITY_ID])
-    s1 = s1[s1_val == want_val].reset_index(drop=True)
-
-    pool = {}
-    for source in (2, 3):
+    def part(source: int) -> pd.DataFrame:
         df = load_source("train", source, dataset_dir, cols)
-        mask = pool_val_mask(df[C.ENTITY_ID], pairs, val_ids, frac, seed)
-        pool[source] = df[mask == want_val].reset_index(drop=True)
+        return df[isin(df[C.ENTITY_ID], in_val) == want_val].reset_index(drop=True)
 
-    keep = pairs[C.S1_ID].isin(val_ids) == want_val
-    return Fold(fold, s1, pool[2], pool[3], pairs[keep].reset_index(drop=True))
+    pairs = load_truth_pairs(dataset_dir)
+    keep = isin(pairs[C.S1_ID], in_val) == want_val
+    return Fold(fold, part(1), part(2), part(3), pairs[keep].reset_index(drop=True))

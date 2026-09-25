@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from entity_resolution import config as C
+from entity_resolution import split
 from entity_resolution.split import hash_unit, load_fold, pool_val_mask, s1_val_mask
 
 
@@ -39,6 +40,13 @@ def test_folds_partition_train_data(dataset_dir):
         assert set(fold.pairs[C.S1_ID]) <= s1  # labels never cross folds
         assert set(fold.pairs[C.ENTITY_ID]) <= pool
         assert set(fold.truth()) == s1  # singletons included
+
+
+def test_fold_membership_is_cached(dataset_dir, monkeypatch):
+    first = load_fold("val", dataset_dir, frac=0.5)
+    monkeypatch.setattr(split, "pool_val_mask", lambda *a, **k: pytest.fail("recomputed"))
+    again = load_fold("val", dataset_dir, frac=0.5)
+    assert again.s1.equals(first.s1) and again.pairs.equals(first.pairs)
 
 
 def test_columns_are_limited(dataset_dir):

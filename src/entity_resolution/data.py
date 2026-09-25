@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 
 from . import config as C
 
@@ -28,6 +31,18 @@ def read_tsv(path: Path, usecols: list[str] | None = None) -> pd.DataFrame:
     """Read a challenge TSV with every field as a string; empty fields stay ""."""
     return pd.read_csv(path, sep=C.SEP, dtype=str, na_filter=False, encoding="utf-8",
                        usecols=usecols)
+
+
+def isin(values: pd.Series, allowed: Iterable[str]) -> np.ndarray:
+    """Fast ``values.isin(allowed)`` for large ID columns, via pyarrow ``is_in``.
+
+    On millions of Arrow-backed strings pandas' own ``isin`` is ~20x slower
+    (12 s vs 0.5 s for 5M IDs against 2.5M).
+    """
+    allowed = allowed if isinstance(allowed, pd.Index | pd.Series) else pd.Index(list(allowed))
+    arr = pa.array(values)
+    mask = pc.is_in(arr, value_set=pa.array(allowed, type=arr.type))
+    return mask.to_numpy(zero_copy_only=False)
 
 
 def source_path(split: str, source: int, dataset_dir: Path = C.DATASET) -> Path:

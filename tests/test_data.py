@@ -1,5 +1,6 @@
 import os
 
+import pandas as pd
 import pytest
 
 from entity_resolution import config as C
@@ -32,6 +33,12 @@ def test_stale_cache_is_rebuilt(dataset_dir):
     cache = dataset_dir / ".cache" / "train_source2.parquet"
     os.utime(path, (cache.stat().st_mtime + 5, cache.stat().st_mtime + 5))
     assert "S2-00003" in set(load_source("train", 2, dataset_dir)[C.ENTITY_ID])
+
+
+def test_isin_matches_pandas():
+    values = pd.Series(["S2-1", "S2-2", "S3-1", ""], dtype="str")
+    for allowed in (pd.Index(["S2-2", "S3-1"]), {"S2-2", "S3-1"}, []):
+        assert data.isin(values, allowed).tolist() == values.isin(list(allowed)).tolist()
 
 
 def test_truth_pairs_explode_lists_and_drop_singletons(dataset_dir):
