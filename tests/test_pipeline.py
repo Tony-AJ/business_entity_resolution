@@ -129,3 +129,19 @@ def test_frequency_group_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
     matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
     s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_dense_tune_pool_fits(dataset_dir: Path, tmp_path: Path) -> None:
+    """tune_pool='train' blocks the tune side against the whole train pool and still fits."""
+    from dataclasses import replace
+    cfg = replace(tiny_cfg(tmp_path, dataset_dir), tune_pool="train")
+    train = load_fold("train", dataset_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    assert 0.0 <= fitted.tune_table["f_beta"].max() <= 1.0
+    bad = replace(cfg, tune_pool="everything")
+    try:
+        fit(bad, train)
+    except ValueError as e:
+        assert "tune_pool" in str(e)
+    else:
+        raise AssertionError("an unknown tune_pool must be refused")

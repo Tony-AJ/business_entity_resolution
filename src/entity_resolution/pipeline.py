@@ -70,6 +70,10 @@ class PipelineConfig:
     n_fit_s1: int = 200_000          # S1 entities sampled from the fit side (whole fit pool kept)
     n_stop_s1: int = 50_000          # tune-side S1 sample used for LightGBM early stopping
     n_tune_s1: int | None = None     # tune-side S1 entities for the rule grid; None = all
+    # pool the tune-side S1 are blocked against for the rule grid: "fold" = the tune fold's
+    # own pool (val-like density); "train" = the whole train-fold pool, ~the test pool's
+    # size, so the rule meets as many same-name decoys per entity as at test time
+    tune_pool: str = "fold"
     chunk_rows: int = 1_000_000      # pairs featured and scored at a time
     dataset_dir: Path = C.DATASET
     cache_dir: Path = C.DATASET / ".cache" / "pipeline"
@@ -388,7 +392,11 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
 
     # decision rule on the tune side (all S1 unless n_tune_s1): scored chunk by chunk
     tune_s1 = tune_fold.s1 if cfg.n_tune_s1 is None else sample_s1(tune_fold.s1, cfg.n_tune_s1)
-    s1n, pooln, pairs = _side("tune", tune_s1, tune_fold, cfg, token_map, info, timings)
+    if cfg.tune_pool not in ("fold", "train"):
+        raise ValueError(f"tune_pool must be 'fold' or 'train', got {cfg.tune_pool!r}")
+    rule_fold = tune_fold if cfg.tune_pool == "fold" else Fold(  # every train S1 exists
+        "tune", train.s1, train.s2, train.s3, tune_fold.pairs)
+    s1n, pooln, pairs = _side("tune", tune_s1, rule_fold, cfg, token_map, info, timings)
     t0 = time.perf_counter()
     scored = score(pairs, s1n, pooln, matcher, cfg)
     timings["score_seconds"] = round(time.perf_counter() - t0, 2)
