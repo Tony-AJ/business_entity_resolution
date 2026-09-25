@@ -3,10 +3,11 @@ dataset/
 output/
 *.zip
 
-# Trained models
+# Trained models and per-experiment artifacts (models, candidates, predictions)
 models/
 *.joblib
 *.pkl
+experiments/*/artifacts/
 
 # Python
 .venv/

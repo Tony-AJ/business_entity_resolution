@@ -9,4 +9,5 @@ Modules:
     split       fixed validation split shared by every experiment
     metrics     macro F0.5 per Source 1 entity, singletons included
     submission  write + validate matching_results.tsv / candidate_pairs.tsv
+    tracking    experiment registry: vNNN folders, experiments.csv, timings
 """
