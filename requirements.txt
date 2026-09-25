@@ -1,0 +1,7 @@
+# Pinned runtime environment (Python 3.12) for reproducing the submission.
+# Add a dependency here, with its exact tested version, in the same commit
+# that first imports it. Dev tools live in pyproject.toml [dev].
+numpy==2.5.3
+pandas==3.0.6
+python-dateutil==2.9.0.post0
+six==1.17.0
