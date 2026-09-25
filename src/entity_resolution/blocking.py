@@ -124,10 +124,13 @@ class TopK:
         n = len(sample)
         # min_df is an absolute count; guard tiny partitions (tests) against max_df < min_df
         max_df = spec.max_df if spec.max_df * n >= spec.min_df else 1.0
+        # single-character words count ("d and v", house numbers "5"); char analysers
+        # ignore token_pattern, so it is only passed for words
+        words = {"token_pattern": r"(?u)\b\w+\b"} if spec.analyzer == "word" else {}
         self.vec = TfidfVectorizer(analyzer=spec.analyzer, ngram_range=spec.ngram,
                                    min_df=min(spec.min_df, max(n, 1)), max_df=max_df,
                                    sublinear_tf=spec.sublinear_tf, dtype=np.float32,
-                                   token_pattern=r"(?u)\b\w+\b", lowercase=False)
+                                   lowercase=False, **words)
         try:
             self.vec.fit(sample.to_numpy())
             self.ok = True
