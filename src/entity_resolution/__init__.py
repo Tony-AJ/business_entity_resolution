@@ -5,4 +5,5 @@ they describe, optimising macro F0.5 (precision-heavy).
 
 Modules:
     config      paths, file schema, metric constants
+    data        TSV loaders for source files and ground truth
 """
