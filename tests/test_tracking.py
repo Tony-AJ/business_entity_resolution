@@ -17,7 +17,7 @@ from entity_resolution.tracking import (
 def root(tmp_path):
     template = tmp_path / "_template" / "experiment.ipynb"
     template.parent.mkdir()
-    template.write_text("{}")
+    template.write_text('{"title": "__EXPERIMENT__"}')
     return tmp_path
 
 
@@ -30,7 +30,8 @@ def test_versions_only_grow(root):
     first = new_experiment("baseline", root, root / "_template" / "experiment.ipynb")
     second = new_experiment("name_blocking", root, root / "_template" / "experiment.ipynb")
     assert (first.name, second.name) == ("v001_baseline", "v002_name_blocking")
-    assert (second / "v002_name_blocking.ipynb").is_file()
+    notebook = (second / "v002_name_blocking.ipynb").read_text()
+    assert notebook == '{"title": "v002_name_blocking"}'  # placeholder filled
     assert (second / "artifacts").is_dir()
 
 

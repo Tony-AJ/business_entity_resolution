@@ -16,7 +16,6 @@ import argparse
 import csv
 import json
 import re
-import shutil
 import subprocess
 import time
 from collections.abc import Iterator
@@ -29,20 +28,24 @@ from . import config as C
 COLUMNS = ("version", "date", "group", "change", "local_f05", "cand_recall", "public_f05",
            "commit", "notes")
 TEMPLATE = C.EXPERIMENTS / "_template" / "experiment.ipynb"
+PLACEHOLDER = "__EXPERIMENT__"
 _VERSION_DIR = re.compile(r"^v(\d{3})_([a-z0-9]+(?:_[a-z0-9]+)*)$")
 
 
 def new_experiment(slug: str, root: Path = C.EXPERIMENTS, template: Path = TEMPLATE) -> Path:
     """Create ``vNNN_<slug>/`` holding a copy of the notebook template.
 
-    NNN is one above the highest existing version, so numbers only ever grow.
+    NNN is one above the highest existing version, so numbers only ever grow. The
+    template's ``__EXPERIMENT__`` placeholder becomes the folder name, so the notebook
+    knows where to log whatever directory Jupyter runs it from.
     """
     if not re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", slug):
         raise ValueError(f"slug must be snake_case letters and digits, got {slug!r}")
     taken = [int(m.group(1)) for p in root.glob("v*") if (m := _VERSION_DIR.match(p.name))]
     exp = root / f"v{max(taken, default=0) + 1:03d}_{slug}"
     (exp / "artifacts").mkdir(parents=True)
-    shutil.copy(template, exp / f"{exp.name}.ipynb")
+    notebook = template.read_text(encoding="utf-8").replace(PLACEHOLDER, exp.name)
+    (exp / f"{exp.name}.ipynb").write_text(notebook, encoding="utf-8")
     return exp
 
 
