@@ -1,3 +1,4 @@
 version,date,group,change,local_f05,cand_recall,public_f05,commit,notes,owner,parent,decision
 v001,2026-09-25,INT,"base model: normalise+learned map, multi-pass blocking, 47 feats, LightGBM, tuned 1-to-1 rule",0.9844,0.9906,,875079a,cands 33.0/S1; singleton F0.5 0.9840; harder 0.9838,M1,,KEEP
 v040,2026-09-26,C2,"v001 + idf, frequency, ctx_idf, address_extra feature groups",0.9870,0.9906,,6e7b015,cands 33.0/S1; singleton F0.5 0.9875; harder 0.9864; +0.0026 vs v001; max slice drop -0.0019,M3,v001,KEEP
+v041,2026-09-26,C2,"v001 + idf, ctx_idf, address_extra feature group(s) (ablation of v040)",0.9866,0.9906,,eec55b9,cands 33.0/S1; singleton F0.5 0.9882; harder 0.9861; +0.0022 vs v001; max slice drop -0.0016,M3,v001,KEEP
