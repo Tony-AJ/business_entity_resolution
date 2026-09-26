@@ -13,7 +13,8 @@ import pytest
 from entity_resolution.model import BACKENDS, HEURISTIC_SIMS, Matcher, MatcherParams
 
 FAST = {"n_estimators": 60, "num_threads": 2}
-SAVED_FILES = {"lgbm": {"model.txt"}, "logreg": {"model.joblib"}, "heuristic": set()}
+SAVED_FILES = {"lgbm": {"model.txt"}, "xgb": {"model.ubj"}, "logreg": {"model.joblib"},
+               "heuristic": set()}
 
 
 def make_pairs(n: int, seed: int) -> tuple[pd.DataFrame, pd.Series]:
@@ -244,3 +245,26 @@ def test_unfitted_and_unknown_backend_raise(data):
         Matcher().predict_proba(data[2])
     with pytest.raises(ValueError, match="backend"):
         MatcherParams(backend="xgboost")
+
+
+def _cuda_available() -> bool:
+    """True when XGBoost can train on a CUDA device here."""
+    import xgboost as xgb
+    try:
+        xgb.train({"device": "cuda", "tree_method": "hist"},
+                  xgb.DMatrix(np.zeros((4, 1), np.float32), label=[0, 1, 0, 1]), 1)
+        return True
+    except xgb.core.XGBoostError:
+        return False
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="no CUDA device for XGBoost")
+def test_xgb_cuda_matches_cpu(data, tmp_path):
+    """The GPU backend learns the same thing as the CPU one and survives save/load."""
+    X, y, Xv, yv = data
+    gpu = fitted(data, "xgb", device="cuda")
+    cpu = fitted(data, "xgb", device="cpu")
+    # GPU and CPU hist sketch and subsample differently: close, not equal, on 3k rows
+    assert np.corrcoef(gpu.predict_proba(Xv), cpu.predict_proba(Xv))[0, 1] > 0.95
+    again = Matcher.load(gpu.save(tmp_path / "m"))
+    assert np.allclose(again.predict_proba(Xv), gpu.predict_proba(Xv), atol=1e-6)

@@ -3,9 +3,12 @@
 Blueprint: docs/plan/08_MODEL_SELECTION.md. ``Matcher`` takes the float32 feature frame of
 ``features.build_features`` (columns ``features.feature_names(groups)``) with the 0/1
 ``label`` of ``trainset.label_pairs`` and returns one probability per pair, which
-``decision.decide`` turns into match sets. Three backends share one interface:
+``decision.decide`` turns into match sets. Four backends share one interface:
 
-    lgbm        LightGBM, the V1 model: native NaN, early stopping on the tune set
+    lgbm        LightGBM, the V1 model: native NaN, early stopping on the tune set;
+                ``device="gpu"`` trains on the GPU through OpenCL
+    xgb         XGBoost hist (D4): the same leaf-wise trees, ``device="cuda"`` trains and
+                predicts on the GPU (RTX 2050 here), native NaN, early stopping
     logreg      D1 baseline: NaN -> -1 plus missing flags, scaling, logistic regression
     heuristic   no learning: best blocking similarity, 1.0 for exact-key pairs
 
@@ -26,18 +29,20 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-BACKENDS = ("lgbm", "logreg", "heuristic")
+BACKENDS = ("lgbm", "xgb", "logreg", "heuristic")
 HEURISTIC_SIMS = ("sim_name_char", "sim_name_addr_word", "sim_addr_char")
 EXACT_FLAG = "pass_exact"
 PARAMS_FILE = "params.json"
 FEATURES_FILE = "feature_names.json"
-MODEL_FILES = {"lgbm": "model.txt", "logreg": "model.joblib"}  # heuristic: JSON files only
+MODEL_FILES = {"lgbm": "model.txt", "xgb": "model.ubj",
+               "logreg": "model.joblib"}  # heuristic: JSON files only
 TUNE = "tune"  # name of the early-stopping set in LightGBM's evaluation log
 
 
@@ -49,7 +54,7 @@ class MatcherParams:
     parameter of the same name. ``logreg`` and ``heuristic`` ignore them all.
     """
 
-    backend: str = "lgbm"            # "lgbm" | "logreg" | "heuristic"
+    backend: str = "lgbm"            # "lgbm" | "xgb" | "logreg" | "heuristic"
     num_leaves: int = 63
     learning_rate: float = 0.05
     n_estimators: int = 2000         # boosting-round ceiling; early stopping picks the best
@@ -63,6 +68,8 @@ class MatcherParams:
     scale_pos_weight: float = 1.0    # stays 1.0: reweighting would move every threshold
     seed: int = 42
     num_threads: int = 12
+    device: str = "cpu"              # lgbm: "cpu" | "gpu" (OpenCL); xgb: "cpu" | "cuda"
+    min_child_weight: float = 1.0    # xgb only: minimum hessian sum in a leaf
 
     def __post_init__(self) -> None:
         """Reject an unknown backend at construction, not after a long feature build."""
@@ -76,7 +83,7 @@ def lgbm_params(p: MatcherParams) -> dict[str, object]:
     ``deterministic`` with ``force_row_wise`` makes the same seed and thread count grow
     the same trees (about 10% slower), which the KEEP margin of 13 §3 relies on.
     """
-    return {
+    params = {
         "objective": "binary", "metric": "binary_logloss", "verbose": -1,
         "deterministic": True, "force_row_wise": True,
         "num_leaves": p.num_leaves, "learning_rate": p.learning_rate,
@@ -84,6 +91,25 @@ def lgbm_params(p: MatcherParams) -> dict[str, object]:
         "bagging_freq": p.bagging_freq, "min_data_in_leaf": p.min_data_in_leaf,
         "lambda_l2": p.lambda_l2, "max_bin": p.max_bin,
         "scale_pos_weight": p.scale_pos_weight, "seed": p.seed, "num_threads": p.num_threads,
+    }
+    if p.device != "cpu":
+        params["device_type"] = p.device
+    return params
+
+
+def xgb_params(p: MatcherParams) -> dict[str, object]:
+    """XGBoost parameters mirroring the LightGBM point: leaf-wise trees of ``num_leaves``.
+
+    ``min_data_in_leaf`` has no XGBoost twin (``min_child_weight`` bounds the hessian sum);
+    GPU hist is deterministic for a fixed seed.
+    """
+    return {
+        "objective": "binary:logistic", "eval_metric": "logloss", "tree_method": "hist",
+        "device": p.device, "grow_policy": "lossguide", "max_depth": 0,
+        "max_leaves": p.num_leaves, "eta": p.learning_rate,
+        "colsample_bytree": p.feature_fraction, "subsample": p.bagging_fraction,
+        "min_child_weight": p.min_child_weight, "lambda": p.lambda_l2, "max_bin": p.max_bin,
+        "scale_pos_weight": p.scale_pos_weight, "seed": p.seed, "nthread": p.num_threads,
     }
 
 
@@ -143,7 +169,7 @@ class Matcher:
         self.params = replace(params) if params is not None else MatcherParams()
         self.feature_names_: list[str] | None = None
         self.best_iteration_: int = 0
-        self.model_: lgb.Booster | Pipeline | None = None
+        self.model_: lgb.Booster | xgb.Booster | Pipeline | None = None
         self.fit_info_: dict[str, float | int | None] = {}
 
     def fit(
@@ -187,6 +213,8 @@ class Matcher:
             raise ValueError(f"cannot fit the {backend} backend on an empty X")
         elif backend == "lgbm":
             model, best = self._fit_lgbm(X, labels, w, X_val, val_labels)
+        elif backend == "xgb":
+            model, best = self._fit_xgb(X, labels, w, X_val, val_labels)
         else:
             model, best = logreg_pipeline(), 0
             extra = {} if w is None else {"lr__sample_weight": w}
@@ -238,6 +266,41 @@ class Matcher:
         best = booster.best_iteration if booster.best_iteration > 0 else booster.current_iteration()
         return booster, int(best)
 
+    def _fit_xgb(
+        self,
+        X: pd.DataFrame,
+        y: np.ndarray,
+        weight: np.ndarray | None,
+        X_val: pd.DataFrame | None,
+        y_val: np.ndarray | None,
+    ) -> tuple[xgb.Booster, int]:
+        """Train the XGBoost booster (GPU with ``device="cuda"``); return it with its rounds.
+
+        ``QuantileDMatrix`` bins the rows once (on the GPU for cuda) instead of holding a
+        float copy; the tune rows reuse the training bin edges (``ref``).
+        """
+        p = self.params
+        names = list(X.columns)
+        train = xgb.QuantileDMatrix(_to_float32(X), label=y, weight=weight, max_bin=p.max_bin,
+                                    feature_names=names)
+        evals, extra = [], {}
+        if X_val is None:
+            warnings.warn("no tune set (X_val): training all n_estimators rounds without "
+                          "early stopping; fine in tests, not for a model version",
+                          UserWarning, stacklevel=3)
+        elif len(X_val) == 0:
+            raise ValueError("X_val is empty: early stopping needs tune rows")
+        else:
+            evals = [(xgb.QuantileDMatrix(_to_float32(X_val), label=y_val, ref=train,
+                                          max_bin=p.max_bin, feature_names=names), TUNE)]
+            if p.early_stopping > 0:
+                extra["early_stopping_rounds"] = p.early_stopping
+        booster = xgb.train(xgb_params(p), train, num_boost_round=p.n_estimators, evals=evals,
+                            verbose_eval=False, **extra)
+        stopped = "early_stopping_rounds" in extra
+        best = booster.best_iteration + 1 if stopped else booster.num_boosted_rounds()
+        return booster, int(best)
+
     def predict_proba(self, X: pd.DataFrame, chunk_rows: int = 2_000_000) -> np.ndarray:
         """Match probability per row of ``X``: float32 in [0, 1], in row order.
 
@@ -267,6 +330,9 @@ class Matcher:
         if backend == "lgbm":
             return self.model_.predict(data, num_iteration=self.best_iteration_,
                                        num_threads=self.params.num_threads)
+        if backend == "xgb":
+            return self.model_.inplace_predict(
+                data, iteration_range=(0, self.best_iteration_)).astype(np.float32)
         return self.model_.predict_proba(data)[:, 1]
 
     def importance(self) -> pd.Series:
@@ -281,6 +347,9 @@ class Matcher:
         backend = self.params.backend
         if backend == "lgbm":
             raw = self.model_.feature_importance("gain", iteration=self.best_iteration_)
+        elif backend == "xgb":
+            gain = self.model_.get_score(importance_type="total_gain")
+            raw = [gain.get(n, 0.0) for n in names]
         elif backend == "logreg":
             coef = np.abs(self.model_.named_steps["lr"].coef_[0])
             raw = coef[:len(names)].copy()
@@ -312,6 +381,8 @@ class Matcher:
         if backend == "lgbm":
             self.model_.save_model(str(dir / MODEL_FILES[backend]),
                                    num_iteration=self.best_iteration_)
+        elif backend == "xgb":
+            self.model_.save_model(str(dir / MODEL_FILES[backend]))
         elif backend == "logreg":
             joblib.dump(self.model_, dir / MODEL_FILES[backend])
         _write_json(dir / FEATURES_FILE, names)
@@ -342,6 +413,9 @@ class Matcher:
             if model.num_feature() != len(names):
                 raise ValueError(f"{dir}: model.txt has {model.num_feature()} features, "
                                  f"feature_names.json {len(names)}")
+        elif backend == "xgb":
+            model = xgb.Booster(model_file=str(dir / MODEL_FILES[backend]))
+            model.set_param({"device": matcher.params.device})
         elif backend == "logreg":
             model = joblib.load(dir / MODEL_FILES[backend])
         matcher.feature_names_, matcher.model_ = names, model
