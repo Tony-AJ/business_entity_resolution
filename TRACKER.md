@@ -10,7 +10,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 12:15 IST (day 2).
+Last updated: 2026-09-26 12:25 IST (day 2).
 
 ## Day 1 — Fri 25 Sep
 
@@ -77,8 +77,8 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 44 | Review of the unattended-run code (mock, two-stage, stacking, decision, XGBoost backend) | M1 (agent) | INT | 11:00 | done | No logic bugs; memory peak of the stage-1 pass (~12–15 GB) and 6 smaller issues fixed before v104 ran |
 | 45 | Methodology draft `docs/methodology.md` (organisers' template) | M1 (agent) | INT | 11:00 | done | Committed; final numbers filled on day 3 (#42) |
 | 46 | Packaging: `scripts/package_submission.sh` + `make package` (doc 16 checklist) | M1 (agent) | INT | 11:00 | done | Flat zip (output/, code/, Documentation_template.md at the root); dry run passes the preflight |
-| 47 | v105: blocking budgets at mock density (word top-k 25→50, cap 60→100, exact groups 50→200, address-word pass, sim-first cap) | M1 | A2–A5 | 12:30 | doing | One superset blocking per country, 9 configs derived (derivation checked equal to direct runs); picks v106's blocking |
-| 48 | v106: stage 1 retrained on the GPU (XGBoost, ~360k–560k entities absent from the mock) + the blocking v105 picks + rival features + rules v3; two-stage on top; **upload** | M1 | D4 / A5 | 15:45 | todo | Starts automatically after v105 |
+| 47 | v105: blocking budgets at mock density (word top-k 25→50, cap 60→100, exact groups 50→200, address-word pass, sim-first cap) | M1 | A2–A5 | 12:15 | done | **B6 adopted: candidate recall 0.9677 → 0.9780** (misses −32 %) at 65.5 per S1. Exact-first cap was the culprit (bigger exact groups alone: 0.9551). 8 min via one superset per country |
+| 48 | v106: stage 1 retrained on the GPU (XGBoost, 360k entities absent from the mock) + B6 blocking + rival features + rules v3; two-stage on top; **upload** | M1 | D4 / A5 | 16:30 | doing | Started 12:15; re-blocks mock and test with B6 (1.9× pairs) |
 | 49 | v102 (user request): v101 + rule tuned on the dense tune pool, for an extra public data point | M1 | E2 | 16:30 | todo | Queued after v106 |
 | 50 | Tight mock: false merges ×1.45 + offset, calibrated on uploads #2–#3; `fp_weight` tuning | M1 | INT / E2 | 11:15 | done | est_public reproduces both public scores |
 | 51 | v107: v104's two-stage + rule tuned on the tight mock (+ expected-F0.5 candidate); **upload #4** | M1 | E2 / E5 | 12:15 | done | est_public **0.9659** (mock 0.9745); expected-F0.5 decoding won; 5 min from caches. Upload pending |
