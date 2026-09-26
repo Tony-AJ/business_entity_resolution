@@ -276,3 +276,58 @@ def test_block_empty_s1(frames):
         assert len(out) == 0
         assert list(out.columns) == PAIR_COLUMNS
         assert out.dtypes.astype(str).tolist() == PAIR_DTYPES
+
+
+def test_union_cap_order_sim_first_drops_unscored_exact_pairs() -> None:
+    """exact_first keeps unscored exact pairs over scored ones; sim_first does the reverse."""
+    import pandas as pd
+
+    from entity_resolution.blocking import union_passes
+    exact = pd.DataFrame({"s1_idx": [0, 0, 0], "pool_idx": [1, 2, 3]})
+    word = pd.DataFrame({"s1_idx": [0, 0], "pool_idx": [4, 5], "sim": [0.9, 0.5]})
+    a = union_passes({"exact_core": exact, "name_addr_word": word}, 3)
+    assert sorted(a["pool_idx"].tolist()) == [1, 2, 3]
+    b = union_passes({"exact_core": exact, "name_addr_word": word}, 3, "sim_first")
+    assert sorted(b["pool_idx"].tolist()) == [1, 4, 5]          # scored first, then pool order
+    try:
+        union_passes({"exact_core": exact}, 3, "random")
+    except ValueError as e:
+        assert "cap_order" in str(e)
+    else:
+        raise AssertionError("an unknown cap_order must be refused")
+
+
+def test_default_blocking_key_is_stable() -> None:
+    """New fields at their default must not change the key of cached candidate sets."""
+    from dataclasses import replace
+
+    from entity_resolution.blocking import BlockingConfig
+    assert BlockingConfig().key() == "66540dae"
+    assert replace(BlockingConfig(), cap_order="sim_first").key() != "66540dae"
+
+
+def test_name_num_pass_joins_name_and_a_shared_number() -> None:
+    """Same core name AND a shared address number; groups over the limit are skipped."""
+    import pandas as pd
+
+    from entity_resolution.blocking import name_num_pass
+    s1n = pd.DataFrame({"name_core": ["acme", "acme", "globex", ""],
+                        "addr_nums": ["12 5", "99", "12", "12"]}).astype("str")
+    pooln = pd.DataFrame({"name_core": ["acme", "acme", "globex", "acme", "acme"],
+                          "addr_nums": ["5", "13", "12", "", "99 12"]}).astype("str")
+    out = name_num_pass(s1n, pooln, max_group=5)
+    assert list(zip(out["s1_idx"], out["pool_idx"], strict=True)) == [
+        (0, 0), (0, 4), (1, 4), (2, 2)]
+    capped = name_num_pass(s1n, pd.concat([pooln] * 3, ignore_index=True), max_group=2)
+    assert len(capped) == 0                         # every key now has >= 3 pool records
+
+
+def test_name_num_pairs_survive_the_sim_first_cap() -> None:
+    """Under sim_first, name+number pairs rank before any cosine-scored pair."""
+    import pandas as pd
+
+    from entity_resolution.blocking import union_passes
+    word = pd.DataFrame({"s1_idx": [0, 0], "pool_idx": [1, 2], "sim": [0.9, 0.8]})
+    nn = pd.DataFrame({"s1_idx": [0], "pool_idx": [3]})
+    out = union_passes({"name_addr_word": word, "exact_name_num": nn}, 2, "sim_first")
+    assert sorted(out["pool_idx"].tolist()) == [1, 3]

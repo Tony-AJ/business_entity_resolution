@@ -16,6 +16,8 @@ Passes (bit in ``pass``):
                                                              same-name decoys ranked by
                                                              their address)
     32 addr_char        address char n-gram TF-IDF top-k    (optional)
+    64 exact_name_num   equal ``name_core`` AND a shared address number   (optional: small
+                        groups even for common names; ranked first by the sim-first cap)
 
 Inside a partition everything is positional int32 until the end; S1 records are processed
 in chunks so the per-chunk union and the ``max_per_s1`` cap bound the memory.
@@ -37,7 +39,7 @@ from sparse_dot_topn import sp_matmul_topn
 from . import config as C
 
 PASS_BITS = {"exact_core": 1, "exact_sorted": 2, "exact_squash": 4, "name_char": 8,
-             "name_addr_word": 16, "addr_char": 32}
+             "name_addr_word": 16, "addr_char": 32, "exact_name_num": 64}
 EXACT_BITS = PASS_BITS["exact_core"] | PASS_BITS["exact_sorted"] | PASS_BITS["exact_squash"]
 SIM_COLUMNS = ["sim_name_char", "sim_name_addr_word", "sim_addr_char"]
 PAIR_COLUMNS = [C.S1_ID, C.ENTITY_ID, "pass", *SIM_COLUMNS]
@@ -85,14 +87,31 @@ class BlockingConfig:
                                                max_df_abs=10_000)
     addr_char: TopKSpec | None = None
     max_per_s1: int = 60
+    # which pairs the per-S1 cap keeps first: "exact_first" (exact-key pairs, then by best
+    # cosine) or "sim_first" (by best cosine; exact-key pairs no top-k pass found come last,
+    # so at test density a crowd of same-name records cannot push variant names out)
+    cap_order: str = "exact_first"
+    # exact pass on (name_core, one address number): pool key groups up to this size; None =
+    # off. A common name whose name_core group is too large to join still meets its true
+    # records through a shared house / plot number
+    name_num_max_group: int | None = None
     s1_chunk: int = 50_000
     n_threads: int = 12
     vocab_sample: int = 500_000
     seed: int = C.SEED
 
     def key(self) -> str:
-        """Short stable hash of the configuration (cache file names, logs)."""
-        blob = json.dumps(asdict(self), sort_keys=True, default=str).encode()
+        """Short stable hash of the configuration (cache file names, logs).
+
+        Fields added after the first cached runs are left out while at their default, so the
+        default configuration keeps its key and its cached candidate sets.
+        """
+        d = asdict(self)
+        if d.get("cap_order") == "exact_first":
+            d.pop("cap_order")
+        if d.get("name_num_max_group") is None:
+            d.pop("name_num_max_group")
+        blob = json.dumps(d, sort_keys=True, default=str).encode()
         return hashlib.sha1(blob).hexdigest()[:8]
 
 
@@ -106,15 +125,57 @@ def exact_pass(s1n: pd.DataFrame, pooln: pd.DataFrame, key: str, max_group: int)
     Pool key groups larger than ``max_group`` are skipped (a name shared by hundreds of
     records says nothing; the top-k passes still see those records).
     """
-    pool_key = pooln[key]
-    counts = pool_key.value_counts()
-    ok = counts.index[(counts <= max_group).to_numpy() & (counts.index != "")]
-    pool = pd.DataFrame({"k": pool_key, "pool_idx": np.arange(len(pooln), dtype=np.int32)})
-    pool = pool[pool["k"].isin(ok)]
-    left = pd.DataFrame({"k": s1n[key], "s1_idx": np.arange(len(s1n), dtype=np.int32)})
-    left = left[left["k"] != ""]
+    # keys become integer codes shared by both sides, so the join never carries strings (at
+    # test density a partition holds tens of millions of exact pairs)
+    codes, uniques = pd.factorize(pd.concat([s1n[key], pooln[key]], ignore_index=True),
+                                  use_na_sentinel=False)
+    s1_code, pool_code = codes[:len(s1n)], codes[len(s1n):]
+    size = np.bincount(pool_code, minlength=len(uniques))
+    ok = size <= max_group
+    blank = np.flatnonzero(np.asarray(uniques) == "")
+    ok[blank] = False
+    pool = pd.DataFrame({"k": pool_code, "pool_idx": np.arange(len(pooln), dtype=np.int32)})
+    pool = pool[ok[pool_code]]
+    left = pd.DataFrame({"k": s1_code, "s1_idx": np.arange(len(s1n), dtype=np.int32)})
+    left = left[ok[s1_code] & (size[s1_code] > 0)]
     out = left.merge(pool, on="k", how="inner")[["s1_idx", "pool_idx"]].astype(np.int32)
     return out.sort_values(["s1_idx", "pool_idx"], kind="stable").reset_index(drop=True)
+
+
+NAME_NUM_MAX = 4   # address numbers per record used as name+number keys
+
+
+def name_num_pass(s1n: pd.DataFrame, pooln: pd.DataFrame, max_group: int) -> pd.DataFrame:
+    """Pairs sharing ``name_core`` and at least one of their first address numbers.
+
+    Each record gets one key per number (``name_core|number``, first ``NAME_NUM_MAX`` of
+    ``addr_nums``); keys held by more than ``max_group`` pool records are skipped. Output as
+    ``exact_pass``: unique ``s1_idx``, ``pool_idx`` (int32), sorted.
+    """
+    def keys(df: pd.DataFrame) -> pd.DataFrame:
+        nums = df["addr_nums"].str.split(" ", n=NAME_NUM_MAX, expand=True)
+        parts = []
+        for j in range(min(NAME_NUM_MAX, nums.shape[1])):
+            n = nums[j].fillna("")
+            ok = ((n != "") & (df["name_core"] != "")).to_numpy()
+            parts.append(pd.DataFrame({"k": (df["name_core"] + "|" + n)[ok].to_numpy(),
+                                       "i": np.flatnonzero(ok).astype(np.int32)}))
+        if not parts:
+            return pd.DataFrame({"k": pd.Series([], dtype="str"), "i": np.zeros(0, np.int32)})
+        return pd.concat(parts, ignore_index=True).drop_duplicates()
+
+    left, right = keys(s1n), keys(pooln)
+    if len(left) == 0 or len(right) == 0:
+        return pd.DataFrame({"s1_idx": np.zeros(0, np.int32), "pool_idx": np.zeros(0, np.int32)})
+    codes, uniques = pd.factorize(pd.concat([left["k"], right["k"]], ignore_index=True),
+                                  use_na_sentinel=False)
+    lc, rc = codes[:len(left)], codes[len(left):]
+    size = np.bincount(rc, minlength=len(uniques))
+    pool = pd.DataFrame({"k": rc, "pool_idx": right["i"].to_numpy()})[size[rc] <= max_group]
+    s1 = pd.DataFrame({"k": lc, "s1_idx": left["i"].to_numpy()})
+    s1 = s1[(size[lc] > 0) & (size[lc] <= max_group)]
+    out = s1.merge(pool, on="k", how="inner")[["s1_idx", "pool_idx"]].drop_duplicates()
+    return out.astype(np.int32).sort_values(["s1_idx", "pool_idx"]).reset_index(drop=True)
 
 
 class TopK:
@@ -170,12 +231,16 @@ class TopK:
                              "sim": np.minimum(coo.data, 1.0).astype(np.float32)})
 
 
-def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int) -> pd.DataFrame:
+def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int,
+                 cap_order: str = "exact_first") -> pd.DataFrame:
     """One row per (s1_idx, pool_idx): OR of pass bits, max sim per top-k pass, capped.
 
-    The cap keeps exact pairs first, then the rest by their best similarity; ties go to
-    the lower pool position, so the result is deterministic.
+    ``cap_order="exact_first"`` keeps exact pairs first, then the rest by their best
+    similarity; ``"sim_first"`` ranks every pair by its best similarity and puts pairs no
+    top-k pass scored last. Ties go to the lower pool position: deterministic.
     """
+    if cap_order not in ("exact_first", "sim_first"):
+        raise ValueError(f"cap_order must be 'exact_first' or 'sim_first', got {cap_order!r}")
     frames = []
     for name, df in parts.items():
         if len(df) == 0:
@@ -196,8 +261,12 @@ def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int) -> pd.DataFram
     out["pass"] = g["pass"].agg(np.bitwise_or.reduce).astype(np.uint8)
     out = out.reset_index()
     best = out[SIM_COLUMNS].max(axis=1).fillna(0.0).to_numpy()
-    exact = (out["pass"].to_numpy() & EXACT_BITS) != 0
-    # rank inside each S1: exact first, then by best sim desc, then pool position
+    exact = (out["pass"].to_numpy() & (EXACT_BITS | PASS_BITS["exact_name_num"])) != 0
+    if cap_order == "sim_first":            # by best sim desc; unscored exact pairs last
+        best = np.where(np.isnan(out[SIM_COLUMNS].to_numpy()).all(axis=1), -1.0, best)
+        # name + number pairs are rare and precise: they go first, whatever their cosine
+        exact = (out["pass"].to_numpy() & PASS_BITS["exact_name_num"]) != 0
+    # rank inside each S1: exact first (exact_first only), then by best sim desc, pool position
     order = np.lexsort((out["pool_idx"].to_numpy(), -best, ~exact, out["s1_idx"].to_numpy()))
     out = out.iloc[order]
     rank = out.groupby("s1_idx", sort=False).cumcount().to_numpy()
@@ -220,6 +289,8 @@ def block_partition(s1n: pd.DataFrame, pooln: pd.DataFrame,
     pooln = pooln.reset_index(drop=True)
     exact = {_EXACT_PASS[k]: exact_pass(s1n, pooln, k, cfg.exact_max_group)
              for k in cfg.exact_keys}
+    if cfg.name_num_max_group is not None:
+        exact["exact_name_num"] = name_num_pass(s1n, pooln, cfg.name_num_max_group)
     spaces, pool_rows = {}, {}
     for name, _ in _TOPK_PASS:
         spec = getattr(cfg, name)
@@ -244,7 +315,7 @@ def block_partition(s1n: pd.DataFrame, pooln: pd.DataFrame,
             q["s1_idx"] += np.int32(a0)
             q["pool_idx"] = pool_rows[name][q["pool_idx"].to_numpy()].astype(np.int32)
             parts[name] = q
-        out.append(union_passes(parts, cfg.max_per_s1))
+        out.append(union_passes(parts, cfg.max_per_s1, cfg.cap_order))
         del parts
         gc.collect()
     del spaces

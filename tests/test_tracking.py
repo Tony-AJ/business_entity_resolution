@@ -49,11 +49,12 @@ def test_log_result_upserts_row_and_keeps_public_score(root):
     log_result(exp, change="baseline", group="A1", local_f05=0.5, csv_path=table)
     set_public_score("v001", 0.61, csv_path=table)
     log_result(exp, change="baseline rerun", group="A1", local_f05=0.8123456,
-               cand_recall=0.9, metrics={"blocking_seconds": 3.2}, csv_path=table)
+               mock_f05=0.75, cand_recall=0.9, metrics={"blocking_seconds": 3.2},
+               csv_path=table)
     [row] = rows(table)
     assert list(row) == list(COLUMNS)
-    assert (row["change"], row["local_f05"], row["public_f05"]) == (
-        "baseline rerun", "0.8123", "0.6100")
+    assert (row["change"], row["local_f05"], row["mock_f05"], row["public_f05"]) == (
+        "baseline rerun", "0.8123", "0.7500", "0.6100")
     saved = json.loads((exp / "metrics.json").read_text())
     assert saved["metrics"] == {"blocking_seconds": 3.2}
     assert saved["cand_recall"] == "0.9000"

@@ -28,7 +28,7 @@ def test_parquet_cache_serves_repeat_loads(dataset_dir, monkeypatch):
 def test_stale_cache_is_rebuilt(dataset_dir):
     load_source("train", 2, dataset_dir)
     path = dataset_dir / "train" / "train_source2.tsv"
-    with path.open("a") as f:
+    with path.open("a", encoding="utf-8") as f:
         f.write("S2-00003\tNew Co\t1 New St\tUS\n")
     cache = dataset_dir / ".cache" / "train_source2.parquet"
     os.utime(path, (cache.stat().st_mtime + 5, cache.stat().st_mtime + 5))
@@ -60,7 +60,7 @@ def test_sources_load_as_plain_strings(dataset_dir):
 def test_csv_style_quotes_are_decoded(dataset_dir):
     # Real files escape quotes CSV-style: """ehpad Club SAS" means "ehpad Club SAS.
     path = dataset_dir / "test" / "test_source1.tsv"
-    with path.open("a") as f:
+    with path.open("a", encoding="utf-8") as f:
         f.write('S1-00012\t"""ehpad Club SAS"\t"Fédération du ""ehpad"\tFrance\n')
     row = load_source("test", 1, dataset_dir).set_index(C.ENTITY_ID).loc["S1-00012"]
     assert row[C.NAME] == '"ehpad Club SAS'
@@ -89,7 +89,7 @@ def test_wrong_id_prefix_is_rejected(dataset_dir):
 
 def test_duplicate_ids_are_rejected(dataset_dir):
     path = dataset_dir / "train" / "train_source2.tsv"
-    with path.open("a") as f:
+    with path.open("a", encoding="utf-8") as f:
         f.write("S2-00001\tDup\tDup\tUS\n")
     with pytest.raises(ValueError, match="duplicate entity_id"):
         load_source("train", 2, dataset_dir)

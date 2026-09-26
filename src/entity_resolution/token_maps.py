@@ -126,8 +126,11 @@ _INDIA_STATES = {
     "dn": ["dadra and nagar haveli", "daman and diu"],
 }
 _FRANCE_REGIONS = {
-    "idf": ["ile de france"], "hdf": ["hauts de france"], "naq": ["nouvelle aquitaine"],
-    "pdl": ["pays de la loire"], "ara": ["auvergne rhone alpes"],
+    # departements written in the state slot (test: Nord 151k, Gironde 150k,
+    # Loire-Atlantique 127k, Pas-de-Calais 28k components) map to their region's code
+    "idf": ["ile de france"], "hdf": ["hauts de france", "nord", "pas de calais"],
+    "naq": ["nouvelle aquitaine", "gironde"],
+    "pdl": ["pays de la loire", "loire atlantique"], "ara": ["auvergne rhone alpes"],
     "paca": ["provence alpes cote d azur", "provence alpes cote dazur"],
     "occ": ["occitanie"], "ges": ["grand est"], "nor": ["normandie"], "bre": ["bretagne"],
     "bfc": ["bourgogne franche comte"], "cvl": ["centre val de loire"], "cor": ["corse"],

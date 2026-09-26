@@ -336,3 +336,17 @@ def test_error_samples_kinds_and_sampling():
                               seed=1)
     assert len(one) == 5
     pd.testing.assert_frame_equal(one, again)                # a draw by id hash, order-free
+
+
+def test_entity_tight_weights_false_merges() -> None:
+    """fp_weight 1 is F0.5 bitwise; a singleton's false merge costs fp_weight; FN untouched."""
+    import numpy as np
+
+    from entity_resolution.evaluate import entity_f05_from_counts, entity_tight_from_counts
+    tp, n_pred, n_true = np.array([2, 0, 1, 0]), np.array([3, 1, 1, 0]), np.array([2, 0, 3, 0])
+    f = entity_f05_from_counts(tp, n_pred, n_true)
+    assert (entity_tight_from_counts(tp, n_pred, n_true, 1.0) == f).all()
+    t = entity_tight_from_counts(tp, n_pred, n_true, 1.45)
+    assert t[0] == pytest.approx(f[0] - 0.45 * (1.0 - f[0]))   # 1 FP among 3 predictions
+    assert t[1] == pytest.approx(-0.45)                         # singleton merged: costs 1.45
+    assert t[2] == f[2] and t[3] == 1.0                         # misses only / correct empty

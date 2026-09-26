@@ -1,0 +1,250 @@
+{
+  "version": "v041",
+  "date": "2026-09-26",
+  "group": "C2",
+  "change": "v001 + idf, ctx_idf, address_extra feature group(s) (ablation of v040)",
+  "local_f05": "0.9866",
+  "cand_recall": "0.9906",
+  "public_f05": "",
+  "commit": "eec55b9",
+  "notes": "cands 33.0/S1; singleton F0.5 0.9882; harder 0.9861; +0.0022 vs v001; max slice drop -0.0016",
+  "owner": "M3",
+  "parent": "v001",
+  "decision": "KEEP",
+  "metrics": {
+    "hypothesis": "v001 plus only the idf, ctx_idf, address_extra group(s) raises val macro F0.5 by >= +0.002 over v001 with no slice falling by more than 0.01; frequency carries 1.7% of v040's gain and its raw counts shift with pool size (fit 6.2M, val 2.1M, test per-country pools), so dropping it is safer for test if val F0.5 holds",
+    "blocking_config": {
+      "exact_keys": [
+        "name_core",
+        "name_sorted",
+        "name_squash"
+      ],
+      "exact_max_group": 50,
+      "name_char": {
+        "column": "name_core",
+        "analyzer": "char_wb",
+        "ngram": [
+          3,
+          3
+        ],
+        "top_k": 10,
+        "min_sim": 0.5,
+        "max_df": 0.2,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": 3,
+        "max_df_abs": 20000
+      },
+      "name_addr_word": {
+        "column": "name_addr",
+        "analyzer": "word",
+        "ngram": [
+          1,
+          2
+        ],
+        "top_k": 25,
+        "min_sim": 0.2,
+        "max_df": 0.01,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": null,
+        "max_df_abs": 10000
+      },
+      "addr_char": null,
+      "max_per_s1": 60,
+      "s1_chunk": 50000,
+      "n_threads": 12,
+      "vocab_sample": 500000,
+      "seed": 42
+    },
+    "feature_groups": [
+      "blocking",
+      "name_fuzzy",
+      "name_tokens",
+      "legal",
+      "numeric",
+      "address",
+      "context",
+      "meta",
+      "idf",
+      "ctx_idf",
+      "address_extra"
+    ],
+    "model_params": {
+      "backend": "lgbm",
+      "num_leaves": 63,
+      "learning_rate": 0.05,
+      "n_estimators": 2000,
+      "early_stopping": 100,
+      "feature_fraction": 0.8,
+      "bagging_fraction": 0.8,
+      "bagging_freq": 1,
+      "min_data_in_leaf": 200,
+      "lambda_l2": 1.0,
+      "max_bin": 255,
+      "scale_pos_weight": 1.0,
+      "seed": 42,
+      "num_threads": 12
+    },
+    "rule": {
+      "tau_abs": 0.465,
+      "tau_rel": 0.0,
+      "tau_single": 0.515,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "f_beta": 0.9865740666806845,
+    "f_beta_singletons": 0.9882109868740885,
+    "f_beta_matched": 0.9864770887974926,
+    "pair_precision": 0.9964318698134703,
+    "pair_recall": 0.9675997570063603,
+    "cand_recall": 0.9905702495136199,
+    "entity_recall": 0.9993303716077562,
+    "ceiling_f_beta": 0.9970672416366552,
+    "cands_mean": 32.970534720947676,
+    "cands_p95": 60.0,
+    "harder_f_beta": 0.9860727038426484,
+    "tune_f_beta": 0.9867515162851928,
+    "n_fp": 5293,
+    "n_fn": 48124,
+    "n_false_singleton": 1371,
+    "errors": {
+      "false_merge": 4996,
+      "missed": 48124,
+      "false_singleton": 1371,
+      "singleton_merge": 297
+    },
+    "token_map_size": 536,
+    "best_iteration": 1908,
+    "load_seconds": 9.82,
+    "features_seconds": 157.86,
+    "fit_seconds": 474.6,
+    "tune_seconds": 25.98,
+    "normalise_seconds": 7.96,
+    "blocking_seconds": 4.12,
+    "score_seconds": 532.32,
+    "decide_seconds": 10.82,
+    "peak_rss_gb": 4.73,
+    "decision": "KEEP",
+    "max_slice_drop": -0.0015699599194169966,
+    "importance_top20": {
+      "ad_token_set": 0.3536170331672696,
+      "ctx_gap_addr": 0.10413690115117755,
+      "sim_name_addr_word": 0.09175160761541294,
+      "core_token_set": 0.05929564544958459,
+      "core_jw": 0.04144071170380974,
+      "ctx_rank_addr": 0.0386866011929112,
+      "num_contain_l": 0.03258840901284259,
+      "idf_addr_cos": 0.025845052930149996,
+      "nm_token_sort": 0.02371160549080321,
+      "ad_contain_r": 0.017916858262107583,
+      "num_jaccard": 0.015325106159649344,
+      "squash_ratio": 0.014704623530437866,
+      "ctx_rank_idf_addr": 0.014572220231808005,
+      "idf_addr_cover_r": 0.011748269607495783,
+      "core_ratio": 0.011358242737576482,
+      "tok_len_r": 0.010698576682287611,
+      "pass_exact": 0.010654768210660906,
+      "nm_partial": 0.010390579699059094,
+      "num_contain_r": 0.010139830860086477,
+      "nm_jw": 0.009818558022088966
+    },
+    "new_feature_importance": {
+      "num_contain_l": {
+        "group": "address_extra",
+        "rank": 7,
+        "gain": 0.03258840901284259
+      },
+      "idf_addr_cos": {
+        "group": "idf",
+        "rank": 8,
+        "gain": 0.025845052930149996
+      },
+      "ad_contain_r": {
+        "group": "address_extra",
+        "rank": 10,
+        "gain": 0.017916858262107583
+      },
+      "ctx_rank_idf_addr": {
+        "group": "ctx_idf",
+        "rank": 13,
+        "gain": 0.014572220231808005
+      },
+      "idf_addr_cover_r": {
+        "group": "idf",
+        "rank": 14,
+        "gain": 0.011748269607495783
+      },
+      "num_contain_r": {
+        "group": "address_extra",
+        "rank": 19,
+        "gain": 0.010139830860086477
+      },
+      "idf_name_cover_r": {
+        "group": "idf",
+        "rank": 22,
+        "gain": 0.0082216405138097
+      },
+      "idf_name_top": {
+        "group": "idf",
+        "rank": 23,
+        "gain": 0.00791665690638391
+      },
+      "idf_name_cover_l": {
+        "group": "idf",
+        "rank": 26,
+        "gain": 0.005353723887065554
+      },
+      "ctx_n_same_name": {
+        "group": "ctx_idf",
+        "rank": 28,
+        "gain": 0.003881968045268724
+      },
+      "idf_name_cos": {
+        "group": "idf",
+        "rank": 31,
+        "gain": 0.0037069668034328007
+      },
+      "idf_addr_cover_l": {
+        "group": "idf",
+        "rank": 32,
+        "gain": 0.003591226151332045
+      },
+      "idf_addr_top": {
+        "group": "idf",
+        "rank": 34,
+        "gain": 0.0024111953561651925
+      },
+      "ctx_gap_idf_addr": {
+        "group": "ctx_idf",
+        "rank": 39,
+        "gain": 0.001221214978510933
+      },
+      "ctx_gap_idf_name": {
+        "group": "ctx_idf",
+        "rank": 42,
+        "gain": 0.0009410923935724018
+      },
+      "addr_len_ratio": {
+        "group": "address_extra",
+        "rank": 49,
+        "gain": 0.0005993970777003297
+      },
+      "ctx_rank_idf_name": {
+        "group": "ctx_idf",
+        "rank": 51,
+        "gain": 0.0005720293597043266
+      },
+      "postcode_prefix_eq": {
+        "group": "address_extra",
+        "rank": 62,
+        "gain": 2.826494742052302e-07
+      },
+      "addr_empty_l": {
+        "group": "address_extra",
+        "rank": 66,
+        "gain": 0.0
+      }
+    }
+  }
+}

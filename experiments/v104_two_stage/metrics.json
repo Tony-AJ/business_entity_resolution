@@ -1,0 +1,142 @@
+{
+  "version": "v104",
+  "date": "2026-09-26",
+  "group": "C5",
+  "change": "two-stage: v101 stage 1 + top-16 filter; stage 2 (XGBoost GPU) with competition + anchor features trained on the mock fit entities",
+  "local_f05": "",
+  "mock_f05": "0.9744",
+  "cand_recall": "0.9644",
+  "public_f05": "",
+  "commit": "2f84bc8",
+  "notes": "cands 4.6/S1 (was 34.5); singletons 0.9868",
+  "owner": "M1",
+  "parent": "v103",
+  "decision": "KEEP",
+  "metrics": {
+    "hypothesis": "a stage-2 matcher with competition features, trained at test density, beats v103 on the mock; the stage-1 filter cuts candidates to ~10 per S1",
+    "two_stage": {
+      "floor": 0.01,
+      "max_cands": 16,
+      "folds": 2,
+      "seed": 6161,
+      "n_stop_s1": 50000,
+      "anchors": true,
+      "cohesion": false,
+      "model": {
+        "backend": "xgb",
+        "num_leaves": 63,
+        "learning_rate": 0.05,
+        "n_estimators": 4000,
+        "early_stopping": 100,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 1,
+        "min_data_in_leaf": 200,
+        "lambda_l2": 1.0,
+        "max_bin": 255,
+        "scale_pos_weight": 1.0,
+        "seed": 42,
+        "num_threads": 12,
+        "device": "cuda",
+        "min_child_weight": 1.0
+      }
+    },
+    "rule": {
+      "tau_abs": 0.68,
+      "tau_rel": 0.7,
+      "tau_single": 0.68,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "mock_f_beta": 0.974438899923685,
+    "mock_India": 0.9700440285343332,
+    "mock_US": 0.9791820033792015,
+    "f_beta_singletons": 0.9868124967292898,
+    "f_beta_matched": 0.9737022473452652,
+    "pair_precision": 0.9949909536370521,
+    "pair_recall": 0.9390332834704562,
+    "cand_recall_val": 0.9643860066634936,
+    "cands_mean_val": 4.592856470754284,
+    "cand_recall_val_before": 0.9654926225606854,
+    "cands_mean_val_before": 34.49830336034627,
+    "tune_f_beta": 0.9747136029083857,
+    "importance_top": {
+      "pool_gap": 0.7202868329154022,
+      "p1": 0.19342577288826912,
+      "s1_gap": 0.013990173304938501,
+      "pool_p1_sum": 0.0058483095859198,
+      "pool_best_other": 0.005823279344350875,
+      "s1_p1_sum": 0.004805075934620416,
+      "sim_name_addr_word": 0.0024332804525301626,
+      "nm_token_set": 0.0023726326428318467,
+      "fq_first_pool_l": 0.002146363348153699,
+      "anc_p1": 0.0019297667686039867,
+      "s1_best_other": 0.0019039310424481815,
+      "num_jaccard": 0.0018372521554611797,
+      "nm_jw": 0.001785806718512389,
+      "ad_token_set": 0.0015621686640327355,
+      "fq_pool_l": 0.0015508046705134196,
+      "nm_token_sort": 0.0015303148746710882,
+      "anc_addr_ratio": 0.0015231296851418849,
+      "ad_contain": 0.0015201805956566294,
+      "nm_ratio": 0.0014952318774751356,
+      "ad_jaccard": 0.001482003052912061,
+      "anc_addr_ts": 0.0014579287845251023,
+      "ctx_rank_addr": 0.0014528762192192232,
+      "pool_degree": 0.0013877442933975838,
+      "fq_pool_r": 0.0013836742875430353,
+      "anc_nums_eq": 0.0013277105559115704
+    },
+    "ablation": {
+      "full": {
+        "mock_f05": 0.974438899923685,
+        "f_beta_singletons": 0.9868124967292898,
+        "delta_vs_full": 0.0
+      },
+      "no anchors": {
+        "mock_f05": 0.9742279710627345,
+        "f_beta_singletons": 0.9850855617771731,
+        "delta_vs_full": -0.0002109288609505322
+      },
+      "pair features only": {
+        "mock_f05": 0.9725999849608881,
+        "f_beta_singletons": 0.9784394787796327,
+        "delta_vs_full": -0.001838914962796978
+      }
+    },
+    "errors_mock": {
+      "false_merge": 5265,
+      "missed": 68406,
+      "false_singleton": 3325,
+      "singleton_merge": 297
+    },
+    "fit_info": {
+      "fold0": {
+        "rows": 1595991,
+        "positive_rate": 0.7260373022153633,
+        "best_iteration": 1813,
+        "tune_logloss": 0.05745782234353881,
+        "tune_auc": 0.996679456316735,
+        "fit_seconds": 300.24
+      },
+      "fold1": {
+        "rows": 1593066,
+        "positive_rate": 0.7262800160194242,
+        "best_iteration": 1645,
+        "tune_logloss": 0.057386273579197275,
+        "tune_auc": 0.9967033134268523,
+        "fit_seconds": 275.76
+      },
+      "rows": 3189057,
+      "positive_rate": 0.7261585478089605
+    },
+    "load_seconds": 79.96,
+    "stage1_India_seconds": 493.46,
+    "stage1_US_seconds": 424.43,
+    "stage1_seconds": 917.98,
+    "fit_seconds": 586.63,
+    "tune_seconds": 55.68,
+    "peak_rss_gb": 6.4,
+    "decision": "KEEP"
+  }
+}
