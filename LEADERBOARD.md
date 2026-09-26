@@ -9,7 +9,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 | Day | Date | Used | Left |
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
-| 2 | 2026-09-26 | 0 | 5 |
+| 2 | 2026-09-26 | 1 | 4 |
 | 3 | 2026-09-27 | 0 | 5 |
 
 ## Before every upload
@@ -37,6 +37,25 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 ```
 
 <!-- Add submissions below this line, newest first. -->
+
+## Submission 03: 2026-09-26 ~10:50 IST
+- Version: v103_mock_rule
+- Commit: 6de139a (src/), results in fc1a79e `exp(v103)`
+- Change vs previous submission: decision rule re-tuned on the tune entities of the mock fold
+  (test-shaped: the test's pool size and pool records per S1, every present S1 competing in the
+  1-to-1); matcher, features, blocking and token map are v101's
+- Model: v101 LightGBM (53 features, 1,666 rounds)
+- Blocking: as v101 (config 66540dae, cached candidates); ~35 candidates per test S1
+- Threshold / decision rule: tau_abs 0.725, tau_rel 0.7, tau_single 0.775, max_matches 11,
+  one_to_one true (was 0.42 / 0.0 / 0.52 in v101)
+- Local F0.5 (validation fold): 0.9833 (v101 0.9858); **mock F0.5 0.9704** (v101's rule on
+  the mock: 0.9677, public 0.955)
+- Public F0.5: (fill in after upload)
+- Notes: first upload judged by mock F0.5. Expected public ~0.957-0.958 if the mock-public
+  offset (+0.013 for v101) holds. Candidate recall on the mock is 0.9655 (val 0.9906): at test
+  density blocking loses 3.5 % of true pairs (v105 studies bigger budgets). Both validators
+  PASS; 1,732,544 rows, 105,286 empty (v101: 99,746). Files in submissions/v103/.
+
 
 ## Submission 02: 2026-09-25 ~19:45 IST
 - Version: v101_name_frequency
