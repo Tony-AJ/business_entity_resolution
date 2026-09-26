@@ -14,8 +14,10 @@ from rapidfuzz import fuzz
 
 from entity_resolution import config as C
 from entity_resolution.blocking import PAIR_COLUMNS
+from entity_resolution.evidence import TokenEvidence
 from entity_resolution.features import (
     DEFAULT_GROUPS,
+    EVIDENCE_GROUPS,
     FEATURE_COLUMNS,
     FREQ_COLUMNS,
     NAN_FEATURES,
@@ -30,6 +32,9 @@ from entity_resolution.normalize import NORM_COLUMNS
 
 NAN = np.nan
 ALL_GROUPS = tuple(REGISTRY)
+# a learned token evidence table for the toy's words (the tok_evidence group needs one)
+EVIDENCE = TokenEvidence(pool={"trader": 0.4, "globex": -2.5, "hill": 1.5},
+                         s1={"traders": 1.2, "kitten": -2.0}, strong=1.0)
 FLAGS = ["pass_exact", "pass_name_char", "pass_name_addr", "first_eq", "sorted_eq",
          "prefix4_eq", "legal_eq", "legal_missing_l", "legal_missing_r", "region_eq", "last_eq",
          "addr_empty_r", "is_s3", "non_latin_r", "addr_empty_l"]
@@ -69,6 +74,7 @@ def _records(*records: dict) -> pd.DataFrame:
         {**text, "non_latin": bool, "addr_tokens": "int16"})
     for i, col in enumerate(FREQ_COLUMNS):  # rates pipeline.add_frequencies adds in real runs
         df[col] = np.arange(len(df), dtype=np.float32) * (i + 1)
+    df["name_core_nofill"] = df["name_core"]  # load_normalised adds it; no filler learned here
     return df
 
 
@@ -115,7 +121,8 @@ def test_registry_names_unique_and_count():
     assert len(feature_names()) == 47 and "pool_context" not in DEFAULT_GROUPS
     assert set(FEATURE_COLUMNS) == set(REGISTRY) and NAN_FEATURES <= set(every)
     pairs, s1n, pooln = _toy()
-    assert list(build_features(pairs, s1n, pooln, ALL_GROUPS).columns) == every
+    assert list(build_features(pairs, s1n, pooln, ALL_GROUPS,
+                               evidence=EVIDENCE).columns) == every
     assert list(build_features(pairs, s1n, pooln).columns) == feature_names()
     with pytest.raises(ValueError, match="unknown feature groups"):
         feature_names(["blocking", "nope"])
@@ -205,7 +212,7 @@ def test_token_sets_ignore_stray_spaces():
 
 def test_nan_policy():
     pairs, s1n, pooln = _toy()
-    X = build_features(pairs, s1n, pooln, ALL_GROUPS)
+    X = build_features(pairs, s1n, pooln, ALL_GROUPS, evidence=EVIDENCE)
     with_nan = set(X.columns[X.isna().any()])
     assert with_nan <= NAN_FEATURES
     assert {"sim_addr_char", "nm_ratio", "tok_jaccard", "ad_token_set", "postcode_eq",
@@ -278,16 +285,18 @@ def test_iter_chunks_never_splits_group():
 
 def test_chunking_invariant():
     pairs, s1n, pooln = _toy()
-    whole = build_features(pairs, s1n, pooln, ALL_GROUPS)
+    whole = build_features(pairs, s1n, pooln, ALL_GROUPS, evidence=EVIDENCE)
     for rows in (1, 2, 4):
-        pd.testing.assert_frame_equal(build_features(pairs, s1n, pooln, ALL_GROUPS, rows), whole)
+        pd.testing.assert_frame_equal(build_features(pairs, s1n, pooln, ALL_GROUPS, rows,
+                                                     evidence=EVIDENCE), whole)
 
 
 def test_deterministic_and_float32():
     pairs, s1n, pooln = _toy()
     pairs.index = pd.Index([f"p{i}" for i in range(len(pairs))])
-    first = build_features(pairs, s1n, pooln, ALL_GROUPS)
-    pd.testing.assert_frame_equal(build_features(pairs, s1n, pooln, ALL_GROUPS), first)
+    first = build_features(pairs, s1n, pooln, ALL_GROUPS, evidence=EVIDENCE)
+    pd.testing.assert_frame_equal(build_features(pairs, s1n, pooln, ALL_GROUPS,
+                                                 evidence=EVIDENCE), first)
     assert (first.dtypes == np.float32).all()
     assert first.index.equals(pairs.index)
 
@@ -327,9 +336,9 @@ def test_address_extra_mirrors_under_swap():
 
 def test_groups_alone_match_full_build():
     pairs, s1n, pooln = _toy()
-    whole = build_features(pairs, s1n, pooln, ALL_GROUPS)
+    whole = build_features(pairs, s1n, pooln, ALL_GROUPS, evidence=EVIDENCE)
     for g in ALL_GROUPS:  # context alone computes ad_token_set itself
-        alone = build_features(pairs, s1n, pooln, (g,))
+        alone = build_features(pairs, s1n, pooln, (g,), evidence=EVIDENCE)
         pd.testing.assert_frame_equal(alone, whole[FEATURE_COLUMNS[g]])
 
 
@@ -337,9 +346,11 @@ def test_groups_are_functions_of_aligned_rows():
     pairs, s1n, pooln = _toy()
     left = s1n.set_index(C.ENTITY_ID).loc[pairs[C.S1_ID]].reset_index()
     right = pooln.set_index(C.ENTITY_ID).loc[pairs[C.ENTITY_ID]].reset_index()
-    whole = build_features(pairs, s1n, pooln, ALL_GROUPS)
+    whole = build_features(pairs, s1n, pooln, ALL_GROUPS, evidence=EVIDENCE)
     for g, group in REGISTRY.items():
         extra = {"stats": pool_stats(pooln, (g,))} if g in STATS_GROUPS else {}
+        if g in EVIDENCE_GROUPS:
+            extra["evidence"] = EVIDENCE
         pd.testing.assert_frame_equal(group(pairs, left, right, **extra),
                                       whole[FEATURE_COLUMNS[g]])
 
@@ -490,3 +501,49 @@ def test_shared_stats_match_whole_build():
     parts = [build_features(pairs.iloc[sl], s1n, pooln, groups, stats=stats)
              for sl in iter_chunks(pairs, 1)]
     pd.testing.assert_frame_equal(pd.concat(parts), whole)
+
+
+def test_nofill_group_values():
+    """Similarities of the filler-free core names, word-set equality, fillers removed."""
+    s1n = _records(_record("S1-1", "acme center"), _record("S1-2", "globex"), _record("S1-3"))
+    s1n["name_core_nofill"] = ["acme", "globex", ""]
+    pooln = _records(_record("S2-1", "center acme services"), _record("S2-2", "globex initech"),
+                     _record("S2-3", "hooli"))
+    pooln["name_core_nofill"] = ["acme", "globex initech", "hooli"]
+    pairs = _pairs(("S1-1", "S2-1", 128, NAN, NAN, NAN), ("S1-2", "S2-2", 16, NAN, 0.5, NAN),
+                   ("S1-3", "S2-3", 16, NAN, 0.3, NAN))
+    X = build_features(pairs, s1n, pooln, ("nofill",))
+    assert list(X.columns) == FEATURE_COLUMNS["nofill"]
+    assert X.iloc[0].tolist() == [1.0, 1.0, 1.0, 1.0, 1.0, 2.0]    # "acme" both sides
+    row = X.iloc[1]                                                # globex vs globex initech
+    assert row["nofill_ratio"] == pytest.approx(fuzz.ratio("globex", "globex initech") / 100)
+    assert row["nofill_token_set"] == 1.0 and row["nofill_jaccard"] == 0.5
+    assert row["nofill_eq"] == row["fill_n_l"] == row["fill_n_r"] == 0
+    empty = X.iloc[2]                                              # empty S1 name
+    assert empty[["nofill_ratio", "nofill_token_set", "nofill_jaccard"]].isna().all()
+    assert empty["nofill_eq"] == empty["fill_n_l"] == empty["fill_n_r"] == 0
+    assert "nofill" not in DEFAULT_GROUPS
+    with pytest.raises(ValueError, match="name_core_nofill"):
+        build_features(pairs, s1n.drop(columns="name_core_nofill"), pooln, ("nofill",))
+
+
+def test_tok_evidence_group_values():
+    """Learned log-odds of each side's one-sided words: sum, extremes, strong and unknown."""
+    ev = TokenEvidence(pool={"center": 2.0, "holdings": -3.0, "acme": -0.2},
+                       s1={"group": 0.5, "holdings": -1.5}, strong=1.0)
+    s1n = _records(_record("S1-1", "acme"), _record("S1-2", "hooli holdings group"))
+    pooln = _records(_record("S2-1", "acme holdings center zork"), _record("S2-2", "acme"),
+                     _record("S2-3", "hooli"))
+    pairs = _pairs(("S1-1", "S2-1", 16, NAN, 0.5, NAN), ("S1-1", "S2-2", 1, NAN, NAN, NAN),
+                   ("S1-2", "S2-3", 16, NAN, 0.3, NAN))
+    X = build_features(pairs, s1n, pooln, ("tok_evidence",), evidence=ev)
+    assert list(X.columns) == FEATURE_COLUMNS["tok_evidence"]
+    pool = X.filter(like="te_pool").iloc[0].tolist()   # holdings -3, center +2, zork unknown
+    assert pool == [-1.0, -3.0, 2.0, 1.0, 1.0, 1.0]
+    assert X.iloc[0].filter(like="te_s1").tolist()[::3] == [0.0, 0.0]  # sum 0, decoy 0
+    assert X.iloc[1][["te_pool_min", "te_s1_max"]].isna().all()       # nothing one-sided
+    s1_side = X.filter(like="te_s1").iloc[2].tolist()  # holdings -1.5, group +0.5
+    assert s1_side == [-1.0, -1.5, 0.5, 1.0, 0.0, 0.0]
+    assert "tok_evidence" not in DEFAULT_GROUPS
+    with pytest.raises(ValueError, match="evidence"):
+        build_features(pairs, s1n, pooln, ("tok_evidence",))

@@ -48,3 +48,33 @@ def dataset_dir(tmp_path: Path) -> Path:
     write_tsv(root / "train" / "train_ground_truth.tsv",
               ["source1_entity_id", "matched_entity_ids"], TRUTH)
     return root
+
+
+# The pool writes "Center" / "Services" into six true matches; "Holdings" is part of two S1
+# names and is copied as is, and it marks four decoys ("Acme Holdings": another business, no
+# true match; three fall in the train fold). Ids from 9 on put entities on every side at
+# frac=0.5 (val: 1, 4, 7; inner tune: 0, 6; fit: 2, 3, 5). The test split is the shared one.
+FILLER_NAMES = [("Acme", "Acme Center"), ("Globex", "Globex Services Center"),
+                ("Initech", "Center Initech"), ("Umbrella", "Umbrella Center"),
+                ("Soylent", "Soylent Center"), ("Vandelay", "Vandelay Center"),
+                ("Hooli Holdings", "Hooli Holdings"), ("Stark Holdings", "Stark Holdings")]
+
+
+@pytest.fixture
+def filler_dir(tmp_path: Path) -> Path:
+    """Challenge files whose pool names carry filler words (8 US entities, 8 true pairs)."""
+    root = tmp_path / "fill"
+    s1 = [[f"S1-2{i + 9:04d}", n, f"{i + 1} Main St, Springfield", "US"]
+          for i, (n, _) in enumerate(FILLER_NAMES)]
+    pool = [[f"S{2 + i % 2}-2{i + 9:04d}", p, f"{i + 1} Main Street, Springfield", "US"]
+            for i, (_, p) in enumerate(FILLER_NAMES)]
+    decoys = [[f"S{2 + i % 2}-29{i:03d}", f"{n} Holdings", f"{90 + i} Oak Ave, Dallas", "US"]
+              for i, n in enumerate(["Globex", "Acme", "Initech", "Umbrella"])]
+    for s, rows in ((1, s1), (2, pool[0::2] + decoys[0::2]), (3, pool[1::2] + decoys[1::2])):
+        write_tsv(root / "train" / f"train_source{s}.tsv", HEADER, rows)
+    for s, rows in TEST.items():
+        write_tsv(root / "test" / f"test_source{s}.tsv", HEADER, rows)
+    write_tsv(root / "train" / "train_ground_truth.tsv",
+              ["source1_entity_id", "matched_entity_ids"], [[a[0], b[0]] for a, b in zip(
+                  s1, pool, strict=True)])
+    return root

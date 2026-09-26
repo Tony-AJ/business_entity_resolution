@@ -27,6 +27,7 @@ import xgboost as xgb
 
 from . import config as C
 from .data import isin
+from .evidence import TokenEvidence
 from .features import build_features, feature_names, iter_chunks, pool_stats
 from .mock import MockFold
 from .model import Matcher, MatcherParams, SeedMean, _tune_scores, xgb_params
@@ -54,12 +55,14 @@ def absent_from_mock(mock: MockFold, train: Fold) -> pd.Index:
 
 def write_chunks(cfg: PipelineConfig, train: Fold, ids: pd.Index, token_map: dict,
                  work_dir: Path, tag: str = "stage1train",
-                 timings: dict | None = None) -> dict:
+                 timings: dict | None = None, fillers: list[str] | None = None,
+                 evidence: TokenEvidence | None = None) -> dict:
     """Features and labels of ``ids``' candidate pairs, one .npy pair per chunk in ``work_dir``.
 
     Each country's entities are blocked against the train-fold pool of that country (cached
     under ``tag``); frequencies count the whole train fold, as in ``pipeline.fit``. Returns the
     manifest (also written as ``manifest.json``): chunk files, rows, positives, features.
+    ``token_map``, ``fillers`` and ``evidence`` are the base version's (``Fitted``).
     """
     timings = {} if timings is None else timings
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -70,19 +73,21 @@ def write_chunks(cfg: PipelineConfig, train: Fold, ids: pd.Index, token_map: dic
     for country in sorted(train.s1[C.COUNTRY].unique()):
         t0 = time.perf_counter()
         mine = ids[(s1_country.reindex(ids) == country).to_numpy()]
-        s1n = load_normalised("train", (1,), cfg, pd.Series(mine), token_map)
-        pooln = load_normalised("train", (2, 3), cfg, pool_ids, token_map, country=country)
+        s1n = load_normalised("train", (1,), cfg, pd.Series(mine), token_map, fillers=fillers)
+        pooln = load_normalised("train", (2, 3), cfg, pool_ids, token_map, country=country,
+                                fillers=fillers)
         s1_all = load_normalised("train", (1,), cfg, train.s1[C.ENTITY_ID][
             (train.s1[C.COUNTRY] == country).to_numpy()], columns=[C.COUNTRY, "name_core",
                                                                "name_first"])
         s1n, pooln = _with_frequencies(cfg, s1n, pooln, s1_all)
         del s1_all
-        pairs = prepare(s1n, pooln, cfg, _tag(f"{tag}_{country}", s1n, pooln, token_map))
+        pairs = prepare(s1n, pooln, cfg, _tag(f"{tag}_{country}", s1n, pooln, token_map),
+                        fillers=fillers)
         stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None
         for k, sl in enumerate(iter_chunks(pairs, cfg.chunk_rows)):
             part = pairs.iloc[sl]
             X = build_features(part, s1n, pooln, groups=cfg.feature_groups,
-                               chunk_rows=cfg.chunk_rows, stats=stats)
+                               chunk_rows=cfg.chunk_rows, stats=stats, evidence=evidence)
             y = label_pairs(part, train.pairs)["label"].to_numpy(np.int8)
             stop = hash_unit(part[C.S1_ID], STOP_SEED)
             stem = work_dir / f"{country}_{k:04d}"
@@ -215,9 +220,11 @@ def fit_stage1(manifest: dict, params: MatcherParams, stop_frac: float = 0.05,
 
 
 def as_fitted(matcher: Matcher | SeedMean, base: Fitted, cfg: PipelineConfig) -> Fitted:
-    """A pipeline version that is ``base`` (token map, rule) with ``matcher`` as its model."""
+    """A pipeline version that is ``base`` (token map, fillers, evidence, rule) with
+    ``matcher``."""
     return Fitted(matcher, base.rule, base.tune_table, cfg, base.token_map,
-                  {"stage1": "xgb gpu", "fit_info": matcher.fit_info_})
+                  {"stage1": "xgb gpu", "fit_info": matcher.fit_info_}, base.fillers,
+                  base.token_evidence)
 
 
 def clean(work_dir: Path) -> None:

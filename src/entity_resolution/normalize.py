@@ -20,6 +20,13 @@ the French pool's address abbreviations ``12B`` (``12 bis``), ``Crs``, ``Psg`` /
 ``Appt`` / ``App`` read like the full forms; and the record's own country name, which Source 1
 writes into names (``(France)``, ``(India)``) and the pool drops, leaves ``name_core``.
 
+Learned filler tokens (opt-in, ``NormaliseConfig.learn_fillers``): the pool writes words into
+the names of true matches that Source 1 lacks ("center", "services", alias markers such as
+"dba"); ``fit_fillers`` learns them from train-fold true pairs and ``add_nofill`` adds
+``name_core_nofill``, name_core without them, on load (like the token map). Words the pool adds
+to *decoys* ("holdings", "midtown": other businesses) are never added on true pairs, so they
+are not learned. The static columns never change.
+
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
 the only Python loops are ``anyascii`` on rows that still hold non-ASCII characters and
@@ -30,7 +37,7 @@ dropping that very word from its own ``name_core`` (v5), whatever the country.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -45,6 +52,7 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
                 "name_first", "name_sorted", "name_squash", "addr_norm", "addr_nums", "postcode",
                 "region", "addr_last", "addr_tokens", "name_addr"]
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
+NOFILL = "name_core_nofill"  # opt-in: name_core without the learned fillers (add_nofill)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
 # 4: French number marker and "compagnie" (US and India output byte-identical to 3).
 # 5: "et" / "+" -> "and", "frs" -> "freres", leet legal forms, French address tokens (bis,
@@ -84,6 +92,14 @@ class NormaliseConfig:
     learn_token_map: bool = True
     token_map_min_count: int = 3
     token_map_min_share: float = 0.5
+    # learned filler tokens (fit_fillers) feed the opt-in NOFILL column, added on load by
+    # add_nofill like the token map and never hashed. A filler is added by the pool in at
+    # least filler_min_share of the Latin true pairs, and at least filler_min_ratio times per
+    # pair whose S1 name holds it (1.0: added as often as genuinely present, 26 tokens on an
+    # 8 % sample of the train fold; 2.0 drops "center" and "services", the two riskiest)
+    learn_fillers: bool = False
+    filler_min_share: float = 1e-4
+    filler_min_ratio: float = 1.0
 
 
 DEFAULT = NormaliseConfig()
@@ -447,3 +463,68 @@ def apply_token_map(norm: pd.DataFrame, token_map: Mapping[str, str],
     name_addr = (out["name_core"].iloc[rows] + " " + out["addr_norm"].iloc[rows]).str.strip()
     out.loc[out.index[rows], "name_addr"] = name_addr.to_numpy()
     return out
+
+
+# ---------------------------------------------------------- learned fillers ----
+def fit_fillers(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                min_share: float = 1e-4, min_ratio: float = 1.0) -> list[str]:
+    """Filler tokens: name_core words the pool writes into true matches' names (sorted).
+
+    Counted over the true pairs whose pool name is in Latin script (a transliterated name
+    differs word by word: the token map's job), on the distinct name_core tokens of each side.
+    A token is *added* in a pair when only the pool name holds it and *held* when the S1 name
+    holds it. A filler is added in at least ``min_share`` of the pairs and at least
+    ``min_ratio`` times per pair holding it: ``added >= min_ratio * (held + 1)``. Train fold,
+    rules v5: "center", "services", "service", alias markers ("dba", "fka", "formerly"), the
+    "id" / "www" tails and misspelt legal forms ("lnc"). Words the pool adds to decoys
+    ("holdings", "group", "midtown": other businesses) are held by S1 names but hardly ever
+    added on true pairs, so they are not fillers. Fit on the train fold's pairs only.
+    """
+    right = pooln.loc[~pooln["non_latin"].to_numpy(), [C.ENTITY_ID, "name_core"]]
+    p = truth_pairs[[C.S1_ID, C.ENTITY_ID]].merge(right, on=C.ENTITY_ID)
+    left = s1n[[C.ENTITY_ID, "name_core"]].rename(columns={C.ENTITY_ID: C.S1_ID,
+                                                          "name_core": "l"})
+    p = p.merge(left, on=C.S1_ID)
+    if p.empty:
+        return []
+    s1_tok = pc.utf8_split_whitespace(_arrow(p["l"]))
+    pool_tok = pc.utf8_split_whitespace(_arrow(p["name_core"]))
+    flat_s1 = pc.list_flatten(s1_tok)
+    vocab = pc.dictionary_encode(pa.concat_arrays([flat_s1, pc.list_flatten(pool_tok)]))
+    codes = vocab.indices.to_numpy().astype(np.int64)
+    n_vocab = len(vocab.dictionary)
+    # one key per (pair, distinct token) on each side: pair * vocabulary size + token code
+    held_keys = np.unique(pc.list_parent_indices(s1_tok).to_numpy() * n_vocab
+                          + codes[:len(flat_s1)])
+    pool_keys = np.unique(pc.list_parent_indices(pool_tok).to_numpy() * n_vocab
+                          + codes[len(flat_s1):])
+    added_keys = pool_keys[~np.isin(pool_keys, held_keys, assume_unique=True)]
+    held = np.bincount(held_keys % n_vocab, minlength=n_vocab)
+    added = np.bincount(added_keys % n_vocab, minlength=n_vocab)
+    keep = (added >= min_share * len(p)) & (added >= min_ratio * (held + 1))
+    keep &= pc.not_equal(vocab.dictionary, "").to_numpy(zero_copy_only=False)  # "" splits to [""]
+    return sorted(vocab.dictionary.filter(pa.array(keep)).to_pylist())
+
+
+def strip_fillers(core: pd.Series, fillers: Collection[str]) -> pd.Series:
+    """``core`` without the ``fillers`` tokens, words kept in order.
+
+    A name made only of fillers ("services center") stays whole: it is still that business's
+    name, and an empty key would match nothing (or every other empty key).
+    """
+    fill = frozenset(fillers)
+    arr = _arrow(core)
+    if not fill:
+        return _series(arr, core.index)
+    out = map_tokens(arr, lambda t: "" if t in fill else t)
+    return _series(pc.if_else(pc.equal(out, ""), arr, out), core.index)
+
+
+def add_nofill(norm: pd.DataFrame, fillers: Collection[str]) -> pd.DataFrame:
+    """``norm`` with the ``NOFILL`` column: name_core without the learned filler tokens."""
+    return norm.assign(**{NOFILL: strip_fillers(norm["name_core"], fillers)})
+
+
+def sorted_words(names: pd.Series) -> pd.Series:
+    """Sorted distinct words of each name, space-joined (the ``name_sorted`` form)."""
+    return names.str.split().map(lambda t: " ".join(sorted(set(t)))).astype("str")
