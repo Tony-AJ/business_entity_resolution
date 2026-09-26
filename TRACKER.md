@@ -97,6 +97,10 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | – | done | `idf` (8) + `ctx_idf` (5) groups, idf per country over the pool (`pool_stats`); v040 KEEP, val 0.9844 → 0.9870 with #17 and #17a |
 | 17 | Context features: name frequency, pool-side competition | M3 | C5 | – | done | `frequency` group (4; renamed `token_freq` on merge to main, where `frequency` is v101's core-name rates): pool records of the country sharing the exact name / address; worth +0.0004 (v040 vs v041), all recall; in-degree stays opt-in (S1 sampling bias). Top loss in the v001 dry run: exact-name pool records with empty addresses score ~0.05 because the model cannot tell a rare name from a common one |
 | 17a | Extra address evidence: reverse containment, numbers, postcode prefix | M3 | C3–C4 | – | done | `address_extra` group (6); 5.6 % of v040's gain, `num_contain_l` #7 |
+| 17b | M3's groups in the two-stage matcher: `TwoStageConfig.extra_groups` (stage 2, on the kept pairs) + tests; stage-1 cache refuses another config | M3 | C2–C5 | – | done | `638e774`, `024b47c`; 266 tests pass |
+| 17c | v042: v104 two-stage + M3's groups in stage 2 on the mock (3 arms, v107 rule tuning) | M3 | C2 | – | done | **est_public 0.9679** (+0.0020 over the same-machine v107 reproduction 0.9659), mock F0.5 0.9762, false merges −22 %; without token_freq 0.9675 |
+| 17d | v043: stage 1 = v101 + M3's groups, then v104 two-stage + v107 rule | M3 | C5 | – | done | est_public 0.9678 (tie with v042), mock F0.5 0.9762, singletons 0.9902; stage 1 alone plain val **0.9876** (v101 0.9858); 4.37 candidates per S1 (4.59) |
+| 17e | Test inference of v042 (both TSVs + our checker) for M1's upload decision | M3 | INT | 19:30 | doing | files to `submissions/v042/`; the organisers' validator is not on this machine |
 
 ## Night build — from 16:30 IST day 2 (target: public ≥ 0.99)
 
@@ -152,3 +156,5 @@ each) no longer fits, so the strategy changes:
 | v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | – | 0.9906 | 0.954 | submitted |
 | v041 | M3 | C2 | v040 without frequency (ablation) | 0.9866 | – | 0.9906 | – | kept |
 | v040 | M3 | C2 | v001 + idf, frequency (now `token_freq`), ctx_idf, address_extra groups (70 features) | 0.9870 | – | 0.9906 | – | kept |
+| v042 | M3 | C2 | v104 two-stage + M3's groups in stage 2 (kept pairs); v107 rule tuning | – | 0.9762 | – | – | kept (est_public 0.9679) |
+| v043 | M3 | C5 | stage 1 = v101 + M3's groups; v104 two-stage; v107 rule tuning | 0.9876 (stage 1) | 0.9762 | 0.9906 | – | kept (est_public 0.9678) |

@@ -124,6 +124,13 @@ ordinals and city names. Passes run per country; TF-IDF uses sparse top-k (`spar
   likely count; the record's degree), 5 anchor features (the candidate against its entity's
   best other candidate: one business's records resemble each other, a decoy does not) and,
   from v106, 3 rival features (the record against its best rival S1's name and address).
+- M3's groups (23; v042 adds them to stage 2 on the kept pairs, v043 to stage 1):
+  IDF-weighted name and address agreement for every pair (cosine, rarest shared token,
+  coverage per side; document frequencies counted per country over the pool), pool counts of
+  the exact name and address (decoy risk), ranks of the IDF cosines among the entity's
+  candidates and its number of exact-name candidates, reverse address and house-number
+  containment, postcode prefix and address-length ratio. On the mock they raise est_public by
+  0.0020 (v042: false merges −22 %); in stage 1 they carry 14 % of the gain (v043).
 
 **Model type:** Stage 1 is v101's LightGBM (63 leaves, learning rate 0.05, 1,666 rounds by
 early stopping) on 6.72M candidate pairs of 200k sampled fit-side entities. Its successor
@@ -160,6 +167,9 @@ where expected-F0.5 decoding (γ 1.5, m 0.05, K 11) beat the best threshold rule
 | v103 | v101 matcher, rule tuned on the mock | 0.9833 | 0.9704 | 0.961 (fit) | 0.961 |
 | v104 | two-stage: filter, stage 2 trained on the mock | – | 0.9744 | 0.9654 | – |
 | v107 | v104, rule tuned for the tight mock | – | 0.9745 | 0.9659 | 0.966 |
+| v040 | v001 + M3's four groups (70 features, single stage; M3) | 0.9870 | – | – | – |
+| v042 | v104 two-stage + M3's groups in stage 2 (M3) | – | 0.9762 | 0.9679 | – |
+| v043 | stage 1 = v101 + M3's groups; two-stage (M3) | 0.9876 (stage 1) | 0.9762 | 0.9678 | – |
 | final | TBD | TBD | TBD | TBD | TBD |
 
 Validation could not rank what mattered (v101: false merges −29 %, public +0.001; v103:
