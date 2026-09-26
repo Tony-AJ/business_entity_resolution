@@ -175,6 +175,17 @@ def decide(scored: pd.DataFrame, rule: DecisionRule) -> pd.DataFrame:
                          C.ENTITY_ID: r.pool_ids.take(pool[order])})
 
 
+def one_to_one_filter(scored: pd.DataFrame) -> pd.DataFrame:
+    """The rows of ``scored`` that survive the pool-side 1-to-1 (step 1 of ``decide``).
+
+    A pool record stays only with its highest-prob S1 entity, ties broken exactly as in
+    ``decide``. Filtering a whole partition and then running ``decide`` or ``tune`` on a
+    subset of its entities gives that subset the matches ``decide`` gives it on the whole
+    partition: steps 2-3 only read an entity's own surviving rows. Row order is kept.
+    """
+    return scored.iloc[np.sort(_rank(scored, one_to_one=True).rows)]
+
+
 # ---------------------------------------------------------------- tuning ----
 @dataclass(frozen=True)
 class _Arrays:
