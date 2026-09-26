@@ -1,19 +1,24 @@
-"""Feature snapshots (snapshot.py), starting with their synthetic data.
+"""Feature snapshots (snapshot.py): cache key, round trip, and equality with the pipeline.
 
-The generated dataset of tests/snapshot_fixtures.py is what the snapshot tests train
-LightGBM on, so it is checked first: deterministic, and varied enough to hold singletons,
-multi-match entities and both countries. Nothing here reads the real dataset/.
+Two synthetic datasets: the six-record conftest fixture (empty fit side, so the matcher is
+the ``heuristic`` backend, as in test_pipeline.py) and the generated one of
+tests/snapshot_fixtures.py, which is checked first here. Nothing here reads the real
+dataset/.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
 
 from entity_resolution import config as C
+from entity_resolution.decision import Grid
+from entity_resolution.model import MatcherParams
 from entity_resolution.pipeline import pool_of
+from entity_resolution.snapshot import snapshot_key
 from entity_resolution.split import load_fold
-from snapshot_fixtures import make_dataset
+from snapshot_fixtures import make_dataset, tiny_cfg
 
 
 def test_generated_dataset_is_deterministic_and_varied(tmp_path: Path) -> None:
@@ -29,3 +34,22 @@ def test_generated_dataset_is_deterministic_and_varied(tmp_path: Path) -> None:
     assert min(sizes) == 0 and max(sizes) >= 2
     for fold in (train, val):   # every true match sits in its fold's pool
         assert set(fold.pairs[C.ENTITY_ID]) <= set(pool_of(fold)[C.ENTITY_ID])
+
+
+def test_key_changes_with_data_config_only(dataset_dir: Path, tmp_path: Path) -> None:
+    """Data settings change the key; model, grid and cache location do not."""
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    train = load_fold("train", dataset_dir, columns=[], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[], frac=0.5)
+    key, parts = snapshot_key(cfg, train, val, {})
+    assert parts["blocking"] == cfg.blocking.key()
+    same = [replace(cfg, model=MatcherParams(num_leaves=7)), replace(cfg, grid=Grid()),
+            replace(cfg, cache_dir=tmp_path / "elsewhere")]
+    assert all(snapshot_key(c, train, val, {})[0] == key for c in same)
+    changed = [replace(cfg, blocking=replace(cfg.blocking, max_per_s1=10)),
+               replace(cfg, feature_groups=("blocking", "name_fuzzy")),
+               replace(cfg, n_fit_s1=5), replace(cfg, chunk_rows=10)]
+    keys = {snapshot_key(c, train, val, {})[0] for c in changed}
+    assert key not in keys and len(keys) == len(changed)
+    assert snapshot_key(cfg, train, val, {"a": "b"})[0] != key
+    assert snapshot_key(cfg, train, train, {})[0] != key   # other fold ids

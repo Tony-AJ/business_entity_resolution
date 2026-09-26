@@ -10,4 +10,5 @@ Modules:
     metrics     macro F0.5 per Source 1 entity, singletons included
     submission  write + validate matching_results.tsv / candidate_pairs.tsv
     tracking    experiment registry: vNNN folders, experiments.csv, timings
+    snapshot    feature snapshots (M4): build matcher inputs once, evaluate models fast
 """
