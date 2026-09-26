@@ -25,8 +25,8 @@ Last updated: 2026-09-27 03:46 IST (day 3).
 - **Decision number since day 2:** est_public on the test-shaped mock (TRACKER "Mock-test
   protocol", "Tight mock"); plain val is a secondary check.
 - **Best version: v122** (M3's full run of v110's recipe with every later switch): est_public **0.9747** against v110's **0.9731** (the team's best benchmark before it), mock F0.5 0.9831; test files ready in `submissions/v122/`. Among M3's feature versions, v042 (0.9679) and v043 (0.9678) tie; v044 added 0.0002.
-- **Done:** 62 of 69 tasks. Every feature of M3's plan is built and measured (v040–v044); v122 ran the whole stack on the mock and wrote test files. Open: 5 todo, 1 doing; 1 skipped with its reason (the C1–C5 ablation ladder).
-- **Next:** M1 runs the organisers' validator on `submissions/v122/` and decides the upload; the stage-2 ablation (E-11) says which of v122's stage-2 changes to keep.
+- **Done:** 63 of 69 tasks. Every feature of M3's plan is built and measured (v040–v044); v122 ran the whole stack on the mock and wrote test files. Open: 5 todo, 0 doing; 1 skipped with its reason (the C1–C5 ablation ladder).
+- **Next:** M1 runs the organisers' validator on `submissions/v122/` and decides the upload; E-11 found no better stage 2 or rule than v122's.
 
 ## 1. Module deliverables (03 §3, 02 §5)
 
@@ -77,7 +77,7 @@ Built by M1 in the day-1 walking skeleton, on M3's module; M3 owns and extends t
 | E-08 | v044 | v042 + interactions + missing_flags in stage 2; arm E without the zero-gain columns | – | 0.9765 | 0.9681 (+0.0002) | INVESTIGATE | done, `1124ec7`: the new flags take 0.08 % of stage 2's gain, pruning is neutral; v042 stays M3's version |
 | E-09 | v122 | v110's recipe + every switch merged after it: rules v5, learned fillers (nofill pass + group), token evidence (stage 1), 2 stage-1 bags, stage-2 extras (interactions, missing_flags, phonetic), stage 2 on fit + tune, 127 leaves, 3 seeds; resumable script `run_v122.py` | – | 0.9831 | **0.9747** (+0.0015 vs v110) | KEEP | done, `482f76b`: stage 1 alone 0.9699 (v110 0.9681), false merges −11 %, misses −7 %; seed averaging adds nothing |
 | E-10 | v122 test inference: both TSVs in `submissions/v122/` and `output/` | | | | | | done: 1,732,544 rows each, our checker PASS; France 6.17 candidates per S1, matched share 0.950 (India 0.941, US 0.942); test pass 2.3 h, whole run 5.3 h |
-| E-11 | v122 stage-2 ablation (`ablate_stage2.py`: fit vs fit + tune, 63 vs 127 leaves, extras) on the cached stage-1 outputs | | | | | | doing |
+| E-11 | v122 stage-2 ablation (`ablate_stage2.py`) and a finer rule grid (`refine_rule.py`) on the cached outputs | | | | | | done: v110's stage 2 on v122's stage 1 0.97424 (stage 1 = +0.0011), + fit + tune 0.97457, + 127 leaves 0.97452, + extras 0.97467 (= v122); the finer grid keeps v122's rule |
 
 Every comparison is same-machine: v001 (0.98436, harder 0.98383), v101 (rule 0.42/0/0.52, 1,666
 rounds) and v107 (est_public 0.96588, mock F0.5 0.97451) were re-run here and reproduced their
