@@ -25,8 +25,8 @@ from pathlib import Path
 
 from . import config as C
 
-COLUMNS = ("version", "date", "group", "change", "local_f05", "cand_recall", "public_f05",
-           "commit", "notes", "owner", "parent", "decision")
+COLUMNS = ("version", "date", "group", "change", "local_f05", "mock_f05", "cand_recall",
+           "public_f05", "commit", "notes", "owner", "parent", "decision")
 DECISIONS = ("", "KEEP", "DROP", "INVESTIGATE")  # 13 §3; "" while undecided
 TEMPLATE = C.EXPERIMENTS / "_template" / "experiment.ipynb"
 PLACEHOLDER = "__EXPERIMENT__"
@@ -112,6 +112,7 @@ def log_result(
     change: str,
     group: str = "",
     local_f05: float | None = None,
+    mock_f05: float | None = None,
     cand_recall: float | None = None,
     notes: str = "",
     owner: str = "",
@@ -123,11 +124,13 @@ def log_result(
     """Record an experiment's outcome: ``metrics.json`` in its folder, its csv row.
 
     ``group`` is the plan ID (A1..E5); ``local_f05`` the macro F0.5 on the fixed
-    validation split; ``cand_recall`` the blocking pair recall; ``owner`` the member tag
-    (M1..M5); ``parent`` the version this one builds on (v011); ``decision`` KEEP, DROP
-    or INVESTIGATE (13 §3, any case), empty while undecided; ``metrics`` any extra
-    numbers (timings, candidate counts, thresholds). Re-running the notebook replaces
-    the same row, keeping a recorded leaderboard score.
+    validation split; ``mock_f05`` the macro F0.5 on the val entities of the test-shaped
+    mock fold (``mock.py``), the number that tracks the leaderboard; ``cand_recall`` the
+    blocking pair recall; ``owner`` the member tag (M1..M5); ``parent`` the version this
+    one builds on (v011); ``decision`` KEEP, DROP or INVESTIGATE (13 §3, any case), empty
+    while undecided; ``metrics`` any extra numbers (timings, candidate counts,
+    thresholds). Re-running the notebook replaces the same row, keeping a recorded
+    leaderboard score.
     """
     m = _VERSION_DIR.match(exp_dir.name)
     if not m:
@@ -140,7 +143,8 @@ def log_result(
     previous = next((r for r in rows if r["version"] == version), {})
     row = {
         "version": version, "date": date.today().isoformat(), "group": group,
-        "change": change, "local_f05": _fmt(local_f05), "cand_recall": _fmt(cand_recall),
+        "change": change, "local_f05": _fmt(local_f05), "mock_f05": _fmt(mock_f05),
+        "cand_recall": _fmt(cand_recall),
         "public_f05": previous.get("public_f05", ""), "commit": git_commit(), "notes": notes,
         "owner": owner, "parent": parent, "decision": decision,
     }
