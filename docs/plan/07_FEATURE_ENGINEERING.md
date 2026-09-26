@@ -175,3 +175,32 @@ records are counted: the pool is complete in every setting, while S1 is sampled 
 side (the bias that keeps `ctx_pool_indegree` opt-in). Cost on 600k synthetic pairs: idf
 0.33M pairs/s, token_freq 0.32M pairs/s, address_extra ~0.65M pairs/s, against 0.07M
 pairs/s for the v001 groups; `pool_stats` ~5 s per million pool records.
+
+## 11. M3's groups in the two-stage matcher (v042–v043, mock protocol)
+
+From day 2 versions are judged on the test-shaped mock fold by `est_public` (TRACKER "Mock-test
+protocol", "Tight mock"), and the matcher is two-stage: v101 scores every candidate, the 16
+best per S1 with p1 ≥ 0.01 stay, and an XGBoost stage 2 learns from the pair features plus
+competition and anchor features (`twostage.py`, `stacking.py`). M3's groups enter it in two
+ways:
+
+- **Stage 2 only** (`TwoStageConfig.extra_groups`, v042): the groups are built on the kept
+  pairs alone (~4.6 per S1: 6.3M on the mock instead of 47M candidates) with pool statistics
+  of the whole partition, and appended to the stage-2 frame; stage 1 is unchanged.
+- **Stage 1** (v043): the groups join v101's feature groups, so they shape p1 and with it every
+  competition feature (`pool_gap` alone carries ~71 % of stage 2's gain).
+
+v042, one stage-1 pass shared by three stage-2 arms (mock val entities, v107's rule tuning):
+
+| Arm | est_public | Mock F0.5 | Singletons | Pair precision | Pair recall |
+|---|---|---|---|---|---|
+| A: v104 columns (reproduces the logged v107 exactly) | 0.96588 | 0.97451 | 0.98367 | 0.99648 | 0.93423 |
+| B: + all four M3 groups (**v042**) | **0.96788** | **0.97623** | 0.98655 | 0.99726 | 0.93802 |
+| C: + M3 groups without `token_freq` | 0.96751 | 0.97601 | 0.98414 | 0.99692 | 0.93760 |
+
+False merges fall 3,522 → 2,744 (−22 %), misses 74,223 → 69,866. `token_freq` adds +0.0004 at
+the test's density (B vs C), so the raw pool counts transfer from the fit pool to test-sized
+pools. In stage 2 the M3 columns take 2.4 % of the gain (idf 1.25 %, token_freq 0.51 %,
+address_extra 0.36 %, ctx_idf 0.26 %); `freq_addr_r` (#7) and `idf_name_cover_r` (#8) are the
+strongest pair features of the model. `addr_empty_l` and `postcode_prefix_eq` stay at zero
+gain in every version (candidates for a cleanup once no saved model reads them).
