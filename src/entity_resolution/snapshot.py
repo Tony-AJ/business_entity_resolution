@@ -39,8 +39,9 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Sequence
-from dataclasses import asdict
+from collections.abc import Iterator, Sequence
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -51,10 +52,13 @@ import pyarrow.parquet as pq
 from . import config as C
 from . import pipeline as P
 from .data import isin
-from .evaluate import blocking_report, positions
+from .decision import DecisionRule
+from .evaluate import blocking_report, harder_fold, positions
 from .features import build_features, feature_names, iter_chunks
+from .model import Matcher
 from .split import Fold
-from .trainset import INNER_FRAC, INNER_SEED, SAMPLE_SEED, label_pairs
+from .tracking import git_commit
+from .trainset import INNER_FRAC, INNER_SEED, SAMPLE_SEED, inner_split, label_pairs, sample_s1
 
 FORMAT = 1                      # bump when the on-disk layout changes
 SIDES = ("fit", "stop", "tune", "val", "harder")
@@ -242,3 +246,221 @@ def _fold_records(fold: Fold, tag: str, cfg: P.PipelineConfig, token_map: dict[s
 def _files_bytes(folder: Path, side: str) -> int:
     """Bytes on disk of a side's files."""
     return sum(p.stat().st_size for p in folder.glob(f"{side}*.parquet"))
+
+
+# ------------------------------------------------------------------ build ----
+def build_snapshot(cfg: P.PipelineConfig, train: Fold, val: Fold, out_dir: Path | None = None,
+                   timings: dict | None = None, sides: Sequence[str] = SIDES) -> Path:
+    """Build (or complete) the snapshot of ``cfg``'s data and return its folder.
+
+    ``train`` and ``val`` are ``split.load_fold`` folds (ids-only frames are enough:
+    ``columns=[]``). ``out_dir`` holds the snapshot folders (default
+    ``cfg.dataset_dir / ".cache" / "m4"``); the folder is ``<out_dir>/<key>``. Sides already
+    recorded in its manifest are kept, so an interrupted build resumes where it stopped and
+    a second call returns at once. ``timings`` receives ``<side>_{load,blocking,features}_
+    seconds``. Candidate pairs come from (and go to) the pipeline's own blocking cache.
+    """
+    unknown = [s for s in sides if s not in SIDES]
+    if unknown:
+        raise ValueError(f"unknown sides {unknown}; known: {list(SIDES)}")
+    timings = {} if timings is None else timings
+    t0 = time.perf_counter()
+    P.normalise_split("train", cfg)
+    token_map = P.learn_token_map(cfg, train)
+    timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
+    key, parts = snapshot_key(cfg, train, val, token_map)
+    root = Path(out_dir) if out_dir is not None else cfg.dataset_dir / ".cache" / "m4"
+    folder = root / key
+    folder.mkdir(parents=True, exist_ok=True)
+    manifest_path = folder / MANIFEST
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("key") != key:
+            raise ValueError(f"{manifest_path} belongs to snapshot {manifest.get('key')!r}")
+    else:
+        record = cfg.record()
+        for k in ("model", "grid"):   # varied by evaluate_params, not part of the data
+            record.pop(k, None)
+        manifest = {"format": FORMAT, "key": key, "key_parts": parts,
+                    "created": datetime.now().isoformat(timespec="seconds"),
+                    "commit": git_commit(), "feature_names": feature_names(cfg.feature_groups),
+                    "token_map_size": len(token_map), "config": record, "sides": {}}
+        _write_json(folder / "token_map.json", token_map)
+    todo = [s for s in SIDES if s in sides and s not in manifest["sides"]]
+    inner: dict[str, tuple[pd.DataFrame, Fold]] = {}
+    if any(s in ("fit", "stop", "tune") for s in todo):
+        fit_fold, tune_fold = inner_split(train)
+        tune_s1 = (tune_fold.s1 if cfg.n_tune_s1 is None
+                   else sample_s1(tune_fold.s1, cfg.n_tune_s1))
+        inner = {"fit": (sample_s1(fit_fold.s1, cfg.n_fit_s1), fit_fold),
+                 "stop": (sample_s1(tune_fold.s1, cfg.n_stop_s1), tune_fold),
+                 "tune": (tune_s1, tune_fold)}
+    info: dict = {}
+    for side in todo:
+        t_side = time.perf_counter()
+        if side in inner:
+            s1, fold = inner[side]
+            s1n, pooln, pairs = P._side(side, s1, fold, cfg, token_map, info, timings)
+        else:
+            fold = val if side == "val" else harder_fold(val)
+            s1 = fold.s1
+            s1n, pooln, pairs = _fold_records(fold, side, cfg, token_map, info, timings)
+        t0 = time.perf_counter()
+        stats = _write_side(folder, side, pairs, s1n, pooln, fold.pairs, cfg)
+        timings[f"{side}_features_seconds"] = round(time.perf_counter() - t0, 2)
+        stats["s1"] = _write_ids(folder, side, s1, s1n, fold.pairs)
+        if side == "val":
+            _write_val_extras(folder, fold, s1n, pooln)
+        del s1n, pooln, pairs
+        stats.update(blocking=info.get(f"{side}_blocking"), bytes=_files_bytes(folder, side),
+                     seconds=round(time.perf_counter() - t_side, 2))
+        manifest["sides"][side] = stats
+        manifest["bytes_total"] = sum(s["bytes"] for s in manifest["sides"].values())
+        manifest["peak_rss_gb"] = max(manifest.get("peak_rss_gb", 0.0),
+                                      P.mem_guard(f"snapshot {side}"), P.peak_rss_gb())
+        _write_json(manifest_path, manifest)   # after each side: a crash keeps finished sides
+    return folder
+
+
+# ------------------------------------------------------------------- load ----
+@dataclass
+class Snapshot:
+    """A built snapshot: its folder, manifest, the sides in use and the feature columns in use.
+
+    Nothing heavy is held; every accessor reads Parquet on demand. ``columns`` is the
+    feature subset a matcher trains on (all features by default, in manifest order).
+    """
+
+    path: Path
+    manifest: dict
+    sides: tuple[str, ...]
+    columns: list[str]
+
+    @property
+    def key(self) -> str:
+        """The snapshot key (folder name)."""
+        return self.manifest["key"]
+
+    def _file(self, side: str, suffix: str = "") -> Path:
+        """Path of one of ``side``'s files; refuses sides not loaded."""
+        if side not in self.sides:
+            raise KeyError(f"side {side!r} is not loaded (loaded: {list(self.sides)})")
+        return self.path / f"{side}{suffix}.parquet"
+
+    def rows(self, side: str) -> int:
+        """Candidate pairs of ``side``."""
+        return int(self.manifest["sides"][side]["rows"])
+
+    def meta(self, side: str, columns: Sequence[str] = META_COLUMNS) -> pd.DataFrame:
+        """Pair ids, S1 country, pass bits and label of every row of ``side``, in row order."""
+        return pq.read_table(self._file(side), columns=list(columns)).to_pandas()
+
+    def labels(self, side: str) -> np.ndarray:
+        """0/1 labels of ``side`` (int8, row order)."""
+        return self.column(side, LABEL).astype(np.int8)
+
+    def column(self, side: str, name: str) -> np.ndarray:
+        """One numeric column of ``side`` (a feature, ``label`` or ``pass``) as numpy."""
+        return pq.read_table(self._file(side), columns=[name]).column(0).to_numpy()
+
+    def iter_features(self, side: str, batch_rows: int = 1_000_000,
+                      columns: Sequence[str] | None = None
+                      ) -> Iterator[tuple[slice, pd.DataFrame]]:
+        """``(row slice, float32 feature frame)`` batches of ``side``, in row order."""
+        cols = list(self.columns if columns is None else columns)
+        at = 0
+        with pq.ParquetFile(self._file(side)) as pf:
+            for batch in pf.iter_batches(batch_size=batch_rows, columns=cols):
+                m = batch.num_rows
+                block = np.empty((m, len(cols)), dtype=np.float32)
+                for j, c in enumerate(cols):   # by name: batches keep the file's column order
+                    block[:, j] = batch.column(c).to_numpy(zero_copy_only=False)
+                yield slice(at, at + m), pd.DataFrame(block, columns=cols,
+                                                      index=pd.RangeIndex(at, at + m), copy=False)
+                at += m
+
+    def features(self, side: str, columns: Sequence[str] | None = None,
+                 batch_rows: int = 1_000_000) -> pd.DataFrame:
+        """The whole float32 feature frame of ``side`` (RangeIndex), filled batch by batch into
+        one preallocated matrix, so the peak is the matrix plus one batch."""
+        cols = list(self.columns if columns is None else columns)
+        out = np.empty((self.rows(side), len(cols)), dtype=np.float32)
+        for sl, X in self.iter_features(side, batch_rows, cols):
+            out[sl] = X.to_numpy()
+        return pd.DataFrame(out, columns=cols, copy=False)
+
+    def s1(self, side: str) -> pd.DataFrame:
+        """Every S1 entity of ``side`` (``entity_id``, ``country``), candidates or not."""
+        return pd.read_parquet(self._file(side, "_s1"))
+
+    def truth(self, side: str) -> pd.DataFrame:
+        """True pairs (``source1_entity_id``, ``entity_id``) of ``side``'s S1 entities."""
+        return pd.read_parquet(self._file(side, "_truth"))
+
+    def fold(self, side: str = "val") -> Fold:
+        """The labelled fold ``score_pairs`` needs: ``val``, or ``harder_fold`` of it."""
+        if side not in ("val", "harder"):
+            raise ValueError(f"only val and harder have a fold, got {side!r}")
+        self._file(side)   # refuses a side that is not loaded
+        pool = pd.read_parquet(self.path / "val_pool.parquet")
+        src = pool["source"].to_numpy()
+        val = Fold("val", pd.read_parquet(self.path / "val_s1.parquet"),
+                   pool.loc[src == 2, [C.ENTITY_ID]].reset_index(drop=True),
+                   pool.loc[src == 3, [C.ENTITY_ID]].reset_index(drop=True),
+                   pd.read_parquet(self.path / "val_truth.parquet"))
+        return val if side == "val" else harder_fold(val)
+
+    def normalised(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """(val S1 rows, pool rows of val's true pairs), normalised: ``slice_report`` input."""
+        return (pd.read_parquet(self.path / "val_s1n.parquet"),
+                pd.read_parquet(self.path / "val_pooln.parquet"))
+
+    def blocking(self, side: str) -> dict:
+        """``evaluate.blocking_report`` of ``side``'s candidates, as computed at build time."""
+        return self.manifest["sides"][side]["blocking"]
+
+    def token_map(self) -> dict[str, str]:
+        """The learned token map the snapshot was built with."""
+        return json.loads((self.path / "token_map.json").read_text(encoding="utf-8"))
+
+    def to_fitted(self, cfg: P.PipelineConfig, matcher: Matcher, rule: DecisionRule,
+                  tune_table: pd.DataFrame) -> P.Fitted:
+        """A ``pipeline.Fitted`` for ``run_test`` (shortlisted versions, template §9).
+
+        ``cfg`` must describe the snapshot's data (blocking, feature groups) and the matcher
+        must use every feature, since ``pipeline.score`` builds all of them.
+        """
+        parts = self.manifest["key_parts"]
+        if cfg.blocking.key() != parts["blocking"] or \
+                list(cfg.feature_groups) != parts["feature_groups"]:
+            raise ValueError("cfg's blocking or feature groups differ from the snapshot's")
+        if list(matcher.feature_names_) != self.manifest["feature_names"]:
+            raise ValueError("run_test needs a matcher trained on every snapshot feature")
+        return P.Fitted(matcher, rule, tune_table, cfg, self.token_map(),
+                        {"snapshot": self.key})
+
+
+def load_snapshot(path: Path, sides: Sequence[str] | None = None,
+                  columns: Sequence[str] | None = None) -> Snapshot:
+    """Open a built snapshot.
+
+    ``sides``: the sides to use, all of which must be built (None = every built side, so
+    ``harder`` is included when it exists; ``("fit", "stop", "tune", "val")`` skips it).
+    ``columns``: an optional feature subset (feature-ablation experiments), in that order.
+    """
+    path = Path(path)
+    manifest = json.loads((path / MANIFEST).read_text(encoding="utf-8"))
+    if manifest.get("format") != FORMAT:
+        raise ValueError(f"{path}: snapshot format {manifest.get('format')}, expected {FORMAT}")
+    sides = [s for s in SIDES if s in manifest["sides"]] if sides is None else list(sides)
+    missing = [s for s in sides if s not in manifest["sides"]]
+    if missing:
+        raise ValueError(f"{path}: sides {missing} were not built "
+                         f"(built: {list(manifest['sides'])})")
+    names = manifest["feature_names"]
+    cols = list(names if columns is None else columns)
+    if unknown := [c for c in cols if c not in names]:
+        raise ValueError(f"unknown feature columns {unknown}")
+    if len(set(cols)) != len(cols):
+        raise ValueError("feature columns repeat")
+    return Snapshot(path, manifest, tuple(sides), cols)
