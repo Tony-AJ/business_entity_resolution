@@ -5,6 +5,7 @@ two threads, so each takes milliseconds.
 """
 import json
 import warnings
+import weakref
 
 import numpy as np
 import pandas as pd
@@ -320,6 +321,35 @@ def test_fit_matcher_without_seeds_is_matcher_fit(data):
     one = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(FAST_SEED,))
     assert np.array_equal(one.predict_proba(Xt), single.predict_proba(Xt))
     assert one.fit_info_["tune_logloss"] == single.fit_info_["tune_logloss"]
+
+
+def test_fit_matcher_loader_frees_the_fit_rows_before_boosting(data, monkeypatch):
+    """A loader's frame is referenced by Matcher.fit alone, so lgbm releases the float
+    matrix once binned (the snapshot's memory plan); the models equal fits on the frame."""
+    X, y, Xt, yt = data
+    single = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt).predict_proba(Xt)
+    pair = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(1, 2)).predict_proba(Xt)
+    buffers, alive = [], []
+
+    def load():
+        """A fresh frame over its own float32 buffer, watched through a weak reference."""
+        values = X.to_numpy(dtype=np.float32, copy=True)
+        buffers.append(weakref.ref(values))
+        return pd.DataFrame(values, columns=X.columns, index=X.index, copy=False)
+
+    boost = Matcher._fit_lgbm
+
+    def spy(self, train, X_val, y_val):
+        """Record whether the buffer of this fit still exists when boosting starts."""
+        alive.append(buffers[-1]() is not None)
+        return boost(self, train, X_val, y_val)
+
+    monkeypatch.setattr(Matcher, "_fit_lgbm", spy)
+    got = fit_matcher(MatcherParams(**FAST), load, y, Xt, yt)
+    ens = fit_matcher(MatcherParams(**FAST), load, y, Xt, yt, seeds=(1, 2))
+    assert len(buffers) == 3 and alive == [False, False, False]
+    assert np.array_equal(got.predict_proba(Xt), single)
+    assert np.array_equal(ens.predict_proba(Xt), pair) and ens.fit_info_["rows"] == len(X)
 
 
 def test_seed_ensemble_rejects_bad_members(data):
