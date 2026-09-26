@@ -22,7 +22,7 @@ from entity_resolution import config as C
 from entity_resolution.decision import Grid
 from entity_resolution.evaluate import error_samples, harder_fold
 from entity_resolution.features import build_features
-from entity_resolution.model import MatcherParams
+from entity_resolution.model import MatcherParams, SeedEnsemble
 from entity_resolution.pipeline import (
     PipelineConfig,
     fit,
@@ -30,6 +30,7 @@ from entity_resolution.pipeline import (
     load_normalised,
     pool_of,
     run_fold,
+    run_test,
 )
 from entity_resolution.snapshot import (
     SIDES,
@@ -40,6 +41,7 @@ from entity_resolution.snapshot import (
     snapshot_key,
 )
 from entity_resolution.split import load_fold
+from entity_resolution.submission import split_ids, validate
 from snapshot_fixtures import make_dataset, tiny_blocking, tiny_cfg
 
 BREAKDOWN = ("f_beta", "f_beta_singletons", "f_beta_matched", "pair_precision",
@@ -235,3 +237,91 @@ def test_error_counts_equal_error_samples(generated) -> None:
     for kind, n in counts.items():
         assert n == len(error_samples(matches, val, kind, n=10**9)), kind
     assert sum(counts.values()) > 0
+
+
+def test_batch_rows_do_not_change_results(generated) -> None:
+    """Scoring in batches of 7 rows gives exactly the default-batch metrics."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    a = evaluate_params(snap, cfg.model, grid=cfg.grid)[0]
+    b = evaluate_params(snap, cfg.model, grid=cfg.grid, batch_rows=7)[0]
+    assert without_timings(a) == without_timings(b)
+
+
+def test_seed_average_is_deterministic(generated, tmp_path: Path) -> None:
+    """Two runs with seeds (1, 2) agree exactly; one seed equals the single model."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    arts_a: dict = {}
+    a, ens, _ = evaluate_params(snap, cfg.model, grid=cfg.grid, seeds=(1, 2), artifacts=arts_a)
+    b, _, _ = evaluate_params(snap, cfg.model, grid=cfg.grid, seeds=(1, 2))
+    assert isinstance(ens, SeedEnsemble) and len(ens.matchers) == 2
+    assert without_timings(a) == without_timings(b)
+    assert a["seeds"] == [1, 2] and len(ens.fit_info_["best_iterations"]) == 2
+    single = evaluate_params(snap, cfg.model, grid=cfg.grid)[0]
+    one = evaluate_params(snap, cfg.model, grid=cfg.grid, seeds=(cfg.model.seed,))[0]
+    for key in ("f_beta", "tune_f_beta", "rule", "tune_logloss"):
+        assert one[key] == single[key], key
+    X = snap.features("val")
+    again = SeedEnsemble.load(ens.save(tmp_path / "ens"))
+    np.testing.assert_array_equal(again.predict_proba(X), ens.predict_proba(X))
+    np.testing.assert_array_equal(ens.predict_proba(X), arts_a["val_scored"]["prob"].to_numpy())
+
+
+def test_weight_fn_and_feature_subset(generated) -> None:
+    """weight_fn gets the fit meta and must return one weight per row; columns subset."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    seen = {}
+
+    def hard_negatives(meta: pd.DataFrame, X: pd.DataFrame) -> np.ndarray:
+        """Double weight on negatives that an exact-key pass proposed."""
+        seen["cols"] = list(meta.columns)
+        exact = (meta["pass"].to_numpy() & 7) != 0
+        return np.where(exact & (meta["label"].to_numpy() == 0), 2.0, 1.0)
+
+    metrics = evaluate_params(snap, cfg.model, grid=cfg.grid, weight_fn=hard_negatives)[0]
+    assert seen["cols"] == [C.S1_ID, C.ENTITY_ID, C.COUNTRY, "pass", "label"]
+    assert metrics["weighted"] and 0.0 <= metrics["f_beta"] <= 1.0
+    with pytest.raises(ValueError, match="weight_fn returned shape"):
+        evaluate_params(snap, cfg.model, grid=cfg.grid,
+                        weight_fn=lambda meta, X: np.ones(len(X) + 1))
+    names = snap.manifest["feature_names"]
+    sub = load_snapshot(generated["path"], columns=names[:10])
+    metrics, matcher, _ = evaluate_params(sub, cfg.model, grid=cfg.grid, harder=False)
+    assert matcher.feature_names_ == names[:10] and metrics["n_features"] == 10
+    assert "harder_f_beta" not in metrics
+    with pytest.raises(ValueError, match="unknown feature columns"):
+        load_snapshot(generated["path"], columns=["nope"])
+
+
+def test_calibration_metrics_are_sane(generated) -> None:
+    """evaluate_params reports ECE / Brier in [0, 1] and one reliability table per side and
+    subset (reliability itself: test_model.py), and slice_report among its artifacts."""
+    snap = load_snapshot(generated["path"])
+    artifacts: dict = {}
+    metrics = evaluate_params(snap, generated["cfg"].model, grid=generated["cfg"].grid,
+                              artifacts=artifacts)[0]
+    for key in ("ece_tune", "brier_tune", "ece_tune_rank1", "ece_val", "brier_val"):
+        assert 0.0 <= metrics[key] <= 1.0, key
+    rel = artifacts["reliability"]
+    assert set(zip(rel["side"], rel["subset"], strict=True)) == {
+        ("tune", "all"), ("tune", "rank1"), ("val", "all")}
+    assert set(artifacts["slices"]["family"]) >= {"country", "singleton", "n_matches"}
+
+
+def test_to_fitted_runs_test_inference(dataset_dir: Path, tmp_path: Path) -> None:
+    """A snapshot-trained matcher and rule go through pipeline.run_test to valid files."""
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    train = load_fold("train", dataset_dir, frac=0.5)
+    val = load_fold("val", dataset_dir, frac=0.5)
+    snap = load_snapshot(build_snapshot(cfg, train, val, out_dir=tmp_path / "m4"))
+    artifacts: dict = {}
+    _, matcher, rule = evaluate_params(snap, cfg.model, grid=cfg.grid, artifacts=artifacts)
+    fitted = snap.to_fitted(cfg, matcher, rule, artifacts["tune_table"])
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+    with pytest.raises(ValueError, match="differ from the snapshot"):
+        snap.to_fitted(replace(cfg, feature_groups=("blocking",)), matcher, rule,
+                       artifacts["tune_table"])
