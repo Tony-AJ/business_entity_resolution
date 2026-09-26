@@ -181,7 +181,8 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     if tcfg.extra_groups:  # kept pairs stay grouped by S1: the filter keeps their order
         extra.append(build_features(
             pairs[keep].reset_index(drop=True), s1n, pooln, groups=tcfg.extra_groups,
-            chunk_rows=cfg.chunk_rows, stats=pool_stats(pooln, tcfg.extra_groups)))
+            chunk_rows=cfg.chunk_rows, stats=pool_stats(pooln, tcfg.extra_groups),
+            evidence=stage1.token_evidence))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 
