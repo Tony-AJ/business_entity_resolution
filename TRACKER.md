@@ -123,17 +123,17 @@ each) no longer fits, so the strategy changes:
 
 | # | Task | Owner | Plan | ETA | Status | Notes |
 |---|---|---|---|---|---|---|
-| 63 | Night-build plan, `integration/night-build` branch, merge gate | M1 | INT | 20:00 | doing | Members: push opt-in branches by 19:45 |
-| 64 | Rules v5 (France + `+`/`et`, leet legal forms, own-country word; #59) merged | M1 | B2–B4 | 18:30 | todo | After v111's run, so v111's commit stays reproducible |
-| 65 | Stage 2 on fit + tune entities, 127 leaves, 3 seeds (`SeedMean`) | M1 | D3 | 18:15 | doing | v111 decides it (starts itself when v110 ends) |
-| 66 | Stage 1 on every training row (CPU hist or GPU bagging) instead of the 7M-row GPU cap | M1 | D3 | 19:30 | todo | v110 used 49 % of its 14.9M rows |
-| 67 | Pool-sibling candidates: records near-identical to an entity's best candidate join its candidate set | M1 | A5 | 19:30 | todo | Targets the 2.1 % of true pairs lost before stage 2 |
+| 63 | Night-build plan, `integration/night-build` branch, merge gate | M1 | INT | 17:50 | done | `integration/night-build` at 17:50: stage-1 bags, rules v5, filler words + token evidence, M3's stage-2 extra groups (and v042/v043); 292 tests; smoke run of the whole v120 flow on the fixture |
+| 64 | Rules v5 (France + `+`/`et`, leet legal forms, own-country word; #59) merged | M1 | B2–B4 | 17:50 | done | Merged into `integration/night-build` |
+| 65 | Stage 2 on fit + tune entities, 127 leaves, 3 seeds (`SeedMean`) | M1 | D3 | 17:50 | done | No v111 run (night-build strategy): fit + tune entities, 127 leaves, 3 seeds are in v120 |
+| 66 | Stage 1 on every training row (CPU hist or GPU bagging) instead of the 7M-row GPU cap | M1 | D3 | 16:30 | done | `feat/stage1-bags`, merged; v120 trains 2 bags |
+| 67 | Pool-sibling candidates: records near-identical to an entity's best candidate join its candidate set | M1 | A5 | 17:50 | dropped | Measured on v110's mock: 2.1 % of true pairs never become candidates and 97 % of those have a found sibling, but a missed record is no closer to it than to S1 (median name Jaccard 0.33 both): the generator noises each record independently; a strict sibling rule reaches 6.5 % of them (0.14 % of true pairs) at 90–130 same-name decoys each |
 | 68 | Alias names (`dba`, `aka`, `fka`, `t/a`, S3 only) split into name + alias | M1 | B / C | 21:00 | done | `feat/alias-names` (opt-in, off): aliases are 2–4 % of S3 names, S1 always matches the part after the marker, and v110 already finds 99.92 % of alias pairs (41 misses of 48k): upper bound +0.00006, so the night build leaves it off |
-| 69 | Error-driven fixes from v111's loss breakdown (#31) | M1 | A–E | 19:30 | todo | |
-| 70 | v120 night build: every switch on, test inference, package | M1 | INT | 00:00 | todo | Replaces v112 (France-only) and v113 (rules v5) |
+| 69 | Error-driven fixes from v111's loss breakdown (#31) | M1 | A–E | 17:50 | done | Covered by #74 (filler words, +1.2 % / +2.6 % name-equal true pairs) and #75 (decoy-marker evidence), both from error measurements |
+| 70 | v120 night build: every switch on, test inference, package | M1 | INT | 22:30 | doing | Started 17:58 (commit 9e1aff7): mock est_public ~20:45, test files ~22:30 |
 | 71 | Day-3 uploads: night build first, then ablations from its caches | M1 | INT | Day 3 | todo | 5 uploads |
-| 72 | M3: stage-2 extra feature groups (`feat/m3-stage2-features`) | M3 | C5 | 19:45 | doing | Opt-in; merged at the gate |
-| 73 | M2: phonetic Soundex + Metaphone features, entity blocking (`newblocking`, `newfeatureblocking`) | M2 | A / C | 19:45 | doing | Branches start from v001-era main: rebase or merge current main, keep opt-in |
+| 72 | M3: stage-2 extra feature groups (`feat/m3-stage2-features`) | M3 | C5 | 17:50 | done | Merged at the gate (v042: M3 groups in stage 2, est_public 0.9679 vs 0.9659) |
+| 73 | M2: phonetic Soundex + Metaphone features, entity blocking (`newblocking`, `newfeatureblocking`) | M2 | A / C | Day 3 | todo | Not rebased onto current main by 17:50 (phonetic branch from day 1): goes into a later build |
 | 74 | Learned filler words (`center`, `services`, alias markers, `id`/`www` tails, OCR forms `lnc` `6roup` `lndia`): filler-free core name, exact pass, `nofill` group (`feat/filler-tokens`) | M1 (agent) | B4 / A1 / C | 17:15 | done | Opt-in; +1.2 % (US) / +2.6 % (India) of true pairs become name-equal; `holdings`, `group`, `groupe`, `participations` are NOT fillers: the pool adds them to decoys (0 of 32,489 US "S1 name + holdings" records match) |
 | 75 | Learned token evidence: per-word log-odds of pool-only and S1-only words (filler vs decoy marker), stage-2 group | M1 (agent) | C / E | 19:30 | doing | Targets false merges of the "S1 name + decoy word" kind that token-set similarity scores as matches |
 
