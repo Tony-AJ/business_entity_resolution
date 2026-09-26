@@ -126,17 +126,55 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     return Stage1Output(kept, X, len(pairs))
 
 
+def save_stage1(o: Stage1Output, path: Path) -> Path:
+    """Write a partition's stage-1 output as one Parquet file (pairs + frame) and a sidecar."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    pd.concat([o.pairs, o.X], axis=1).to_parquet(tmp, index=False)
+    tmp.replace(path)
+    path.with_suffix(".json").write_text(json.dumps({"n_all": o.n_all}) + "\n")
+    return path
+
+
+def load_stage1(path: Path) -> Stage1Output:
+    """Read back what ``save_stage1`` wrote."""
+    df = pd.read_parquet(path)
+    pairs = df[[C.S1_ID, C.ENTITY_ID]].copy()
+    X = df.drop(columns=[C.S1_ID, C.ENTITY_ID])
+    n_all = json.loads(path.with_suffix(".json").read_text())["n_all"]
+    return Stage1Output(pairs, X, n_all)
+
+
+def _cached_stage1(cache_dir: Path | None, name: str, compute) -> Stage1Output:
+    """``compute()`` or its cached result under ``cache_dir/name.parquet``.
+
+    The cache is only valid for one stage-1 model, blocking configuration, filter and anchor
+    switch: callers give each such combination its own directory.
+    """
+    if cache_dir is not None and (Path(cache_dir) / f"{name}.parquet").exists():
+        return load_stage1(Path(cache_dir) / f"{name}.parquet")
+    o = compute()
+    if cache_dir is not None:
+        save_stage1(o, Path(cache_dir) / f"{name}.parquet")
+    return o
+
+
 def mock_stage1(cfg: PipelineConfig, stage1: Fitted, mock: MockFold, tcfg: TwoStageConfig,
-                tag: str = "mock", timings: dict | None = None) -> dict[str, Stage1Output]:
-    """``stage1_partition`` for every country of the mock fold (blocking cached per tag)."""
+                tag: str = "mock", timings: dict | None = None,
+                cache_dir: Path | None = None) -> dict[str, Stage1Output]:
+    """``stage1_partition`` for every country of the mock fold (blocking cached per tag;
+    the outputs too when ``cache_dir`` is given, see ``_cached_stage1``)."""
     timings = {} if timings is None else timings
     out = {}
     for country in sorted(mock.fold.s1[C.COUNTRY].unique()):
         t0 = time.perf_counter()
-        s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag)
-        out[country] = stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
+
+        def compute(country: str = country) -> Stage1Output:
+            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag)
+            return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
+
+        out[country] = _cached_stage1(cache_dir, f"mock_{country}", compute)
         timings[f"stage1_{country}_seconds"] = round(time.perf_counter() - t0, 2)
-        del s1c, poolc, pairs
         mem_guard(f"mock_stage1 {country}")
     return out
 
@@ -261,26 +299,30 @@ class TwoStage:
 
 
 def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTPUT,
-                       timings: dict | None = None
+                       timings: dict | None = None, cache_dir: Path | None = None
                        ) -> tuple[Path, Path, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Both submission files for the test split, one country at a time.
 
     ``candidate_pairs.tsv`` holds the pairs that pass the stage-1 filter: exactly the pairs
     stage 2 scores. Returns (matching path, candidate path, normalised S1, matches with
-    ``prob``, per-S1 ``p_max`` / ``n_cands`` over the kept candidates).
+    ``prob``, per-S1 ``p_max`` / ``n_cands`` over the kept candidates). With ``cache_dir``
+    the stage-1 outputs are read from / written to it (``_cached_stage1``).
     """
     timings = {} if timings is None else timings
     s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map)
     matches, cands, summary = [], [], []
     for country in sorted(s1n[C.COUNTRY].unique()):
         t0 = time.perf_counter()
-        s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
-        poolc = load_normalised("test", (2, 3), cfg, token_map=ts.stage1.token_map,
-                                country=country)
-        s1c, poolc = _with_frequencies(cfg, s1c, poolc)
-        pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map))
-        o = stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
-        del poolc, pairs
+
+        def compute(country: str = country) -> Stage1Output:
+            s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
+            poolc = load_normalised("test", (2, 3), cfg, token_map=ts.stage1.token_map,
+                                    country=country)
+            s1c, poolc = _with_frequencies(cfg, s1c, poolc)
+            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map))
+            return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
+
+        o = _cached_stage1(cache_dir, f"test_{country}", compute)
         scored = o.pairs.assign(prob=predict_stage2(ts.models, o.X))[SCORED_COLUMNS]
         matches.append(sort_matches(apply_rule(scored, ts.rule), scored))
         summary.append(scored.groupby(C.S1_ID, sort=False)["prob"].agg(p_max="max",

@@ -179,3 +179,21 @@ def test_anchor_features_compare_with_best_other() -> None:
     assert f.iloc[3].isna().all()
     with pytest.raises(ValueError, match="not in pooln"):
         anchor_features(pairs, p1, pooln.iloc[:3])
+
+
+def test_stage1_cache_round_trip(dataset_dir: Path, tmp_path: Path) -> None:
+    """mock_stage1 with a cache directory writes once and reads back identical outputs."""
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, model=MatcherParams(backend="heuristic"))
+    first = mock_stage1(cfg, stage1, mock, tcfg, cache_dir=tmp_path / "cache")
+    assert sorted(p.name for p in (tmp_path / "cache").glob("*.parquet")) == sorted(
+        f"mock_{c}.parquet" for c in first)
+    again = mock_stage1(cfg, stage1, mock, tcfg, cache_dir=tmp_path / "cache")
+    for c, o in first.items():
+        pd.testing.assert_frame_equal(again[c].pairs, o.pairs)
+        pd.testing.assert_frame_equal(again[c].X, o.X)
+        assert again[c].n_all == o.n_all
