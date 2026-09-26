@@ -276,3 +276,31 @@ def test_block_empty_s1(frames):
         assert len(out) == 0
         assert list(out.columns) == PAIR_COLUMNS
         assert out.dtypes.astype(str).tolist() == PAIR_DTYPES
+
+
+def test_union_cap_order_sim_first_drops_unscored_exact_pairs() -> None:
+    """exact_first keeps unscored exact pairs over scored ones; sim_first does the reverse."""
+    import pandas as pd
+
+    from entity_resolution.blocking import union_passes
+    exact = pd.DataFrame({"s1_idx": [0, 0, 0], "pool_idx": [1, 2, 3]})
+    word = pd.DataFrame({"s1_idx": [0, 0], "pool_idx": [4, 5], "sim": [0.9, 0.5]})
+    a = union_passes({"exact_core": exact, "name_addr_word": word}, 3)
+    assert sorted(a["pool_idx"].tolist()) == [1, 2, 3]
+    b = union_passes({"exact_core": exact, "name_addr_word": word}, 3, "sim_first")
+    assert sorted(b["pool_idx"].tolist()) == [1, 4, 5]          # scored first, then pool order
+    try:
+        union_passes({"exact_core": exact}, 3, "random")
+    except ValueError as e:
+        assert "cap_order" in str(e)
+    else:
+        raise AssertionError("an unknown cap_order must be refused")
+
+
+def test_default_blocking_key_is_stable() -> None:
+    """New fields at their default must not change the key of cached candidate sets."""
+    from dataclasses import replace
+
+    from entity_resolution.blocking import BlockingConfig
+    assert BlockingConfig().key() == "66540dae"
+    assert replace(BlockingConfig(), cap_order="sim_first").key() != "66540dae"

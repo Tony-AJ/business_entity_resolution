@@ -85,14 +85,25 @@ class BlockingConfig:
                                                max_df_abs=10_000)
     addr_char: TopKSpec | None = None
     max_per_s1: int = 60
+    # which pairs the per-S1 cap keeps first: "exact_first" (exact-key pairs, then by best
+    # cosine) or "sim_first" (by best cosine; exact-key pairs no top-k pass found come last,
+    # so at test density a crowd of same-name records cannot push variant names out)
+    cap_order: str = "exact_first"
     s1_chunk: int = 50_000
     n_threads: int = 12
     vocab_sample: int = 500_000
     seed: int = C.SEED
 
     def key(self) -> str:
-        """Short stable hash of the configuration (cache file names, logs)."""
-        blob = json.dumps(asdict(self), sort_keys=True, default=str).encode()
+        """Short stable hash of the configuration (cache file names, logs).
+
+        Fields added after the first cached runs are left out while at their default, so the
+        default configuration keeps its key and its cached candidate sets.
+        """
+        d = asdict(self)
+        if d.get("cap_order") == "exact_first":
+            d.pop("cap_order")
+        blob = json.dumps(d, sort_keys=True, default=str).encode()
         return hashlib.sha1(blob).hexdigest()[:8]
 
 
@@ -170,12 +181,16 @@ class TopK:
                              "sim": np.minimum(coo.data, 1.0).astype(np.float32)})
 
 
-def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int) -> pd.DataFrame:
+def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int,
+                 cap_order: str = "exact_first") -> pd.DataFrame:
     """One row per (s1_idx, pool_idx): OR of pass bits, max sim per top-k pass, capped.
 
-    The cap keeps exact pairs first, then the rest by their best similarity; ties go to
-    the lower pool position, so the result is deterministic.
+    ``cap_order="exact_first"`` keeps exact pairs first, then the rest by their best
+    similarity; ``"sim_first"`` ranks every pair by its best similarity and puts pairs no
+    top-k pass scored last. Ties go to the lower pool position: deterministic.
     """
+    if cap_order not in ("exact_first", "sim_first"):
+        raise ValueError(f"cap_order must be 'exact_first' or 'sim_first', got {cap_order!r}")
     frames = []
     for name, df in parts.items():
         if len(df) == 0:
@@ -197,7 +212,10 @@ def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int) -> pd.DataFram
     out = out.reset_index()
     best = out[SIM_COLUMNS].max(axis=1).fillna(0.0).to_numpy()
     exact = (out["pass"].to_numpy() & EXACT_BITS) != 0
-    # rank inside each S1: exact first, then by best sim desc, then pool position
+    if cap_order == "sim_first":            # by best sim desc; unscored exact pairs last
+        best = np.where(np.isnan(out[SIM_COLUMNS].to_numpy()).all(axis=1), -1.0, best)
+        exact = np.zeros(len(out), dtype=bool)
+    # rank inside each S1: exact first (exact_first only), then by best sim desc, pool position
     order = np.lexsort((out["pool_idx"].to_numpy(), -best, ~exact, out["s1_idx"].to_numpy()))
     out = out.iloc[order]
     rank = out.groupby("s1_idx", sort=False).cumcount().to_numpy()
@@ -244,7 +262,7 @@ def block_partition(s1n: pd.DataFrame, pooln: pd.DataFrame,
             q["s1_idx"] += np.int32(a0)
             q["pool_idx"] = pool_rows[name][q["pool_idx"].to_numpy()].astype(np.int32)
             parts[name] = q
-        out.append(union_passes(parts, cfg.max_per_s1))
+        out.append(union_passes(parts, cfg.max_per_s1, cfg.cap_order))
         del parts
         gc.collect()
     del spaces
