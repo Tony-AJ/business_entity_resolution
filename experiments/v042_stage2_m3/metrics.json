@@ -1,0 +1,306 @@
+{
+  "version": "v042",
+  "date": "2026-09-26",
+  "group": "C2",
+  "change": "v104 two-stage + M3 groups (idf, token_freq, ctx_idf, address_extra) in stage 2 on the kept pairs; v107 rule tuning",
+  "local_f05": "",
+  "mock_f05": "0.9762",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "638e774",
+  "notes": "est_public 0.9679 (same-machine A 0.9659, v107 logged 0.9659); C without token_freq 0.9675",
+  "owner": "M3",
+  "parent": "v107",
+  "decision": "KEEP",
+  "metrics": {
+    "hypothesis": "M3's groups on the kept pairs raise est_public over the same two-stage pipeline without them by >= 0.001",
+    "stage1": "v101",
+    "two_stage": {
+      "floor": 0.01,
+      "max_cands": 16,
+      "folds": 2,
+      "seed": 6161,
+      "n_stop_s1": 50000,
+      "anchors": true,
+      "cohesion": false,
+      "rivals": false,
+      "train_roles": [
+        "fit"
+      ],
+      "model": {
+        "backend": "xgb",
+        "num_leaves": 63,
+        "learning_rate": 0.05,
+        "n_estimators": 4000,
+        "early_stopping": 100,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 1,
+        "min_data_in_leaf": 200,
+        "lambda_l2": 1.0,
+        "max_bin": 255,
+        "scale_pos_weight": 1.0,
+        "seed": 42,
+        "num_threads": 12,
+        "device": "cuda",
+        "min_child_weight": 1.0
+      },
+      "extra_groups": [
+        "idf",
+        "token_freq",
+        "ctx_idf",
+        "address_extra"
+      ]
+    },
+    "m3_groups": [
+      "idf",
+      "token_freq",
+      "ctx_idf",
+      "address_extra"
+    ],
+    "rule": {
+      "gamma": 1.5,
+      "miss": 0.0,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "rule_kind": "ExpectedRule",
+    "f_beta": 0.9762304710649456,
+    "f_tight": 0.9750819568512777,
+    "est_public": 0.9678819568512778,
+    "f_beta_singletons": 0.9865508399183631,
+    "f_beta_matched": 0.9756160558350369,
+    "pair_precision": 0.9972593307453753,
+    "pair_recall": 0.938015060855375,
+    "mock_India": 0.9721616492344811,
+    "mock_US": 0.9806216900959996,
+    "arms": {
+      "A: v104 columns": {
+        "f_beta": 0.974510893391814,
+        "f_tight": 0.9730784726663902,
+        "est_public": 0.9658784726663903,
+        "f_beta_singletons": 0.9836726149981684,
+        "f_beta_matched": 0.9739654573354986,
+        "pair_precision": 0.9964789083528017,
+        "pair_recall": 0.9342345481743387,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.05,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 70,
+        "seconds": 423.1,
+        "tune_threshold": 0.9731023729969395,
+        "tune_expected": 0.9731077899053756
+      },
+      "B: + M3 groups": {
+        "f_beta": 0.9762304710649456,
+        "f_tight": 0.9750819568512777,
+        "est_public": 0.9678819568512778,
+        "f_beta_singletons": 0.9865508399183631,
+        "f_beta_matched": 0.9756160558350369,
+        "pair_precision": 0.9972593307453753,
+        "pair_recall": 0.938015060855375,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.0,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 93,
+        "seconds": 488.1,
+        "tune_threshold": 0.9751845842550669,
+        "tune_expected": 0.9751975237227747
+      },
+      "C: + M3 without token_freq": {
+        "f_beta": 0.9760085588361569,
+        "f_tight": 0.9747126542656862,
+        "est_public": 0.9675126542656862,
+        "f_beta_singletons": 0.9841435972578366,
+        "f_beta_matched": 0.9755242455743768,
+        "pair_precision": 0.996920168378588,
+        "pair_recall": 0.937602842183994,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.4,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 89,
+        "seconds": 497.3,
+        "tune_threshold": 0.9747440008156599,
+        "tune_expected": 0.9747838338119277
+      }
+    },
+    "parent_logged": {
+      "f_beta": 0.974510893391814,
+      "f_tight": 0.9730784726663902,
+      "est_public": 0.9658784726663903,
+      "f_beta_singletons": 0.9836726149981684,
+      "pair_precision": 0.9964789083528017,
+      "pair_recall": 0.9342345481743387
+    },
+    "filter_report": {
+      "fit": {
+        "pair_recall": 0.9641957502725091,
+        "entity_recall": 0.9963885184217642,
+        "ceiling_f_beta": 0.9874774651006529,
+        "candidates_mean": 4.60108352209606,
+        "candidates_p95": 9.0,
+        "candidates_max": 16.0,
+        "candidate_pairs": 3189057.0,
+        "reduction_ratio": 0.9999994212508501
+      },
+      "tune": {
+        "pair_recall": 0.964088806629026,
+        "entity_recall": 0.9962979712133735,
+        "ceiling_f_beta": 0.9874409923853587,
+        "candidates_mean": 4.595479673551614,
+        "candidates_p95": 9.0,
+        "candidates_max": 16.0,
+        "candidate_pairs": 1560317.0,
+        "reduction_ratio": 0.9999994219557324
+      },
+      "val": {
+        "pair_recall": 0.9643860066634936,
+        "entity_recall": 0.9963922423864787,
+        "ceiling_f_beta": 0.987585492069279,
+        "candidates_mean": 4.592856470754284,
+        "candidates_p95": 9.0,
+        "candidates_max": 16.0,
+        "candidate_pairs": 1561957.0,
+        "reduction_ratio": 0.999999422285693
+      }
+    },
+    "importance_top": {
+      "pool_gap": 0.7127730083550968,
+      "p1": 0.19325072105059632,
+      "s1_gap": 0.012458639645934692,
+      "pool_best_other": 0.005599933893717959,
+      "pool_p1_sum": 0.005178921623178774,
+      "s1_p1_sum": 0.004142544848760853,
+      "freq_addr_r": 0.0038564069938766253,
+      "idf_name_cover_r": 0.0030216970067813357,
+      "nm_token_set": 0.0019972834094074787,
+      "idf_name_top": 0.0018787273685140454,
+      "sim_name_addr_word": 0.001878695600845744,
+      "idf_addr_top": 0.0018117274899238497,
+      "idf_addr_cos": 0.0017493379903851932,
+      "anc_p1": 0.0016172952646380247,
+      "fq_first_pool_l": 0.0015734292108259382,
+      "tok_jaccard": 0.0015447644020350072,
+      "s1_best_other": 0.0014815070060904788,
+      "nm_jw": 0.0012911321110407555,
+      "nm_ratio": 0.0012661109227670385,
+      "ctx_rank_addr": 0.0012321796113030008,
+      "anc_addr_ratio": 0.001222483029988649,
+      "idf_name_cover_l": 0.0012173817955510795,
+      "num_contain_r": 0.0012148008362259707,
+      "core_token_set": 0.0011928523308013706,
+      "fq_pool_r": 0.001150146493336006
+    },
+    "m3_importance": {
+      "idf_name_cos": 0.0009720972707093413,
+      "idf_name_top": 0.0018787273685140454,
+      "idf_name_cover_l": 0.0012173817955510795,
+      "idf_name_cover_r": 0.0030216970067813357,
+      "idf_addr_cos": 0.0017493379903851932,
+      "idf_addr_top": 0.0018117274899238497,
+      "idf_addr_cover_l": 0.0008130073903239617,
+      "idf_addr_cover_r": 0.001043993573997328,
+      "freq_name_l": 0.00037231379764503264,
+      "freq_name_r": 0.0003529725253875346,
+      "freq_addr_l": 0.0005601479066319854,
+      "freq_addr_r": 0.0038564069938766253,
+      "ctx_rank_idf_name": 0.00023490433113538975,
+      "ctx_gap_idf_name": 0.0004921451049189481,
+      "ctx_rank_idf_addr": 0.0005423023327782927,
+      "ctx_gap_idf_addr": 0.0006357754414168162,
+      "ctx_n_same_name": 0.0006738507621363433,
+      "ad_contain_r": 0.000782168182245382,
+      "addr_empty_l": 0.0,
+      "num_contain_l": 0.001009877919904748,
+      "num_contain_r": 0.0012148008362259707,
+      "postcode_prefix_eq": 2.551026622614927e-07,
+      "addr_len_ratio": 0.0006117309165163699
+    },
+    "m3_group_share": {
+      "idf": 0.012507969886186136,
+      "token_freq": 0.005141841223541178,
+      "ctx_idf": 0.00257897797238579,
+      "address_extra": 0.0036188329575547315
+    },
+    "errors_mock": {
+      "A: v104 columns": {
+        "false_merge": 3522,
+        "missed": 74223,
+        "false_singleton": 3154,
+        "singleton_merge": 362
+      },
+      "B: + M3 groups": {
+        "false_merge": 2744,
+        "missed": 69866,
+        "false_singleton": 3063,
+        "singleton_merge": 289
+      }
+    },
+    "transitions": {
+      "fixed: false merge dropped": 1247,
+      "fixed: miss now predicted": 6494,
+      "broken: new false merge": 396,
+      "broken: true pair lost": 2046
+    },
+    "error_categories": {
+      "missed": {
+        "not a kept candidate (blocking / filter)": 39772,
+        "other": 21092,
+        "name_typo": 4737,
+        "dba_trade_name": 3871,
+        "missing_address_component": 366,
+        "word_order": 25,
+        "postal_code_mismatch": 3
+      },
+      "false_merge": {
+        "other": 2264,
+        "same_address_different_business": 445,
+        "same_name_different_business": 35
+      }
+    },
+    "misses_ad_jaccard_zero": {
+      "kept_candidate_misses": 30094,
+      "ad_jaccard_zero": 0,
+      "median_core_token_set": NaN
+    },
+    "fit_info": {
+      "fold0": {
+        "rows": 1595991,
+        "positive_rate": 0.7260373022153633,
+        "best_iteration": 1677,
+        "tune_logloss": 0.05006379522846064,
+        "tune_auc": 0.997351575719525,
+        "fit_seconds": 187.41
+      },
+      "fold1": {
+        "rows": 1593066,
+        "positive_rate": 0.7262800160194242,
+        "best_iteration": 1645,
+        "tune_logloss": 0.04999087349121416,
+        "tune_auc": 0.9973778119834216,
+        "fit_seconds": 181.07
+      },
+      "rows": 3189057,
+      "positive_rate": 0.7261585478089605
+    },
+    "load_seconds": 105.98,
+    "stage1_India_seconds": 1590.08,
+    "stage1_US_seconds": 1372.89,
+    "stage1_seconds": 2963.64,
+    "arms_seconds": 1408.5,
+    "peak_rss_gb": 4.22,
+    "decision": "KEEP"
+  }
+}
