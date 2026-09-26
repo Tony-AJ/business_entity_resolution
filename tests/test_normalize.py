@@ -367,3 +367,16 @@ def test_v5_leet_legal_forms():
                                          "sharma traders", "lisette", "star flxe"]
     assert out["legal_form"].tolist() == ["sarl", "sarl", "corp", "llc", "pvt ltd", "co", "llc"]
     assert out["name_norm"].iloc[1] == "aide fetes 5arl"  # the written form stays in name_norm
+
+
+def test_v5_french_address_tokens():
+    """The pool's "12B", "Crs", "Psg" / "Pass." and "Appt" / "App" read like S1's full forms."""
+    out = _addrs("12 bis Rue Dade, Pessac", "12B RUE DADE, PESSAC",
+                 "88 Cours de la Martinique, Bordeaux", "88 CRS DE LA MARTINIQUE, BORDEAUX",
+                 "4 Passage Birly, Bordeaux", "4 Psg Birly, Bordeaux", "4 Pass. Birly, Bordeaux",
+                 "9 Rue Valles, Appartement 11, Nantes", "9 R. Valles, Appt 11, Nantes",
+                 "9 Rue Valles, App 11, Nantes")
+    assert out["addr_norm"].tolist() == (["12 b rue dade pessac"] * 2
+                                         + ["88 cours de la martinique bordeaux"] * 2
+                                         + ["4 passage birly bordeaux"] * 3
+                                         + ["9 rue valles apt 11 nantes"] * 3)

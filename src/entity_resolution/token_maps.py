@@ -52,7 +52,9 @@ ADDRESS_TOKENS = {
     **dict.fromkeys(["court", "ct", "crt"], "ct"),
     **dict.fromkeys(["circle", "cir", "circ"], "cir"),
     **dict.fromkeys(["highway", "hwy", "hiway"], "hwy"), **dict.fromkeys(["place", "pl"], "pl"),
-    **dict.fromkeys(["suite", "ste"], "ste"), **dict.fromkeys(["apartment", "apt"], "apt"),
+    **dict.fromkeys(["suite", "ste"], "ste"),
+    # v5: the French "Appartement" and the pool's "Appt" / "App" are the apartment "Apt"
+    **dict.fromkeys(["apartment", "apt", "appartement", "appt", "app"], "apt"),
     **dict.fromkeys(["floor", "fl", "flr"], "fl"),
     **dict.fromkeys(["building", "bldg", "bld"], "bldg"),
     **dict.fromkeys(["north", "n"], "n"), **dict.fromkeys(["south", "s"], "s"),
@@ -79,6 +81,9 @@ ADDRESS_TOKENS = {
     **dict.fromkeys(["impasse", "imp"], "imp"), **dict.fromkeys(["allee", "all"], "allee"),
     **dict.fromkeys(["esplanade", "espl"], "espl"), **dict.fromkeys(["faubourg", "fbg"], "fbg"),
     **dict.fromkeys(["residence", "res"], "res"), **dict.fromkeys(["quai", "q"], "quai"),
+    # v5, French pool abbreviations: "12 bis" is written "12B" ("12 b" once digits and letters
+    # split), "Crs" is "Cours", "Psg" / "Pass" are "Passage"
+    "bis": "b", "crs": "cours", **dict.fromkeys(["passage", "psg", "pass"], "passage"),
     # ordinal words (digits lose their suffix earlier: 8th -> 8)
     "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5", "sixth": "6",
     "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10", "eleventh": "11",

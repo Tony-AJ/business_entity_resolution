@@ -15,7 +15,9 @@ is a legal form like ``Cie``.
 
 Rules v5 (they change US and India records too; measured on train true pairs): the pool's
 ``&`` written ``et`` (France) or as a standalone ``+`` (every country) reads as ``and``,
-``Frs`` as ``Freres``, and legal forms written in leet (``5ARL``, ``C0rp``) are legal forms.
+``Frs`` as ``Freres``, and legal forms written in leet (``5ARL``, ``C0rp``) are legal forms;
+the French pool's address abbreviations ``12B`` (``12 bis``), ``Crs``, ``Psg`` / ``Pass`` and
+``Appt`` / ``App`` read like the full forms.
 
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
@@ -43,7 +45,8 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
 # 4: French number marker and "compagnie" (US and India output byte-identical to 3).
-# 5: "et" / "+" -> "and", "frs" -> "freres", leet legal forms (US and India records change too).
+# 5: "et" / "+" -> "and", "frs" -> "freres", leet legal forms, French address tokens (bis,
+#    crs, psg / pass, appt / app / appartement); US and India records change too.
 RULES_VERSION = 5
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
