@@ -6,6 +6,7 @@ and every stage must accept empty input.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +17,7 @@ from entity_resolution.blocking import PAIR_COLUMNS, BlockingConfig, TopKSpec, b
 from entity_resolution.data import load_source, read_id_lists
 from entity_resolution.decision import Grid
 from entity_resolution.evaluate import blocking_report
-from entity_resolution.features import build_features, feature_names
+from entity_resolution.features import DEFAULT_GROUPS, build_features, feature_names
 from entity_resolution.model import MatcherParams
 from entity_resolution.normalize import normalise_records
 from entity_resolution.pipeline import Fitted, PipelineConfig, fit, run_fold, run_test
@@ -95,3 +96,15 @@ def test_end_to_end_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path) -> N
         assert all(i.startswith(("S2-", "S3-")) for i in ids)
         assert set(ids) <= set(cands[s1])
     assert cands["S1-00010"], "the France entity gets candidates without any country list"
+
+
+def test_stats_feature_groups_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
+    """The pool-statistics groups run through fit, run_fold and run_test (France too)."""
+    cfg = replace(tiny_cfg(tmp_path, dataset_dir),
+                  feature_groups=DEFAULT_GROUPS + ("idf", "frequency", "ctx_idf"))
+    fitted = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "art")
+    metrics, pairs, scored, _ = run_fold(cfg, fitted, load_fold("val", dataset_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0 and len(scored) == len(pairs)
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
