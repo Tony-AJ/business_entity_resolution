@@ -128,3 +128,34 @@ def test_round_trip_matches_pipeline_features(generated) -> None:
     assert set(fold.s1[C.ENTITY_ID]) == set(val.s1[C.ENTITY_ID])
     assert len(fold.s2) + len(fold.s3) == len(val.s2) + len(val.s3)
     assert len(snap.fold("harder").s1) == len(harder_fold(val).s1)
+
+
+def test_build_is_cached_and_resumable(generated, tmp_path: Path) -> None:
+    """A second build returns the same folder untouched; a partial build is completed."""
+    cfg, train, val = generated["cfg"], generated["train"], generated["val"]
+    path = generated["path"]
+    before = (path / "manifest.json").stat().st_mtime_ns
+    assert build_snapshot(cfg, train, val, out_dir=path.parent) == path
+    assert (path / "manifest.json").stat().st_mtime_ns == before
+    part = build_snapshot(cfg, train, val, out_dir=tmp_path, sides=("fit", "stop"))
+    assert list(load_snapshot(part).manifest["sides"]) == ["fit", "stop"]
+    with pytest.raises(ValueError, match="were not built"):
+        load_snapshot(part, sides=("fit", "val"))
+    fit_time = (part / "fit.parquet").stat().st_mtime_ns
+    assert build_snapshot(cfg, train, val, out_dir=tmp_path) == part
+    assert list(load_snapshot(part).sides) == list(SIDES)
+    assert (part / "fit.parquet").stat().st_mtime_ns == fit_time
+    with pytest.raises(ValueError, match="unknown sides"):
+        build_snapshot(cfg, train, val, out_dir=tmp_path, sides=("fit", "test"))
+
+
+def test_chunking_does_not_change_the_data(generated) -> None:
+    """Another chunk_rows (a new key) stores identical features for every side."""
+    cfg, base = generated["cfg"], generated["base"]
+    path = build_snapshot(replace(cfg, chunk_rows=97), generated["train"], generated["val"],
+                          out_dir=base / "m4")
+    assert path != generated["path"]
+    a, b = load_snapshot(generated["path"]), load_snapshot(path)
+    for side in SIDES:
+        np.testing.assert_array_equal(a.features(side).to_numpy(), b.features(side).to_numpy())
+        pd.testing.assert_frame_equal(a.meta(side), b.meta(side))
