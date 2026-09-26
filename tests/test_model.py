@@ -16,10 +16,13 @@ from entity_resolution.model import (
     HEURISTIC_SIMS,
     Matcher,
     MatcherParams,
+    SeedEnsemble,
+    fit_matcher,
     reliability,
 )
 
 FAST = {"n_estimators": 60, "num_threads": 2}
+FAST_SEED = MatcherParams().seed  # the seed every FAST matcher uses unless told otherwise
 SAVED_FILES = {"lgbm": {"model.txt"}, "logreg": {"model.joblib"}, "heuristic": set()}
 
 
@@ -283,3 +286,45 @@ def test_reliability_by_hand():
     assert table["n"].tolist() == [1, 1] and ece == pytest.approx(0.3)
     ece, brier, table = reliability(np.zeros(0), np.zeros(0))
     assert np.isnan(ece) and np.isnan(brier) and table.empty
+
+
+def test_seed_ensemble_is_the_mean_of_its_members(data, tmp_path):
+    X, y, Xt, yt = data
+    ens = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(1, 2))
+    members = [fitted(data, seed=1), fitted(data, seed=2)]
+    assert isinstance(ens, SeedEnsemble) and [m.params.seed for m in ens.matchers] == [1, 2]
+    expected = (members[0].predict_proba(Xt).astype(np.float64)
+                + members[1].predict_proba(Xt)) / 2
+    prob = ens.predict_proba(Xt)
+    assert prob.dtype == np.float32 and np.array_equal(prob, expected.astype(np.float32))
+    assert np.array_equal(ens.predict_proba(Xt, chunk_rows=7), prob)
+    info = ens.fit_info_
+    assert info["best_iterations"] == [m.best_iteration_ for m in members]
+    assert info["rows"] == len(X) and 0 < info["tune_logloss"] < 0.69 and info["tune_auc"] > 0.8
+    imp = ens.importance()
+    assert sorted(imp.index) == sorted(X.columns) and imp.sum() == pytest.approx(1.0)
+    assert imp.is_monotonic_decreasing
+    saved = ens.save(tmp_path / "ens")
+    assert {p.name for p in saved.iterdir()} == {"ensemble.json", "seed_1", "seed_2"}
+    again = SeedEnsemble.load(saved)
+    assert np.array_equal(again.predict_proba(Xt), prob)  # bit for bit
+    assert again.fit_info_ == info and again.feature_names_ == ens.feature_names_
+
+
+def test_fit_matcher_without_seeds_is_matcher_fit(data):
+    X, y, Xt, yt = data
+    single = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt)
+    assert type(single) is Matcher
+    assert np.array_equal(single.predict_proba(Xt), fitted(data).predict_proba(Xt))
+    one = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(FAST_SEED,))
+    assert np.array_equal(one.predict_proba(Xt), single.predict_proba(Xt))
+    assert one.fit_info_["tune_logloss"] == single.fit_info_["tune_logloss"]
+
+
+def test_seed_ensemble_rejects_bad_members(data):
+    X, y = data[:2]
+    with pytest.raises(ValueError, match="at least one"):
+        SeedEnsemble([])
+    narrow = Matcher(MatcherParams(backend="heuristic")).fit(X.drop(columns="is_s3"), y)
+    with pytest.raises(ValueError, match="different columns"):
+        SeedEnsemble([fitted(data, "heuristic"), narrow])

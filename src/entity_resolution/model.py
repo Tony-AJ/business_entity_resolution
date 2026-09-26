@@ -13,6 +13,8 @@ The fitted column order is a contract: ``predict_proba`` refuses a frame whose c
 are missing, unexpected or reordered, because two swapped similarity columns would
 otherwise score garbage without any error.
 
+``SeedEnsemble`` averages matchers that differ only in their seed (08 §9) behind the same
+interface, and ``fit_matcher`` fits one ``Matcher`` or such an ensemble from one call.
 ``reliability`` measures calibration (08 §5) of any probabilities against 0/1 labels:
 ECE over equal-count bins, Brier score and the reliability table, because the decision
 layer's thresholds assume the probabilities mean what they say.
@@ -23,6 +25,7 @@ import json
 import time
 import warnings
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
@@ -358,6 +361,85 @@ class Matcher:
         if self.feature_names_ is None:
             raise RuntimeError("Matcher is not fitted: call fit() or Matcher.load() first")
         return self.feature_names_
+
+
+class SeedEnsemble:
+    """Mean probability of matchers that differ only in their seed (08 §9, the v068 idea).
+
+    Duck-types the parts of ``Matcher`` the pipeline and snapshot.py use: ``predict_proba``,
+    ``importance``, ``feature_names_``, ``best_iteration_``, ``fit_info_``, ``params``,
+    ``save``. The mean is accumulated in float64 in seed order, so it is deterministic.
+    """
+
+    def __init__(self, matchers: Sequence[Matcher]) -> None:
+        """Keep the fitted matchers; they must share one column order."""
+        if not matchers:
+            raise ValueError("an ensemble needs at least one matcher")
+        names = matchers[0].feature_names_
+        if any(m.feature_names_ != names for m in matchers):
+            raise ValueError("ensemble members were fitted on different columns")
+        self.matchers = list(matchers)
+        self.feature_names_ = names
+        self.params = matchers[0].params
+        self.best_iteration_ = int(round(np.mean([m.best_iteration_ for m in matchers])))
+        self.fit_info_: dict = {}
+
+    def predict_proba(self, X: pd.DataFrame, chunk_rows: int = 2_000_000) -> np.ndarray:
+        """Mean of the members' probabilities, float32."""
+        acc = np.zeros(len(X), dtype=np.float64)
+        for m in self.matchers:
+            acc += m.predict_proba(X, chunk_rows)
+        return (acc / len(self.matchers)).astype(np.float32)
+
+    def importance(self) -> pd.Series:
+        """Mean of the members' importance shares, largest first (ties in column order)."""
+        share = pd.concat([m.importance().reindex(self.feature_names_) for m in self.matchers],
+                          axis=1).mean(axis=1)
+        return share.rename("importance").sort_values(ascending=False, kind="stable")
+
+    def save(self, dir: Path) -> Path:
+        """Each member under ``seed_<seed>/`` plus ``ensemble.json`` listing them."""
+        dir = Path(dir)
+        dir.mkdir(parents=True, exist_ok=True)
+        seeds = [m.params.seed for m in self.matchers]
+        for m in self.matchers:
+            m.save(dir / f"seed_{m.params.seed}")
+        _write_json(dir / "ensemble.json", {"seeds": seeds, "fit_info": self.fit_info_})
+        return dir
+
+    @classmethod
+    def load(cls, dir: Path) -> SeedEnsemble:
+        """Rebuild an ensemble written by ``save``."""
+        dir = Path(dir)
+        meta = json.loads((dir / "ensemble.json").read_text(encoding="utf-8"))
+        ens = cls([Matcher.load(dir / f"seed_{s}") for s in meta["seeds"]])
+        ens.fit_info_ = meta["fit_info"]
+        return ens
+
+
+def fit_matcher(params: MatcherParams, X: pd.DataFrame, y: np.ndarray, X_stop: pd.DataFrame,
+                y_stop: np.ndarray, weight: np.ndarray | None = None,
+                seeds: Sequence[int] | None = None) -> Matcher | SeedEnsemble:
+    """``Matcher(params).fit`` exactly as ``pipeline.fit`` calls it, or one fit per seed.
+
+    With ``seeds`` every member is ``params`` with that ``seed``; the ensemble's tune logloss
+    and AUC are recomputed on its mean probabilities over the stop set.
+    """
+    if not seeds:
+        return Matcher(params).fit(X, y, X_stop, y_stop, weight=weight)
+    t0 = time.perf_counter()
+    members = [Matcher(replace(params, seed=int(s))).fit(X, y, X_stop, y_stop, weight=weight)
+               for s in seeds]
+    ens = SeedEnsemble(members)
+    logloss = auc = None
+    if len(X_stop):
+        logloss, auc = _tune_scores(np.asarray(y_stop, dtype=np.int8), ens.predict_proba(X_stop))
+    ens.fit_info_ = {"rows": len(X), "positive_rate": members[0].fit_info_["positive_rate"],
+                     "best_iteration": ens.best_iteration_,
+                     "best_iterations": [m.best_iteration_ for m in members],
+                     "tune_logloss": logloss, "tune_auc": auc,
+                     "fit_seconds": round(time.perf_counter() - t0, 2)}
+    return ens
 
 
 def reliability(prob: np.ndarray, label: np.ndarray,
