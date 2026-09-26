@@ -11,7 +11,10 @@ jobs:
   partition: rank and best rival on the S1 side and on the pool side;
 * **anchor features** (``stacking.anchor_features``) over the kept pairs: each candidate
   compared with its entity's best other candidate (true records of one business resemble
-  each other, a same-name decoy does not).
+  each other, a same-name decoy does not);
+* **extra feature groups** (``TwoStageConfig.extra_groups``, optional) over the kept pairs:
+  pair features the stage-1 matcher never read, e.g. M3's idf, token_freq, ctx_idf and
+  address_extra groups, computed for the ~5 kept pairs per S1 instead of every candidate.
 
 Stage 2 is a LightGBM on the pair features plus the competition features, trained on the kept
 pairs of the mock fold's ``fit`` entities (``mock.py``), so it learns at the test's decoy
@@ -42,9 +45,16 @@ from .decision import (
     rule_to_json,
 )
 from .evaluate import blocking_report
-from .features import _ALL_INPUTS, FREQ_COLUMNS, build_features, iter_chunks, pool_stats
+from .features import (
+    _ALL_INPUTS,
+    FREQ_COLUMNS,
+    build_features,
+    feature_names,
+    iter_chunks,
+    pool_stats,
+)
 from .mock import MockFold
-from .model import Matcher, MatcherParams
+from .model import Matcher, MatcherParams, SeedMean  # noqa: F401  (SeedMean re-exported)
 from .pipeline import (
     Fitted,
     PipelineConfig,
@@ -87,11 +97,19 @@ class TwoStageConfig:
     # the tune entities still sees out-of-fold probabilities
     train_roles: tuple[str, ...] = ("fit",)
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
+    # feature groups (features.REGISTRY) built on the kept pairs only and appended to the
+    # stage-2 frame; the stage-1 matcher never reads them. A stage-1 cache holds one
+    # combination: give each extra_groups value its own cache directory
+    extra_groups: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Cross-fitting needs two parts: with one, fit entities would be scored in-sample."""
+        """Cross-fitting needs two parts: with one, fit entities would be scored in-sample.
+
+        Unknown or repeated extra groups are refused here, before any pass runs.
+        """
         if self.folds < 2:
             raise ValueError(f"folds must be >= 2 (out-of-fold scores), got {self.folds}")
+        feature_names(self.extra_groups)
 
     def record(self) -> dict:
         """JSON-ready dict (metrics.json, artifacts)."""
@@ -129,22 +147,27 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     """Stage 1 over every candidate pair of one partition: filter, then competition features.
 
     Features are built chunk by chunk (chunks never split an S1 group, so the per-entity cap
-    is exact); only the kept rows are held. Competition features use every pair.
+    is exact); only the kept rows are held. Competition features use every pair; the
+    ``extra_groups`` see only the kept pairs, with pool statistics of the whole partition.
     """
+    both = sorted(set(tcfg.extra_groups) & set(cfg.feature_groups))
+    if both:
+        raise ValueError(f"extra_groups {both} are stage-1 groups already")
     p1 = np.empty(len(pairs), dtype=np.float32)
     keep = np.zeros(len(pairs), dtype=bool)
     parts = []
     stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None  # once per partition
     for sl in iter_chunks(pairs, cfg.chunk_rows):
         X = build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows, stats=stats)
+                           chunk_rows=cfg.chunk_rows, stats=stats,
+                           evidence=stage1.token_evidence)
         p = stage1.matcher.predict_proba(X)
         k = keep_mask(pairs[C.S1_ID].iloc[sl], p, tcfg.floor, tcfg.max_cands)
         p1[sl], keep[sl] = p, k
         parts.append(X[k].reset_index(drop=True))
         del X
     X = pd.concat(parts, ignore_index=True) if parts else build_features(
-        pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups)
+        pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups, evidence=stage1.token_evidence)
     parts.clear()                                   # the concat is the only copy kept
     extra = [competition_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep)]
     kept = pairs.loc[keep, [C.S1_ID, C.ENTITY_ID]].reset_index(drop=True)
@@ -155,17 +178,37 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     if tcfg.rivals:
         own = X["ad_token_set"].to_numpy() if "ad_token_set" in X.columns else None
         extra.append(rival_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep, s1n, pooln, own))
+    if tcfg.extra_groups:  # kept pairs stay grouped by S1: the filter keeps their order
+        extra.append(build_features(
+            pairs[keep].reset_index(drop=True), s1n, pooln, groups=tcfg.extra_groups,
+            chunk_rows=cfg.chunk_rows, stats=pool_stats(pooln, tcfg.extra_groups),
+            evidence=stage1.token_evidence))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 
 
-def save_stage1(o: Stage1Output, path: Path) -> Path:
-    """Write a partition's stage-1 output as one Parquet file (pairs + frame) and a sidecar."""
+# TwoStageConfig fields a stage-1 output depends on (the rest only shapes stage 2)
+_STAGE1_FIELDS = ("floor", "max_cands", "anchors", "cohesion", "rivals", "extra_groups")
+
+
+def stage1_key(tcfg: TwoStageConfig) -> dict:
+    """The fields of ``tcfg`` that change a stage-1 output, as JSON-ready values."""
+    rec = tcfg.record()
+    return {k: rec[k] for k in _STAGE1_FIELDS}
+
+
+def save_stage1(o: Stage1Output, path: Path, key: dict | None = None) -> Path:
+    """Write a partition's stage-1 output as one Parquet file (pairs + frame) and a sidecar.
+
+    The sidecar holds the candidate count and, when given, the ``stage1_key`` it was built
+    with, so a cache read under another configuration can be refused.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     pd.concat([o.pairs, o.X], axis=1).to_parquet(tmp, index=False)
     tmp.replace(path)
-    path.with_suffix(".json").write_text(json.dumps({"n_all": o.n_all}) + "\n")
+    meta = {"n_all": o.n_all, **({"tcfg": key} if key is not None else {})}
+    path.with_suffix(".json").write_text(json.dumps(meta) + "\n")
     return path
 
 
@@ -178,17 +221,26 @@ def load_stage1(path: Path) -> Stage1Output:
     return Stage1Output(pairs, X, n_all)
 
 
-def _cached_stage1(cache_dir: Path | None, name: str, compute) -> Stage1Output:
+def _cached_stage1(cache_dir: Path | None, name: str, compute,
+                   key: dict | None = None) -> Stage1Output:
     """``compute()`` or its cached result under ``cache_dir/name.parquet``.
 
-    The cache is only valid for one stage-1 model, blocking configuration, filter and anchor
-    switch: callers give each such combination its own directory.
+    The cache is only valid for one stage-1 model and blocking configuration: callers give
+    each such combination its own directory. The ``TwoStageConfig`` side is checked here:
+    a cache written with another ``key`` (``stage1_key``: filter, anchors, cohesion, rivals,
+    extra groups) raises instead of returning stale features; sidecars written before the
+    key existed are trusted.
     """
-    if cache_dir is not None and (Path(cache_dir) / f"{name}.parquet").exists():
-        return load_stage1(Path(cache_dir) / f"{name}.parquet")
+    path = None if cache_dir is None else Path(cache_dir) / f"{name}.parquet"
+    if path is not None and path.exists():
+        stored = json.loads(path.with_suffix(".json").read_text()).get("tcfg")
+        if key is not None and stored is not None and stored != key:
+            raise ValueError(f"stage-1 cache {path} holds {stored}, not {key}: give each "
+                             "configuration its own cache_dir")
+        return load_stage1(path)
     o = compute()
-    if cache_dir is not None:
-        save_stage1(o, Path(cache_dir) / f"{name}.parquet")
+    if path is not None:
+        save_stage1(o, path, key)
     return o
 
 
@@ -203,11 +255,12 @@ def mock_stage1(cfg: PipelineConfig, stage1: Fitted, mock: MockFold, tcfg: TwoSt
         t0 = time.perf_counter()
 
         def compute(country: str = country) -> Stage1Output:
-            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag)
+            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag,
+                                               stage1.fillers)
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
 
-        out[country] = _cached_stage1(cache_dir, f"mock_{country}", compute)
+        out[country] = _cached_stage1(cache_dir, f"mock_{country}", compute, stage1_key(tcfg))
         timings[f"stage1_{country}_seconds"] = round(time.perf_counter() - t0, 2)
         mem_guard(f"mock_stage1 {country}")
     return out
@@ -347,9 +400,12 @@ class TwoStage:
         """Read back what ``save`` wrote; ``cfg`` is the stage-1 pipeline configuration."""
         tc = json.loads((out / "two_stage.json").read_text())
         tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"]),
-                                 "train_roles": tuple(tc.get("train_roles", ("fit",)))})
+                                 "train_roles": tuple(tc.get("train_roles", ("fit",))),
+                                 "extra_groups": tuple(tc.get("extra_groups", ()))})
         rule = rule_from_json(json.loads((out / "rule.json").read_text()))
-        models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
+        # a part saved by SeedMean holds one folder per seed
+        models = [SeedMean.load(d) if (d / "seed0").exists() else Matcher.load(d)
+                  for d in (out / f"stage2_{k}" for k in range(tcfg.folds))]
         info_path = out / "fit_info.json"
         return cls(Fitted.load(out / "stage1", cfg), models, rule, tcfg,
                    pd.read_csv(out / "tune_table.csv"),
@@ -367,7 +423,8 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
     the stage-1 outputs are read from / written to it (``_cached_stage1``).
     """
     timings = {} if timings is None else timings
-    s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map)
+    s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map,
+                          fillers=ts.stage1.fillers)
     matches, cands, summary = [], [], []
     for country in sorted(s1n[C.COUNTRY].unique()):
         t0 = time.perf_counter()
@@ -375,13 +432,14 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
         def compute(country: str = country) -> Stage1Output:
             s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
             poolc = load_normalised("test", (2, 3), cfg, token_map=ts.stage1.token_map,
-                                    country=country)
+                                    country=country, fillers=ts.stage1.fillers)
             s1c, poolc = _with_frequencies(cfg, s1c, poolc)
-            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map))
+            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map),
+                            fillers=ts.stage1.fillers)
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
 
-        o = _cached_stage1(cache_dir, f"test_{country}", compute)
+        o = _cached_stage1(cache_dir, f"test_{country}", compute, stage1_key(ts.tcfg))
         names = ts.models[0].feature_names_
         X = o.X if list(o.X.columns) == names else o.X[names]
         scored = o.pairs.assign(prob=predict_stage2(ts.models, X))[SCORED_COLUMNS]

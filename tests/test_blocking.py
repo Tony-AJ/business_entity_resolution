@@ -331,3 +331,55 @@ def test_name_num_pairs_survive_the_sim_first_cap() -> None:
     nn = pd.DataFrame({"s1_idx": [0], "pool_idx": [3]})
     out = union_passes({"name_addr_word": word, "exact_name_num": nn}, 2, "sim_first")
     assert sorted(out["pool_idx"].tolist()) == [1, 3]
+
+
+def _nofill_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """S1 and pool records whose names differ by the fillers "center" / "services" only."""
+    from entity_resolution.normalize import add_nofill
+    s1 = _src(("S1-01", "Acme", "12 Main St", "US"), ("S1-02", "Globex Initech", "", "US"),
+              ("S1-03", "Hooli", "", "US"))
+    pool = _src(("S2-01", "Acme Center", "", "US"), ("S2-02", "Center Acme Services", "", "US"),
+                ("S3-01", "Initech Globex Center", "9 Oak Ave", "US"),
+                ("S3-02", "Hooli Holdings", "", "US"))
+    fill = ["center", "services"]
+    return add_nofill(normalise_records(s1), fill), add_nofill(normalise_records(pool), fill)
+
+
+def test_nofill_pass_meets_names_that_differ_by_fillers() -> None:
+    """Equal sorted words once fillers are out; the pool-group cap applies; a non-filler word
+    ("holdings") still separates; the column is required."""
+    from entity_resolution.blocking import nofill_pass
+    s1n, pooln = _nofill_frames()
+    out = nofill_pass(s1n, pooln, max_group=5)
+    assert list(zip(out["s1_idx"], out["pool_idx"], strict=True)) == [(0, 0), (0, 1), (1, 2)]
+    assert out.dtypes.tolist() == [np.int32, np.int32]
+    capped = nofill_pass(s1n, pooln, max_group=1)          # "acme" has two pool records
+    assert list(zip(capped["s1_idx"], capped["pool_idx"], strict=True)) == [(1, 2)]
+    with pytest.raises(ValueError, match="name_core_nofill"):
+        nofill_pass(s1n.drop(columns="name_core_nofill"), pooln, 5)
+
+
+def test_block_nofill_pass_is_opt_in() -> None:
+    """Off by default (key unchanged, bit never set); on, it adds its pairs with bit 128."""
+    s1n, pooln = _nofill_frames()
+    bit = PASS_BITS["exact_nofill"]
+    assert bit == 128 and BlockingConfig(nofill_max_group=None).key() == "66540dae"
+    assert BlockingConfig(nofill_max_group=50).key() != BlockingConfig().key()
+    off = block(s1n, pooln, _cfg(name_char=None, name_addr_word=None))
+    assert len(off) == 0                                   # no exact key agrees
+    on = block(s1n, pooln, _cfg(name_char=None, name_addr_word=None, nofill_max_group=50))
+    assert _pairset(on) == {("S1-01", "S2-01"), ("S1-01", "S2-02"), ("S1-02", "S3-01")}
+    assert (on["pass"] == bit).all() and on[SIM_COLUMNS].isna().all().all()
+    both = block(s1n, pooln, _cfg(nofill_max_group=50))
+    assert _pairset(on) <= _pairset(both)
+    assert (both.loc[both[C.ENTITY_ID] == "S3-01", "pass"].to_numpy() & bit).all()
+
+
+def test_union_exact_first_counts_nofill_pairs_as_exact() -> None:
+    """Under exact_first the nofill pair outranks a scored top-k pair, as exact pairs do."""
+    word = pd.DataFrame({"s1_idx": [0], "pool_idx": [1], "sim": [0.9]})
+    nofill = pd.DataFrame({"s1_idx": [0], "pool_idx": [2]})
+    out = union_passes({"name_addr_word": word, "exact_nofill": nofill}, 1)
+    assert out["pool_idx"].tolist() == [2] and out["pass"].tolist() == [128]
+    out = union_passes({"name_addr_word": word, "exact_nofill": nofill}, 1, "sim_first")
+    assert out["pool_idx"].tolist() == [1]                 # unscored exact pairs go last

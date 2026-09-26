@@ -17,7 +17,8 @@ pool record of each pair, row for row. Conventions (07 §1):
 Some groups (``STATS_GROUPS``) read counts over the whole pool of a partition, which no
 chunk sees: ``pool_stats(pooln)`` computes them once, per country, and ``build_features``
 hands them to every chunk. Only pool records are counted: the pool is complete in every
-setting, while Source 1 is sampled on the fit side (07 §5).
+setting, while Source 1 is sampled on the fit side (07 §5). The ``EVIDENCE_GROUPS`` read the
+version's learned token evidence (``evidence.TokenEvidence``, ``build_features(evidence=)``).
 
 Speed is the main constraint (~25M test pairs): no Python loop touches individual pairs.
 Strings stay in Arrow and go through its C++ kernels; rapidfuzz scores aligned pairs in C++
@@ -39,6 +40,7 @@ from rapidfuzz import distance, fuzz, process
 
 from . import config as C
 from .blocking import PAIR_COLUMNS, PASS_BITS, SIM_COLUMNS
+from .evidence import TokenEvidence
 
 FeatureGroup = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame]
 
@@ -69,6 +71,12 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
                 "ctx_gap_idf_addr", "ctx_n_same_name"],
     "address_extra": ["ad_contain_r", "addr_empty_l", "num_contain_l", "num_contain_r",
                       "postcode_prefix_eq", "addr_len_ratio"],
+    # the core names without the learned filler tokens (normalize.fit_fillers)
+    "nofill": ["nofill_ratio", "nofill_token_set", "nofill_jaccard", "nofill_eq", "fill_n_l",
+               "fill_n_r"],
+    # learned log-odds of the words only one side's core name holds (evidence.py)
+    "tok_evidence": [f"te_{side}_{stat}" for side in ("pool", "s1")
+                     for stat in ("sum", "min", "max", "decoy", "filler", "unknown")],
 }
 # Per-record columns the frequency group reads; pipeline.add_frequencies adds them to the
 # normalised frames from the whole fold (never from a training sample).
@@ -83,6 +91,8 @@ NAN_FEATURES = frozenset({
     *FEATURE_COLUMNS["idf"], *FEATURE_COLUMNS["token_freq"], "ctx_gap_idf_name",
     "ctx_gap_idf_addr",
     "ad_contain_r", "num_contain_l", "num_contain_r", "postcode_prefix_eq", "addr_len_ratio",
+    "nofill_ratio", "nofill_token_set", "nofill_jaccard",
+    "te_pool_min", "te_pool_max", "te_s1_min", "te_s1_max",
 })
 
 # Normalised columns each group reads: build_features aligns only these to the pairs.
@@ -101,6 +111,8 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "token_freq": ("name_core", "addr_norm", C.COUNTRY),
     "ctx_idf": ("name_core", "addr_norm", C.COUNTRY),  # name_core only after the idf group
     "address_extra": ("addr_norm", "addr_nums", "postcode"),
+    "nofill": ("name_core", "name_core_nofill"),  # the column pipeline.load_normalised adds
+    "tok_evidence": ("name_core",),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
@@ -108,8 +120,8 @@ _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 # before context and idf before ctx_idf, which reuse their similarities, and the address-side
 # groups before the name-side ones, so fewer aligned string columns are alive at the same time.
 _COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "address_extra", "context", "idf",
-                  "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "meta", "pool_context",
-                  "frequency")
+                  "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "nofill",
+                  "tok_evidence", "meta", "pool_context", "frequency")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
@@ -131,6 +143,8 @@ _STATS_NEEDS: dict[str, tuple[tuple[str, str], ...]] = {
     "token_freq": (("name_core", "values"), ("addr_norm", "values")),
 }
 STATS_GROUPS = frozenset(_STATS_NEEDS)
+# Groups that read the version's learned token evidence (build_features(evidence=)).
+EVIDENCE_GROUPS = frozenset({"tok_evidence"})
 
 # (scorer, divisor mapping its range to [0, 1]). All are symmetric and score equal strings at
 # their maximum, which _fuzzy relies on to skip identical pairs.
@@ -175,6 +189,11 @@ def _np(arr: pa.Array | pa.ChunkedArray) -> np.ndarray:
 def _empty(arr: pa.Array) -> np.ndarray:
     """True where the string is empty."""
     return pc.binary_length(arr).to_numpy() == 0
+
+
+def _n_words(arr: pa.Array) -> np.ndarray:
+    """Whitespace-separated words of each string, repeats counted (0 for "")."""
+    return pc.count_substring_regex(arr, r"\S+").to_numpy()
 
 
 def _eq(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, np.ndarray]:
@@ -819,6 +838,88 @@ def _address_extra(pairs: pd.DataFrame, left: pd.DataFrame,
     })
 
 
+def _nofill(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """The core names without the learned filler tokens (``name_core_nofill``, B4).
+
+    The pool writes words into true matches' names ("center", "services", "dba ...", "id
+    <n>"), so "acme" and "acme center" read as different names to the name groups; here
+    they are equal. The same words also name decoys ("Acme Services", another business), so
+    the removed counts tell the model how much each side lost.
+
+    nofill_ratio        rapidfuzz ratio of the filler-free core names
+    nofill_token_set    token_set_ratio of them (1 when one side's words are all on the other)
+    nofill_jaccard      Jaccard of their word sets
+    nofill_eq           the same set of words once the fillers are out (both non-empty)
+    fill_n_l, fill_n_r  filler words removed from each side's name_core
+    The similarities are NaN when either filler-free name is empty.
+    """
+    core_l, core_r = _arrow(left["name_core"]), _arrow(right["name_core"])
+    bare_l, bare_r = _arrow(left["name_core_nofill"]), _arrow(right["name_core_nofill"])
+    ratio, token_set = _fuzzy(bare_l, bare_r, (_RATIO, _TOKEN_SET))
+    common, n_l, n_r, _, _ = _token_sets(bare_l, bare_r)
+    both = (n_l > 0) & (n_r > 0)
+    return _frame(pairs.index, {
+        "nofill_ratio": ratio,
+        "nofill_token_set": token_set,
+        "nofill_jaccard": _ratio(common, n_l + n_r - common, both),
+        "nofill_eq": both & (common == n_l) & (common == n_r),  # equal distinct-word sets
+        "fill_n_l": _n_words(core_l) - _n_words(bare_l),
+        "fill_n_r": _n_words(core_r) - _n_words(bare_r),
+    })
+
+
+def _evidence_stats(only: sp.csr_array, llr: np.ndarray, strong: float,
+                    prefix: str) -> dict[str, np.ndarray]:
+    """Evidence columns of one side from its one-sided words (``only``: pairs x vocabulary)
+    and the learned log-odds of each vocabulary word (NaN = unknown)."""
+    n = only.shape[0]
+    row = np.repeat(np.arange(n), np.diff(only.indptr))
+    vals = llr[only.indices]
+    known = ~np.isnan(vals)
+    rk, vk = row[known], vals[known]  # rows stay in order: CSR rows are contiguous
+    lo, hi = np.full(n, np.nan), np.full(n, np.nan)
+    if len(rk):
+        starts = np.flatnonzero(np.r_[True, rk[1:] != rk[:-1]])
+        lo[rk[starts]] = np.minimum.reduceat(vk, starts)
+        hi[rk[starts]] = np.maximum.reduceat(vk, starts)
+    return {f"{prefix}_sum": np.bincount(rk, weights=vk, minlength=n),
+            f"{prefix}_min": lo,
+            f"{prefix}_max": hi,
+            f"{prefix}_decoy": np.bincount(rk[vk <= -strong], minlength=n),
+            f"{prefix}_filler": np.bincount(rk[vk >= strong], minlength=n),
+            f"{prefix}_unknown": np.bincount(row[~known], minlength=n)}
+
+
+def _tok_evidence(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
+                  evidence: TokenEvidence | None = None) -> pd.DataFrame:
+    """Learned evidence of the words only one side's core name holds (C5, ``evidence.py``).
+
+    "acme center" / "acme" and "acme holdings" / "acme" look alike to every similarity; the
+    pool writes "center" into true matches, the generator writes "holdings" into decoys.
+
+    te_pool_*   over the distinct words only the pool name holds, valued by the table's pool
+                side; te_s1_* over those only the S1 name holds, by its s1 side:
+      _sum             summed log-odds of the known words (0 when none): > 0 leans to a match
+      _min, _max       the most decoy-like / match-like known word; NaN when none is known
+      _decoy, _filler  known words with log-odds <= -strong / >= +strong
+      _unknown         words the table does not know (never seen in train: no evidence, which
+                       is not the same as neutral evidence)
+    """
+    if evidence is None:
+        raise ValueError("group 'tok_evidence' needs the learned token evidence: pass "
+                         "build_features(evidence=...) (Fitted.token_evidence)")
+    mat, vocab, rows_l, rows_r, _ = _token_matrix(_arrow(left["name_core"]),
+                                                  _arrow(right["name_core"]))
+    s1_words, pool_words = mat[rows_l], mat[rows_r]
+    shared = s1_words.multiply(pool_words)
+    out: dict[str, np.ndarray] = {}
+    for prefix, side, words in (("te_pool", "pool", pool_words), ("te_s1", "s1", s1_words)):
+        only = (words - shared).tocsr()  # this side's words the other side lacks
+        only.eliminate_zeros()
+        out.update(_evidence_stats(only, evidence.values(side, vocab), evidence.strong, prefix))
+    return _frame(pairs.index, out)
+
+
 REGISTRY: dict[str, FeatureGroup] = {
     "blocking": _blocking,
     "name_fuzzy": _name_fuzzy,
@@ -834,13 +935,17 @@ REGISTRY: dict[str, FeatureGroup] = {
     "token_freq": _token_freq,
     "ctx_idf": _ctx_idf,  # computed after idf, whose cosines it ranks
     "address_extra": _address_extra,
+    "nofill": _nofill,  # needs name_core_nofill: a version that learns fillers loads it
+    "tok_evidence": _tok_evidence,  # EVIDENCE_GROUPS: needs build_features(evidence=)
 }
 
 # The v001 feature set (47 features), kept fixed so logged versions stay reproducible; a
 # version adds groups explicitly (PipelineConfig.feature_groups). pool_context is opt-in:
 # training pairs come from sampled S1 entities (07 §5), so an in-degree counted on them is
 # biased low against val and test, where every S1 competes; frequency is opt-in because it
-# needs the FREQ_COLUMNS that pipeline.add_frequencies adds.
+# needs the FREQ_COLUMNS that pipeline.add_frequencies adds, nofill because it needs the
+# name_core_nofill column (NormaliseConfig.learn_fillers), tok_evidence because it needs the
+# learned token evidence (PipelineConfig.evidence).
 DEFAULT_GROUPS: tuple[str, ...] = ("blocking", "name_fuzzy", "name_tokens", "legal", "numeric",
                                    "address", "context", "meta")
 
@@ -939,7 +1044,8 @@ def _aligned(columns: dict[str, pa.ChunkedArray], n: int) -> pd.DataFrame:
 def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
                    groups: Sequence[str] = DEFAULT_GROUPS,
                    chunk_rows: int = 2_000_000,
-                   stats: PoolStats | None = None) -> pd.DataFrame:
+                   stats: PoolStats | None = None,
+                   evidence: TokenEvidence | None = None) -> pd.DataFrame:
     """Feature frame of the candidate ``pairs``: float32, index ``pairs.index``.
 
     ``pairs`` holds ``PAIR_COLUMNS``, grouped by ``source1_entity_id``; ``s1n`` and ``pooln``
@@ -950,11 +1056,15 @@ def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
     all of ``pairs``, so pass a whole partition or fold when requesting it. The
     ``STATS_GROUPS`` read ``stats``, computed here from ``pooln`` when not given: a caller
     featuring one partition slice by slice computes ``pool_stats(pooln)`` once and passes it.
-    Raises ValueError for an unknown group, a missing column or a pair id absent from the
-    records.
+    The ``EVIDENCE_GROUPS`` read ``evidence``, the version's learned token evidence.
+    Raises ValueError for an unknown group, a missing column or table, or a pair id absent
+    from the records.
     """
     groups = tuple(groups)
     names = feature_names(groups)
+    if evidence is None and EVIDENCE_GROUPS & set(groups):
+        raise ValueError(f"groups {sorted(EVIDENCE_GROUPS & set(groups))} need the learned "
+                         "token evidence: pass evidence= (Fitted.token_evidence)")
     if chunk_rows < 1:
         raise ValueError(f"chunk_rows must be >= 1, got {chunk_rows}")
     missing = [c for c in PAIR_COLUMNS if c not in pairs.columns]
@@ -969,12 +1079,13 @@ def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
     if len(pairs):
         if stats is None:
             stats = pool_stats(pooln, groups)
-        _fill(out, pairs, s1n, pooln, groups, chunk_rows, stats)
+        _fill(out, pairs, s1n, pooln, groups, chunk_rows, stats, evidence)
     return pd.DataFrame(out, index=pairs.index, columns=names, copy=False)
 
 
 def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
-          groups: tuple[str, ...], chunk_rows: int, stats: PoolStats | None) -> None:
+          groups: tuple[str, ...], chunk_rows: int, stats: PoolStats | None,
+          evidence: TokenEvidence | None = None) -> None:
     """Compute ``groups`` chunk by chunk into ``out`` (one row per pair, feature_names order).
 
     Per chunk, each normalised column is aligned to the pairs once (an Arrow take), handed to
@@ -1008,6 +1119,8 @@ def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.Dat
             left = _aligned({c: live_l[c] for c in inputs[g]}, len(chunk))
             right = _aligned({c: live_r[c] for c in inputs[g]}, len(chunk))
             extra = {"stats": stats} if g in STATS_GROUPS else {}
+            if g in EVIDENCE_GROUPS:
+                extra["evidence"] = evidence
             feats = REGISTRY[g](chunk, left, right, **extra)
             if list(feats.columns) != FEATURE_COLUMNS[g]:
                 raise RuntimeError(f"group {g!r} returned {list(feats.columns)}, "

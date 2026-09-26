@@ -1,0 +1,19 @@
+{
+  "version": "v108",
+  "date": "2026-09-26",
+  "group": "D3",
+  "change": "v106 variant: stage 2 on fit + tune entities, 127 leaves (not run)",
+  "local_f05": "",
+  "mock_f05": "",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "db1807f",
+  "notes": "never ran: it reads v106's stage-1 cache, which v106's failure never wrote",
+  "owner": "M1",
+  "parent": "v106",
+  "decision": "DROP",
+  "metrics": {
+    "status": "not run",
+    "blocked_by": "v106"
+  }
+}

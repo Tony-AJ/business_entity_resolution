@@ -9,16 +9,35 @@ domain forms (``gl0ba``, ``allh0spitalityproducts.com``); honorific prefixes (``
 ``Smt``); street-type abbreviations (``St``/``Street``/``Saint``, ``R.``/``Rue``); state
 names, codes and native-script forms; old/new city names.
 
+Rules v4 (French forms measured on the test pool; they change no US or India record):
+the pool's ``N°`` / ``Nº`` number marker leaves addresses before folding, and ``Compagnie``
+is a legal form like ``Cie``.
+
+Rules v5 (they change US and India records too; measured on train true pairs): the pool's
+``&`` written ``et`` (France) or as a standalone ``+`` (every country) reads as ``and``,
+``Frs`` as ``Freres``, and legal forms written in leet (``5ARL``, ``C0rp``) are legal forms;
+the French pool's address abbreviations ``12B`` (``12 bis``), ``Crs``, ``Psg`` / ``Pass`` and
+``Appt`` / ``App`` read like the full forms; and the record's own country name, which Source 1
+writes into names (``(France)``, ``(India)``) and the pool drops, leaves ``name_core``.
+
+Learned filler tokens (opt-in, ``NormaliseConfig.learn_fillers``): the pool writes words into
+the names of true matches that Source 1 lacks ("center", "services", alias markers such as
+"dba"); ``fit_fillers`` learns them from train-fold true pairs and ``add_nofill`` adds
+``name_core_nofill``, name_core without them, on load (like the token map). Words the pool adds
+to *decoys* ("holdings", "midtown": other businesses) are never added on true pairs, so they
+are not learned. The static columns never change.
+
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
 the only Python loops are ``anyascii`` on rows that still hold non-ASCII characters and
 the per-distinct-token maps. Country never selects a code path: the maps simply hold
-tokens from every country, France included.
+tokens from every country, France included, and the one use of a record's country value is
+dropping that very word from its own ``name_core`` (v5), whatever the country.
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,17 +52,26 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
                 "name_first", "name_sorted", "name_squash", "addr_norm", "addr_nums", "postcode",
                 "region", "addr_last", "addr_tokens", "name_addr"]
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
+NOFILL = "name_core_nofill"  # opt-in: name_core without the learned fillers (add_nofill)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
-RULES_VERSION = 3
+# 4: French number marker and "compagnie" (US and India output byte-identical to 3).
+# 5: "et" / "+" -> "and", "frs" -> "freres", leet legal forms, French address tokens (bis,
+#    crs, psg / pass, appt / app / appartement), own country name out of name_core; US and
+#    India records change too.
+RULES_VERSION = 5
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
 NON_LATIN_RE = r"[\x{0370}-\x{1DBF}\x{2C00}-\x{2DFF}\x{3000}-\x{D7FF}]"
+# The French number marker "N° 32" / "Nº 32" (v4): written by the pool only (6.5% of French
+# pool addresses, never in S1, US or India), so it is dropped before it becomes an "n" token.
+NUMBER_MARKER_RE = r"(?i)\bn\s*[°º]"
 
 from .token_maps import (  # noqa: E402  (re-exported: tests and features import them from here)
     ADDRESS_TOKENS,
     HONORIFIC_RE,
     LEET,
     LEGAL_FORMS,
+    NAME_TOKENS,
     REGION_ABBREV,
     TRANSLIT_LEGAL,
 )
@@ -56,6 +84,7 @@ class NormaliseConfig:
     transliterate: bool = True      # anyascii on non-ASCII rows (R0)
     strip_legal: bool = True        # legal forms out of name_core (R5)
     expand_abbrev: bool = True      # address token map (R7)
+    own_country: bool = True        # the record's own country name out of name_core (v5)
     region_map: Mapping[str, str] | None = None  # None -> static REGION_ABBREV
     chunk_rows: int = 1_000_000     # rows normalised at a time (bounds peak memory)
     # learned transliterated-token -> Latin-token map for non-Latin names (fit_token_map);
@@ -63,6 +92,14 @@ class NormaliseConfig:
     learn_token_map: bool = True
     token_map_min_count: int = 3
     token_map_min_share: float = 0.5
+    # learned filler tokens (fit_fillers) feed the opt-in NOFILL column, added on load by
+    # add_nofill like the token map and never hashed. A filler is added by the pool in at
+    # least filler_min_share of the Latin true pairs, and at least filler_min_ratio times per
+    # pair whose S1 name holds it (1.0: added as often as genuinely present, 26 tokens on an
+    # 8 % sample of the train fold; 2.0 drops "center" and "services", the two riskiest)
+    learn_fillers: bool = False
+    filler_min_share: float = 1e-4
+    filler_min_ratio: float = 1.0
 
 
 DEFAULT = NormaliseConfig()
@@ -121,6 +158,13 @@ def _leet(token: str) -> str:
     return token.translate(LEET)
 
 
+def _legal_form(token: str, forms: Mapping[str, str]) -> str:
+    """Canonical legal form of a token, "" if none. The pool also writes legal forms in leet
+    (``5ARL``, ``C0rp``, ``1td``, ``l1c``), so the leet-folded token is looked up too (v5);
+    no Source 1 name of train or test holds such a token as a real word."""
+    return forms.get(token) or forms.get(_leet(token), "")
+
+
 def _join_initials_py(text: str) -> str:
     """Join runs of single letters: ``l l c`` -> ``llc``, ``p c`` -> ``pc``."""
     return _INITIALS.sub(lambda m: m.group(0).replace(" ", ""), text)
@@ -129,17 +173,21 @@ def _join_initials_py(text: str) -> str:
 _INITIALS = re.compile(r"\b[a-z](?: [a-z])+\b")
 
 
-def fold(s: pd.Series, transliterate: bool = True) -> tuple[pa.Array, np.ndarray]:
+def fold(s: pd.Series, transliterate: bool = True,
+         number_marker: bool = False) -> tuple[pa.Array, np.ndarray]:
     """Lowercase ASCII text plus the non-Latin-script flag (rules R0-R1).
 
     Rows holding any non-ASCII character go through ``anyascii`` on the raw text, which
     both transliterates Indic scripts (``प्राइवेट`` -> ``praivet``) and strips accents
     (``Léarning`` -> ``Learning``). Stripping combining marks first would delete the
     Indic vowel signs, so it is only the fallback when transliteration is switched off.
+    ``number_marker`` (addresses, v4) drops the whole ``N°`` / ``Nº`` marker first.
     """
     arr = _arrow(s)
     non_latin = pc.match_substring_regex(arr, NON_LATIN_RE).to_numpy(zero_copy_only=False)
-    arr = pc.replace_substring_regex(arr, "[°º]", " ")  # "N° 180" is a number marker
+    if number_marker:  # "N° 32 R Pierre" -> " 32 R Pierre", as S1 writes it
+        arr = pc.replace_substring_regex(arr, NUMBER_MARKER_RE, " ")
+    arr = pc.replace_substring_regex(arr, "[°º]", " ")  # any other ° or º separates tokens
     if transliterate:
         rest = pc.match_substring_regex(arr, r"[^\x00-\x7F]").to_numpy(zero_copy_only=False)
         if rest.any():
@@ -174,18 +222,47 @@ def _join_initials(arr: pa.Array) -> pa.Array:
     return pa.array(vals.tolist(), type=pa.string())
 
 
+def _name_tokens(arr: pa.Array) -> pa.Array:
+    """Name spellings of one word (v5): the French "et" and a standalone "+" are the "&" that
+    S1 writes (``Aero et Cie`` / ``ARC + CIE`` -> ``and``), ``frs`` is ``freres``."""
+    arr = pc.replace_substring_regex(arr, r" et( |$)", r" and\1")  # after a word: "ET Ltd" stays
+    return map_tokens(arr, _dict_fn(NAME_TOKENS))  # "+" -> "and", "frs" -> "freres"
+
+
+def _drop_own_country(core: pa.Array, country: pd.Series) -> pa.Array:
+    """Remove each record's own country name from its name_core tokens (v5).
+
+    Source 1 writes the country into names (``Maeva (France) Societe``, ``Tata Motors
+    (India) Ltd``) and the pool drops it or writes it bare, so it only blurs the name keys.
+    Open set: the word is the row's own ``country`` value folded like a name, and only a
+    single word of at least four letters counts, so ``US`` never removes ``us``.
+    """
+    keys = _punct(fold(country)[0])
+    for value in pc.unique(keys).to_pylist():
+        if len(value) < 4 or not value.isalpha():  # "us", "" or a multi-word value
+            continue
+        rows = pc.equal(keys, value)
+        kept = map_tokens(core.filter(rows), lambda t, v=value: "" if t == v else t)
+        core = pc.replace_with_mask(core, rows, kept)
+    return core
+
+
 # ------------------------------------------------------------------- names ----
 def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
-                    token_map: Mapping[str, str] | None = None) -> pd.DataFrame:
+                    token_map: Mapping[str, str] | None = None,
+                    country: pd.Series | None = None) -> pd.DataFrame:
     """Name columns of 02 §4.1 (R0-R6) plus ``domain_form``.
 
     name_norm    folded, punctuation-free name, dotted initials joined
-    name_core    name_norm without legal forms and leading honorifics, leet folded
+    name_core    name_norm without legal forms, leading honorifics and the record's own
+                 country name (v5), leet folded
     legal_form   canonical legal forms in order of appearance ("pvt ltd")
     name_first / name_sorted / name_squash   blocking keys (first token, sorted distinct
                  tokens, letters and digits only)
 
     ``token_map`` (learned by ``fit_token_map``) rewrites tokens of non-Latin rows.
+    ``country`` (each record's country value, aligned by position) enables the own-country
+    rule; without it the rule is off.
     """
     arr, non_latin = fold(names, cfg.transliterate)
     raw_domain = pc.match_substring_regex(
@@ -197,14 +274,16 @@ def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
     # a long single glued token ending in "com" is a domain written without its dot
     # ("orthopedichealthcom"); short words keep it ("intercom", "telecom")
     norm = pc.replace_substring_regex(norm, r"^([a-z0-9]{7,})com$", r"\1")
-    out = _name_columns(norm, non_latin, cfg, token_map)
+    norm = _name_tokens(norm)  # v5: "et" / "+" -> "and", "frs" -> "freres"
+    out = _name_columns(norm, non_latin, cfg, token_map, country)
     out.insert(1, "domain_form", raw_domain.to_numpy(zero_copy_only=False))
     out.index = names.index
     return out
 
 
 def _name_columns(norm: pa.Array, non_latin: np.ndarray, cfg: NormaliseConfig,
-                  token_map: Mapping[str, str] | None) -> pd.DataFrame:
+                  token_map: Mapping[str, str] | None,
+                  country: pd.Series | None = None) -> pd.DataFrame:
     """Everything derived from ``name_norm``: the learned map, legal forms, keys (R5-R6)."""
     if token_map:  # learned transliteration fixes, on the rows written in a non-Latin script
         norm = _by_script(norm, non_latin, lambda a, m: map_tokens(a, _dict_fn(m)), {}, token_map)
@@ -212,12 +291,14 @@ def _name_columns(norm: pa.Array, non_latin: np.ndarray, cfg: NormaliseConfig,
     translit_legal = {**LEGAL_FORMS, **TRANSLIT_LEGAL}
     if cfg.strip_legal:
         core = _by_script(norm, non_latin, lambda a, m: map_tokens(
-            a, lambda t, m=m: "" if t in m else _leet(t)), latin_legal, translit_legal)
+            a, lambda t, m=m: "" if _legal_form(t, m) else _leet(t)), latin_legal, translit_legal)
         legal = _by_script(norm, non_latin, lambda a, m: map_tokens(
-            a, lambda t, m=m: m.get(t, "")), latin_legal, translit_legal)
+            a, lambda t, m=m: _legal_form(t, m)), latin_legal, translit_legal)
     else:
         core = map_tokens(norm, _leet)
         legal = pa.array([""] * len(norm), type=pa.string())
+    if country is not None and cfg.own_country:  # v5: "(France)" / "(India)" leave the core
+        core = _drop_own_country(core, country)
     core = _collapse(pc.replace_substring_regex(core, HONORIFIC_RE, ""))
     # "Dover & Co" loses "co" and keeps a dangling "and": drop it at either end
     core = _collapse(pc.replace_substring_regex(core, r"^(?:and )+|(?: and)+$|^and$", ""))
@@ -257,7 +338,7 @@ def normalise_addresses(addr: pd.Series, cfg: NormaliseConfig = DEFAULT) -> pd.D
     (``25233b`` -> ``25233 b``), leading zeros go, and street-type tokens are canonicalised.
     """
     regions = dict(cfg.region_map) if cfg.region_map is not None else REGION_ABBREV
-    arr, non_latin = fold(addr, cfg.transliterate)
+    arr, non_latin = fold(addr, cfg.transliterate, number_marker=True)
     arr = pc.replace_substring_regex(arr, r"<null>|\bn/a\b", " ")
     # --- region per comma component
     comps = pc.split_pattern(arr, ",")
@@ -322,7 +403,7 @@ def normalise_records(df: pd.DataFrame, cfg: NormaliseConfig = DEFAULT) -> pd.Da
     parts = []
     for start in range(0, max(len(df), 1), cfg.chunk_rows):
         part = df.iloc[start:start + cfg.chunk_rows]
-        names = normalise_names(part[C.NAME], cfg)
+        names = normalise_names(part[C.NAME], cfg, country=part[C.COUNTRY])
         addrs = normalise_addresses(part[C.ADDRESS], cfg)
         out = pd.concat([part[[C.ENTITY_ID, C.COUNTRY]].astype("str"), names, addrs], axis=1)
         name_addr = (out["name_core"] + " " + out["addr_norm"]).str.strip()
@@ -374,10 +455,76 @@ def apply_token_map(norm: pd.DataFrame, token_map: Mapping[str, str],
         return norm
     out = norm.copy()
     sub = pa.array(norm["name_norm"].iloc[rows].tolist(), type=pa.string())
-    fixed = _name_columns(sub, np.ones(len(rows), dtype=bool), cfg, token_map)
+    country = norm[C.COUNTRY].iloc[rows] if C.COUNTRY in norm else None  # own-country rule
+    fixed = _name_columns(sub, np.ones(len(rows), dtype=bool), cfg, token_map, country)
     for col in ["name_norm", "name_core", "legal_form", "name_first", "name_sorted",
                 "name_squash"]:
         out.loc[out.index[rows], col] = fixed[col].to_numpy()
     name_addr = (out["name_core"].iloc[rows] + " " + out["addr_norm"].iloc[rows]).str.strip()
     out.loc[out.index[rows], "name_addr"] = name_addr.to_numpy()
     return out
+
+
+# ---------------------------------------------------------- learned fillers ----
+def fit_fillers(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                min_share: float = 1e-4, min_ratio: float = 1.0) -> list[str]:
+    """Filler tokens: name_core words the pool writes into true matches' names (sorted).
+
+    Counted over the true pairs whose pool name is in Latin script (a transliterated name
+    differs word by word: the token map's job), on the distinct name_core tokens of each side.
+    A token is *added* in a pair when only the pool name holds it and *held* when the S1 name
+    holds it. A filler is added in at least ``min_share`` of the pairs and at least
+    ``min_ratio`` times per pair holding it: ``added >= min_ratio * (held + 1)``. Train fold,
+    rules v5: "center", "services", "service", alias markers ("dba", "fka", "formerly"), the
+    "id" / "www" tails and misspelt legal forms ("lnc"). Words the pool adds to decoys
+    ("holdings", "group", "midtown": other businesses) are held by S1 names but hardly ever
+    added on true pairs, so they are not fillers. Fit on the train fold's pairs only.
+    """
+    right = pooln.loc[~pooln["non_latin"].to_numpy(), [C.ENTITY_ID, "name_core"]]
+    p = truth_pairs[[C.S1_ID, C.ENTITY_ID]].merge(right, on=C.ENTITY_ID)
+    left = s1n[[C.ENTITY_ID, "name_core"]].rename(columns={C.ENTITY_ID: C.S1_ID,
+                                                          "name_core": "l"})
+    p = p.merge(left, on=C.S1_ID)
+    if p.empty:
+        return []
+    s1_tok = pc.utf8_split_whitespace(_arrow(p["l"]))
+    pool_tok = pc.utf8_split_whitespace(_arrow(p["name_core"]))
+    flat_s1 = pc.list_flatten(s1_tok)
+    vocab = pc.dictionary_encode(pa.concat_arrays([flat_s1, pc.list_flatten(pool_tok)]))
+    codes = vocab.indices.to_numpy().astype(np.int64)
+    n_vocab = len(vocab.dictionary)
+    # one key per (pair, distinct token) on each side: pair * vocabulary size + token code
+    held_keys = np.unique(pc.list_parent_indices(s1_tok).to_numpy() * n_vocab
+                          + codes[:len(flat_s1)])
+    pool_keys = np.unique(pc.list_parent_indices(pool_tok).to_numpy() * n_vocab
+                          + codes[len(flat_s1):])
+    added_keys = pool_keys[~np.isin(pool_keys, held_keys, assume_unique=True)]
+    held = np.bincount(held_keys % n_vocab, minlength=n_vocab)
+    added = np.bincount(added_keys % n_vocab, minlength=n_vocab)
+    keep = (added >= min_share * len(p)) & (added >= min_ratio * (held + 1))
+    keep &= pc.not_equal(vocab.dictionary, "").to_numpy(zero_copy_only=False)  # "" splits to [""]
+    return sorted(vocab.dictionary.filter(pa.array(keep)).to_pylist())
+
+
+def strip_fillers(core: pd.Series, fillers: Collection[str]) -> pd.Series:
+    """``core`` without the ``fillers`` tokens, words kept in order.
+
+    A name made only of fillers ("services center") stays whole: it is still that business's
+    name, and an empty key would match nothing (or every other empty key).
+    """
+    fill = frozenset(fillers)
+    arr = _arrow(core)
+    if not fill:
+        return _series(arr, core.index)
+    out = map_tokens(arr, lambda t: "" if t in fill else t)
+    return _series(pc.if_else(pc.equal(out, ""), arr, out), core.index)
+
+
+def add_nofill(norm: pd.DataFrame, fillers: Collection[str]) -> pd.DataFrame:
+    """``norm`` with the ``NOFILL`` column: name_core without the learned filler tokens."""
+    return norm.assign(**{NOFILL: strip_fillers(norm["name_core"], fillers)})
+
+
+def sorted_words(names: pd.Series) -> pd.Series:
+    """Sorted distinct words of each name, space-joined (the ``name_sorted`` form)."""
+    return names.str.split().map(lambda t: " ".join(sorted(set(t)))).astype("str")

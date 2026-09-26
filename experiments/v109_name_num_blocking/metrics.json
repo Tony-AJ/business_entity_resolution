@@ -1,0 +1,384 @@
+{
+  "version": "v109",
+  "date": "2026-09-26",
+  "group": "A1",
+  "change": "name + address-number exact key on top of B6 (sampled mock val entities)",
+  "local_f05": "",
+  "mock_f05": "",
+  "cand_recall": "0.9829",
+  "public_f05": "",
+  "commit": "a241e40",
+  "notes": "B6 recall 0.9780; adopted B6 + name+number, cap 120: 0.9829 at 69.3/S1",
+  "owner": "M1",
+  "parent": "v105",
+  "decision": "KEEP",
+  "metrics": {
+    "hypothesis": "candidate recall drops at test density; larger word top-k and caps buy it back",
+    "configs": {
+      "B6 (v106)": {
+        "exact_keys": [
+          "name_core",
+          "name_sorted",
+          "name_squash"
+        ],
+        "exact_max_group": 200,
+        "name_char": {
+          "column": "name_core",
+          "analyzer": "char_wb",
+          "ngram": [
+            3,
+            3
+          ],
+          "top_k": 10,
+          "min_sim": 0.5,
+          "max_df": 0.2,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": 3,
+          "max_df_abs": 20000
+        },
+        "name_addr_word": {
+          "column": "name_addr",
+          "analyzer": "word",
+          "ngram": [
+            1,
+            2
+          ],
+          "top_k": 50,
+          "min_sim": 0.2,
+          "max_df": 0.01,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": null,
+          "max_df_abs": 10000
+        },
+        "addr_char": {
+          "column": "addr_norm",
+          "analyzer": "word",
+          "ngram": [
+            1,
+            2
+          ],
+          "top_k": 10,
+          "min_sim": 0.3,
+          "max_df": 0.01,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": null,
+          "max_df_abs": 10000
+        },
+        "max_per_s1": 100,
+        "cap_order": "sim_first",
+        "name_num_max_group": null,
+        "s1_chunk": 50000,
+        "n_threads": 12,
+        "vocab_sample": 500000,
+        "seed": 42
+      },
+      "B6 + name+number <=100": {
+        "exact_keys": [
+          "name_core",
+          "name_sorted",
+          "name_squash"
+        ],
+        "exact_max_group": 200,
+        "name_char": {
+          "column": "name_core",
+          "analyzer": "char_wb",
+          "ngram": [
+            3,
+            3
+          ],
+          "top_k": 10,
+          "min_sim": 0.5,
+          "max_df": 0.2,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": 3,
+          "max_df_abs": 20000
+        },
+        "name_addr_word": {
+          "column": "name_addr",
+          "analyzer": "word",
+          "ngram": [
+            1,
+            2
+          ],
+          "top_k": 50,
+          "min_sim": 0.2,
+          "max_df": 0.01,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": null,
+          "max_df_abs": 10000
+        },
+        "addr_char": {
+          "column": "addr_norm",
+          "analyzer": "word",
+          "ngram": [
+            1,
+            2
+          ],
+          "top_k": 10,
+          "min_sim": 0.3,
+          "max_df": 0.01,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": null,
+          "max_df_abs": 10000
+        },
+        "max_per_s1": 100,
+        "cap_order": "sim_first",
+        "name_num_max_group": 100,
+        "s1_chunk": 50000,
+        "n_threads": 12,
+        "vocab_sample": 500000,
+        "seed": 42
+      },
+      "B6 + name+number, cap 120": {
+        "exact_keys": [
+          "name_core",
+          "name_sorted",
+          "name_squash"
+        ],
+        "exact_max_group": 200,
+        "name_char": {
+          "column": "name_core",
+          "analyzer": "char_wb",
+          "ngram": [
+            3,
+            3
+          ],
+          "top_k": 10,
+          "min_sim": 0.5,
+          "max_df": 0.2,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": 3,
+          "max_df_abs": 20000
+        },
+        "name_addr_word": {
+          "column": "name_addr",
+          "analyzer": "word",
+          "ngram": [
+            1,
+            2
+          ],
+          "top_k": 50,
+          "min_sim": 0.2,
+          "max_df": 0.01,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": null,
+          "max_df_abs": 10000
+        },
+        "addr_char": {
+          "column": "addr_norm",
+          "analyzer": "word",
+          "ngram": [
+            1,
+            2
+          ],
+          "top_k": 10,
+          "min_sim": 0.3,
+          "max_df": 0.01,
+          "min_df": 2,
+          "sublinear_tf": true,
+          "pool_max_addr_tokens": null,
+          "max_df_abs": 10000
+        },
+        "max_per_s1": 120,
+        "cap_order": "sim_first",
+        "name_num_max_group": 100,
+        "s1_chunk": 50000,
+        "n_threads": 12,
+        "vocab_sample": 500000,
+        "seed": 42
+      }
+    },
+    "superset": {
+      "exact_keys": [
+        "name_core",
+        "name_sorted",
+        "name_squash"
+      ],
+      "exact_max_group": 200,
+      "name_char": {
+        "column": "name_core",
+        "analyzer": "char_wb",
+        "ngram": [
+          3,
+          3
+        ],
+        "top_k": 10,
+        "min_sim": 0.5,
+        "max_df": 0.2,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": 3,
+        "max_df_abs": 20000
+      },
+      "name_addr_word": {
+        "column": "name_addr",
+        "analyzer": "word",
+        "ngram": [
+          1,
+          2
+        ],
+        "top_k": 50,
+        "min_sim": 0.2,
+        "max_df": 0.01,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": null,
+        "max_df_abs": 10000
+      },
+      "addr_char": {
+        "column": "addr_norm",
+        "analyzer": "word",
+        "ngram": [
+          1,
+          2
+        ],
+        "top_k": 10,
+        "min_sim": 0.3,
+        "max_df": 0.01,
+        "min_df": 2,
+        "sublinear_tf": true,
+        "pool_max_addr_tokens": null,
+        "max_df_abs": 10000
+      },
+      "max_per_s1": 100000,
+      "cap_order": "sim_first",
+      "name_num_max_group": 100,
+      "s1_chunk": 50000,
+      "n_threads": 12,
+      "vocab_sample": 500000,
+      "seed": 42
+    },
+    "config_keys": {
+      "B6 (v106)": "b54f2a3d",
+      "B6 + name+number <=100": "3542fba2",
+      "B6 + name+number, cap 120": "db1f33c4",
+      "SUPER": "4d61ab8d"
+    },
+    "report": [
+      {
+        "country": "India",
+        "config": "B6 (v106)",
+        "pair_recall": 0.9688375855991216,
+        "entity_recall": 0.9972469292672597,
+        "ceiling_f_beta": 0.9893305210520968,
+        "candidates_mean": 67.75467723328485,
+        "candidates_p95": 100.0,
+        "candidates_max": 100,
+        "candidate_pairs": 1350825,
+        "reduction_ratio": 0.9999914774505471
+      },
+      {
+        "country": "India",
+        "config": "B6 + name+number <=100",
+        "pair_recall": 0.9776358750614003,
+        "entity_recall": 0.9985705209656925,
+        "ceiling_f_beta": 0.9930125281435828,
+        "candidates_mean": 69.3374630084767,
+        "candidates_p95": 100.0,
+        "candidates_max": 100,
+        "candidate_pairs": 1382381,
+        "reduction_ratio": 0.9999912783591988
+      },
+      {
+        "country": "India",
+        "config": "B6 + name+number, cap 120",
+        "pair_recall": 0.9778381345892687,
+        "entity_recall": 0.9985705209656925,
+        "ceiling_f_beta": 0.9930815514547527,
+        "candidates_mean": 73.58424035712494,
+        "candidates_p95": 120.0,
+        "candidates_max": 120,
+        "candidate_pairs": 1467049,
+        "reduction_ratio": 0.9999907441765941
+      },
+      {
+        "country": "US",
+        "config": "B6 (v106)",
+        "pair_recall": 0.9870369575481822,
+        "entity_recall": 0.9988562516246425,
+        "ceiling_f_beta": 0.9956475188695193,
+        "candidates_mean": 63.30470438027892,
+        "candidates_p95": 100.0,
+        "candidates_max": 100,
+        "candidate_pairs": 1289137,
+        "reduction_ratio": 0.9999920371921804
+      },
+      {
+        "country": "US",
+        "config": "B6 + name+number <=100",
+        "pair_recall": 0.9877666652358673,
+        "entity_recall": 0.9990642058747076,
+        "ceiling_f_beta": 0.9960176990900941,
+        "candidates_mean": 63.35695344725987,
+        "candidates_p95": 100.0,
+        "candidates_max": 100,
+        "candidate_pairs": 1290201,
+        "reduction_ratio": 0.9999920306200104
+      },
+      {
+        "country": "US",
+        "config": "B6 + name+number, cap 120",
+        "pair_recall": 0.9878668211930005,
+        "entity_recall": 0.9990642058747076,
+        "ceiling_f_beta": 0.9960429839271673,
+        "candidates_mean": 65.1166273816539,
+        "candidates_p95": 120.0,
+        "candidates_max": 120,
+        "candidate_pairs": 1326035,
+        "reduction_ratio": 0.9999918092787136
+      }
+    ],
+    "overall": {
+      "B6 (v106)": {
+        "pair_recall": 0.9779812952432985,
+        "cands_per_s1": 65.50611647353664,
+        "missed_pairs": 3063.0
+      },
+      "B6 + name+number <=100": {
+        "pair_recall": 0.9827257761898942,
+        "cands_per_s1": 66.31552566933823,
+        "missed_pairs": 2403.0
+      },
+      "B6 + name+number, cap 120": {
+        "pair_recall": 0.982876736947286,
+        "cands_per_s1": 69.30557554403117,
+        "missed_pairs": 2382.0
+      }
+    },
+    "decision": {
+      "B6 (v106)": {
+        "pair_recall": 0.9779812952432985,
+        "cands_per_s1": 65.50611647353664,
+        "missed_pairs": 3063.0,
+        "recall_gain": 0.0,
+        "time_ratio": 1.0
+      },
+      "B6 + name+number <=100": {
+        "pair_recall": 0.9827257761898942,
+        "cands_per_s1": 66.31552566933823,
+        "missed_pairs": 2403.0,
+        "recall_gain": 0.004744480946595742,
+        "time_ratio": 1.012356238461008
+      },
+      "B6 + name+number, cap 120": {
+        "pair_recall": 0.982876736947286,
+        "cands_per_s1": 69.30557554403117,
+        "missed_pairs": 2382.0,
+        "recall_gain": 0.00489544170398748,
+        "time_ratio": 1.0580015924471642
+      }
+    },
+    "adopted": "B6 + name+number, cap 120",
+    "load_seconds": 83.61,
+    "superset_India_seconds": 193.9,
+    "superset_US_seconds": 146.7
+  }
+}

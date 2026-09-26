@@ -1,0 +1,19 @@
+{
+  "version": "v112",
+  "date": "2026-09-26",
+  "group": "B2",
+  "change": "v110 + French rules v4, France-only test re-run (not run)",
+  "local_f05": "",
+  "mock_f05": "",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "1698ce9",
+  "notes": "not run: rules v5 (which include v4) go into v120's full run",
+  "owner": "M1",
+  "parent": "v110",
+  "decision": "DROP",
+  "metrics": {
+    "status": "not run",
+    "folded_into": "v120"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "version": "v102",
+  "date": "2026-09-26",
+  "group": "E2",
+  "change": "v101 with the rule tuned against a test-sized pool (not run to the end)",
+  "local_f05": "",
+  "mock_f05": "",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "db1807f",
+  "notes": "superseded by v103: the mock fold tunes at test density on its own; run stopped by a machine restart on 26 Sep",
+  "owner": "M1",
+  "parent": "v101",
+  "decision": "DROP",
+  "metrics": {
+    "status": "not completed",
+    "superseded_by": "v103",
+    "reason": "machine restart at 14:07 IST on 2026-09-26 stopped the queued run"
+  }
+}

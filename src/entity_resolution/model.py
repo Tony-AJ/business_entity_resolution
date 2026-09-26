@@ -505,6 +505,45 @@ def _column_mismatch(expected: list[str], X: pd.DataFrame) -> str:
     return "columns differ from the fitted feature_names_: " + "; ".join(problems)
 
 
+class SeedMean:
+    """Matchers trained on different seeds or data slices, averaged.
+
+    Stands in for a ``Matcher`` wherever a fitted model predicts: a stage-2 part of several
+    seeds (``predict_stage2``, ``TwoStage``) or a bagged stage 1 (``stage1.fit_stage1``,
+    ``pipeline.Fitted``): same ``feature_names_``, ``predict_proba`` = the mean probability.
+    """
+
+    def __init__(self, models: list[Matcher]) -> None:
+        if not models:
+            raise ValueError("SeedMean needs at least one model")
+        names = list(models[0].feature_names_)
+        if any(list(m.feature_names_) != names for m in models):
+            raise ValueError("SeedMean models must read the same features")
+        self.models, self.feature_names_ = list(models), names
+        self.fit_info_: dict = {}
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Mean match probability of the seeds per row of ``X``, float32."""
+        return np.mean([m.predict_proba(X) for m in self.models], axis=0).astype(np.float32)
+
+    def importance(self) -> pd.Series:
+        """The seeds' mean gain share per feature, largest first."""
+        return (pd.concat([m.importance() for m in self.models], axis=1).mean(axis=1)
+                .sort_values(ascending=False))
+
+    def save(self, out: Path) -> Path:
+        """Each seed's model under ``out/seed<i>`` (``Matcher.save``)."""
+        for i, m in enumerate(self.models):
+            m.save(Path(out) / f"seed{i}")
+        return Path(out)
+
+    @classmethod
+    def load(cls, out: Path) -> SeedMean:
+        """Read back what ``save`` wrote, seeds in their saved order."""
+        dirs = sorted(Path(out).glob("seed*"), key=lambda d: int(d.name[len("seed"):]))
+        return cls([Matcher.load(d) for d in dirs])
+
+
 def _tune_scores(y: np.ndarray, prob: np.ndarray) -> tuple[float, float | None]:
     """(logloss, AUC) of float32 probabilities on the tune set; AUC None with one class.
 

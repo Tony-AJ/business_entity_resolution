@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from entity_resolution import config as C
 from entity_resolution.blocking import PAIR_COLUMNS, BlockingConfig, TopKSpec, block, to_id_lists
@@ -77,6 +78,11 @@ def test_fit_and_run_fold_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path
     assert again.rule == fitted.rule
     _, _, _, matches2 = run_fold(cfg, again, val)
     assert matches2.equals(matches)
+    # fillers are opt-in: a default version learns, logs and saves none
+    assert fitted.fillers is None and again.fillers is None and "fillers" not in fitted.info
+    assert not (tmp_path / "art" / "fillers.json").exists()
+    assert fitted.token_evidence is None and again.token_evidence is None
+    assert not (tmp_path / "art" / "token_evidence.json").exists()
 
 
 def test_end_to_end_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path) -> None:
@@ -210,4 +216,108 @@ def test_stats_feature_groups_end_to_end(dataset_dir: Path, tmp_path: Path) -> N
     assert 0.0 <= metrics["f_beta"] <= 1.0 and len(scored) == len(pairs)
     matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
     s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+# ------------------------------------------------------------ learned fillers ----
+def test_learn_fillers_and_the_nofill_pass(filler_dir: Path, tmp_path: Path) -> None:
+    """Fillers are learned from the train fold (cached), loaded as name_core_nofill, and the
+    nofill pass meets the six filler variants; everything stays off by default."""
+    from entity_resolution.normalize import NormaliseConfig
+    from entity_resolution.pipeline import _static_key, learn_fillers, load_normalised, prepare
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True))
+    train = load_fold("train", filler_dir, frac=0.0)            # every entity in train
+    assert learn_fillers(base, train) is None
+    fillers = learn_fillers(cfg, train)
+    assert fillers == ["center", "services"]                     # "holdings" is held by S1
+    assert learn_fillers(cfg, train) == fillers and len(list(cfg.cache_dir.glob("fillers_*")))
+    # the learned-filler switches never touch the static normalisation cache
+    assert _static_key(NormaliseConfig(learn_fillers=True, filler_min_ratio=2.0)) == \
+        _static_key(NormaliseConfig())
+    assert "name_core_nofill" not in load_normalised("train", (2, 3), cfg).columns
+    s1n = load_normalised("train", (1,), cfg, fillers=fillers)
+    pooln = load_normalised("train", (2, 3), cfg, fillers=fillers)
+    bare = dict(zip(pooln[C.ENTITY_ID], pooln["name_core_nofill"], strict=True))
+    assert bare["S3-20010"] == "globex" and bare["S3-20016"] == "stark holdings"
+    on = replace(cfg, blocking=replace(cfg.blocking, nofill_max_group=50))
+    pairs = prepare(s1n, pooln, on, "t", fillers=fillers)
+    bits = pairs["pass"].to_numpy()
+    assert ((bits & 128) != 0).sum() == 8                        # every pair: equal once bare
+    only = pairs[((bits & 128) != 0) & ((bits & 7) == 0)]        # ... and no other exact key
+    assert set(zip(only[C.S1_ID], only[C.ENTITY_ID], strict=True)) == {
+        (f"S1-2{i + 9:04d}", f"S{2 + i % 2}-2{i + 9:04d}") for i in range(6)}
+    with pytest.raises(ValueError, match="fillers"):
+        prepare(s1n, pooln, on, "t")                             # the pass needs the fillers
+
+
+def test_filler_switches_end_to_end(filler_dir: Path, tmp_path: Path) -> None:
+    """Every filler switch on: fit, save / load, run_fold, run_mock and valid test files."""
+    import json
+
+    from entity_resolution.mock import build_mock
+    from entity_resolution.normalize import NormaliseConfig
+    from entity_resolution.pipeline import run_mock
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True),
+                  blocking=replace(base.blocking, nofill_max_group=50),
+                  feature_groups=(*DEFAULT_GROUPS, "nofill"))
+    assert PipelineConfig.from_record(json.loads(json.dumps(cfg.record()))) == cfg
+    train = load_fold("train", filler_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    assert fitted.fillers == ["center"] == fitted.info["fillers"]   # "services": a val pair
+    assert Fitted.load(tmp_path / "art", cfg).fillers == fitted.fillers
+    metrics, pairs, scored, _ = run_fold(cfg, fitted, load_fold("val", filler_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0 and len(scored) == len(pairs)
+    assert metrics["cand_recall"] == 1.0
+    tr = load_fold("train", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    va = load_fold("val", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(tr, va, tune_ids=tr.s1[C.ENTITY_ID], drop_first=[], shape={})
+    mock_scored, report = run_mock(cfg, fitted, mock)
+    assert not mock_scored[C.ENTITY_ID].duplicated().any() and set(report.index) == {
+        "tune", "val"}
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_learn_fillers_samples_whole_entities_past_the_cap(filler_dir: Path, tmp_path: Path,
+                                                          monkeypatch) -> None:
+    """Past FILLER_PAIRS pairs, fillers are learned on a hashed sample of S1 entities: a
+    deterministic subset of the pairs, cached under its own key."""
+    from entity_resolution import pipeline
+    from entity_resolution.normalize import NormaliseConfig
+    cfg = replace(tiny_cfg(tmp_path, filler_dir), normalise=NormaliseConfig(learn_fillers=True))
+    train = load_fold("train", filler_dir, frac=0.0)
+    full = pipeline.learn_fillers(cfg, train)
+    monkeypatch.setattr(pipeline, "FILLER_PAIRS", 4)                 # 8 pairs: ~half kept
+    sampled = pipeline.learn_fillers(cfg, train)
+    assert set(sampled) <= set(full) and sampled == pipeline.learn_fillers(cfg, train)
+    assert len(list(cfg.cache_dir.glob("fillers_*.json"))) == 2       # one file per cap
+
+
+def test_token_evidence_end_to_end(filler_dir: Path, tmp_path: Path) -> None:
+    """Token evidence learned on the train fold (cached), saved with the version and read by
+    the tok_evidence group through fit, run_fold and run_test; off by default."""
+    import json
+
+    from entity_resolution.evidence import EvidenceConfig
+    from entity_resolution.pipeline import learn_token_evidence
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, evidence=EvidenceConfig(learn=True, sample_share=1.0, min_support=1,
+                                                prior=1.0),
+                  feature_groups=(*DEFAULT_GROUPS, "tok_evidence"))
+    assert PipelineConfig.from_record(json.loads(json.dumps(cfg.record()))) == cfg
+    train = load_fold("train", filler_dir, frac=0.5)
+    assert learn_token_evidence(base, train) is None
+    fitted = fit(cfg, train, tmp_path / "art")
+    ev = fitted.token_evidence
+    assert ev.pool["center"] > 0 > ev.pool["holdings"]      # a filler, a decoy marker
+    assert fitted.info["token_evidence"]["pool_words"] == len(ev.pool)
+    assert Fitted.load(tmp_path / "art", cfg).token_evidence == ev
+    assert learn_token_evidence(cfg, train) == ev            # read back from the cache
+    metrics, pairs, scored, _ = run_fold(cfg, fitted, load_fold("val", filler_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0 and len(scored) == len(pairs)
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
     assert validate(matching, candidates, s1_ids, valid) == ([], [])

@@ -5,13 +5,17 @@ from entity_resolution import config as C
 from entity_resolution.normalize import (
     DEFAULT,
     EXTRA_COLUMNS,
+    NOFILL,
     NORM_COLUMNS,
     NormaliseConfig,
+    add_nofill,
     apply_token_map,
     basic_norm,
+    fit_fillers,
     fit_token_map,
     normalise_names,
     normalise_records,
+    sorted_words,
 )
 
 FLAGS = ["non_latin", "domain_form", "addr_non_latin"]
@@ -317,3 +321,138 @@ def test_french_departements_map_to_their_region() -> None:
                                          "1 Quai, Nantes, Loire-Atlantique",
                                          "2 Rue, Calais, Pas-de-Calais"]))
     assert out["region"].tolist() == ["hdf", "hdf", "naq", "pdl", "hdf"]
+
+
+# ------------------------------------------------------------------- rules v4 ----
+def test_v4_number_marker_leaves_addresses():
+    """The pool's "N° 32" / "Nº 32" / "n°32" read like S1's "32": no stray "n" token."""
+    out = _addrs("N° 32 R DES LAURIERS, PORNIC", "Nº 32 R. des Lauriers, Pornic",
+                 "n°32 rue des lauriers, pornic", "32 Rue des Lauriers, Pornic")
+    assert out["addr_norm"].tolist() == ["32 rue des lauriers pornic"] * 4
+    assert out["addr_nums"].tolist() == ["32"] * 4
+    # only the marker goes: "No 32" and a lone degree sign are unchanged, names untouched
+    other = _addrs("No 32 Rue X", "Temp 5° Rue X")
+    assert other["addr_norm"].tolist() == ["no 32 rue x", "temp 5 rue x"]
+    assert _names("N° 1 Pizza")["name_norm"].iloc[0] == "n 1 pizza"
+
+
+def test_v4_compagnie_is_a_legal_form_like_cie():
+    """ "Compagnie" and "Cie", swapped by the French pool, both leave name_core as "co"."""
+    out = _names("Bordeaux France Compagnie", "Bordeaux France Cie", "Meta & Compagnie SA")
+    assert out["name_core"].tolist() == ["bordeaux france", "bordeaux france", "meta"]
+    assert out["legal_form"].tolist() == ["co", "co", "co sa"]
+    assert out["name_norm"].iloc[0] == "bordeaux france compagnie"
+
+
+# ------------------------------------------------------------------- rules v5 ----
+def test_v5_et_and_plus_read_as_and():
+    """S1's "&", the French pool's "et" and a standalone "+" give one name_norm and core."""
+    out = _names("Aero & Cie", "Aero et Cie EURL", "AERO + CIE", "Production +",
+                 "B+ Retail", "ET Solutions")
+    assert out["name_norm"].tolist() == ["aero and cie", "aero and cie eurl", "aero and cie",
+                                         "production and", "b+ retail", "et solutions"]
+    assert out["name_core"].tolist() == ["aero", "aero", "aero", "production", "b+ retail",
+                                         "et solutions"]  # a glued "+" or a leading "ET" stays
+
+
+def test_v5_frs_reads_as_freres():
+    """The French pool's "Frs" is "Frères"."""
+    out = _names("Jumelage & Frères SAS", "Jumelage & Frs SAS", "JUMELAGE ET FRS")
+    assert out["name_core"].tolist() == ["jumelage and freres"] * 3
+    assert out["name_squash"].tolist() == ["jumelageandfreres"] * 3
+
+
+def test_v5_leet_legal_forms():
+    """Legal forms the pool writes in leet leave name_core like the plain forms; any other
+    leet word is still only folded ("5tar" -> "star")."""
+    out = _names("Aide Fetes SARL", "Aide Fetes 5ARL", "Acme C0rp", "Acme l1c",
+                 "Sharma Traders Pvt 1td", "Lisette c0", "5tar flxe llc")
+    assert out["name_core"].tolist() == ["aide fetes", "aide fetes", "acme", "acme",
+                                         "sharma traders", "lisette", "star flxe"]
+    assert out["legal_form"].tolist() == ["sarl", "sarl", "corp", "llc", "pvt ltd", "co", "llc"]
+    assert out["name_norm"].iloc[1] == "aide fetes 5arl"  # the written form stays in name_norm
+
+
+def test_v5_french_address_tokens():
+    """The pool's "12B", "Crs", "Psg" / "Pass." and "Appt" / "App" read like S1's full forms."""
+    out = _addrs("12 bis Rue Dade, Pessac", "12B RUE DADE, PESSAC",
+                 "88 Cours de la Martinique, Bordeaux", "88 CRS DE LA MARTINIQUE, BORDEAUX",
+                 "4 Passage Birly, Bordeaux", "4 Psg Birly, Bordeaux", "4 Pass. Birly, Bordeaux",
+                 "9 Rue Valles, Appartement 11, Nantes", "9 R. Valles, Appt 11, Nantes",
+                 "9 Rue Valles, App 11, Nantes")
+    assert out["addr_norm"].tolist() == (["12 b rue dade pessac"] * 2
+                                         + ["88 cours de la martinique bordeaux"] * 2
+                                         + ["4 passage birly bordeaux"] * 3
+                                         + ["9 rue valles apt 11 nantes"] * 3)
+
+
+def test_v5_own_country_leaves_name_core():
+    """S1's "(France)" / "(India)" and the pool's bare "France" leave name_core. Only the
+    record's own country counts, "US" is too short to remove anything ("Toys R Us"), and
+    name_norm keeps the word. Source 1 never writes a bare "France" (0 of 259,452 names), so
+    "Air France" in France losing it is the measured behaviour, not an accident."""
+    rows = [("S1-1", "Maeva (France) Societe", "", "France"),
+            ("S2-2", "Maeva Societe", "", "France"),
+            ("S2-3", "MAEVA FRANCE SOCIETE", "", "France"),
+            ("S1-4", "Tata Motors (India) Ltd", "", "India"),
+            ("S1-5", "Maeva (France) Societe", "", "India"),
+            ("S1-6", "Toys R Us", "", "US"),
+            ("S1-7", "Air France", "", "France")]
+    out = normalise_records(_src(*rows))
+    assert out["name_core"].tolist() == ["maeva societe"] * 3 + [
+        "tata motors", "maeva france societe", "toys r us", "air"]
+    assert out["name_norm"].iloc[0] == "maeva france societe"
+    assert out["name_squash"].iloc[0] == "maevasociete"
+    # switched off, or without the country values, the word stays in name_core
+    off = normalise_records(_src(*rows), NormaliseConfig(own_country=False))
+    assert off["name_core"].iloc[0] == "maeva france societe"
+    assert normalise_names(_src(*rows)[C.NAME])["name_core"].iloc[3] == "tata motors india"
+
+
+# ----------------------------------------------------------- learned fillers ----
+def _filler_case() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """(truth pairs, s1n, pooln) for fit_fillers: six Latin pairs and one script pair.
+
+    "center" is added to three true matches and never held by an S1 name; "holdings" is added
+    once but held once too (S1-2 keeps it: a word of the business, not a filler); the alias
+    marker "dba" and the alias "kramerica" are added once each; S1-5's pool name is identical;
+    the Devanagari pool name of S1-6 adds a word but is left to the token map.
+    """
+    s1 = _src(*[(f"S1-{i}", n, "", "US") for i, n in enumerate(
+        ["Acme", "Globex", "Initech Holdings", "Hooli", "Vandelay", "Soylent", "Umbrella"])])
+    pool = _src(*[(f"S2-{i}", n, "", "US") for i, n in enumerate(
+        ["Acme Center", "Globex Center", "Initech Holdings Center", "Hooli Holdings",
+         "Vandelay dba Kramerica", "Soylent", "अम्ब्रेला सेंटर"])])
+    truth = pd.DataFrame({C.S1_ID: s1[C.ENTITY_ID], C.ENTITY_ID: pool[C.ENTITY_ID]})
+    return truth.astype("str"), normalise_records(s1), normalise_records(pool)
+
+
+def test_fit_fillers_learns_words_added_to_true_matches():
+    """Added far more often than held -> filler; a word S1 names hold too is not; script
+    rows are ignored; both thresholds cut as documented."""
+    truth, s1n, pooln = _filler_case()
+    assert fit_fillers(truth, s1n, pooln) == ["center", "dba", "kramerica"]
+    assert fit_fillers(truth, s1n, pooln, min_share=0.3) == ["center"]  # added >= 1.8 of 6
+    assert fit_fillers(truth, s1n, pooln, min_ratio=3.0) == ["center"]  # 3 >= 3 * (0 + 1)
+    assert fit_fillers(truth, s1n, pooln, min_ratio=3.5) == []
+    assert fit_fillers(truth.iloc[:0], s1n, pooln) == []
+    assert fit_fillers(truth.iloc[[5]], s1n, pooln) == []                # identical names
+
+
+def test_add_nofill_strips_fillers_and_keeps_filler_only_names():
+    """name_core_nofill drops filler tokens in place; a name of fillers only stays whole."""
+    norm = _names("Acme Center", "Center Acme Services", "Services Center", "", "Globex Inc")
+    before = norm.copy()
+    out = add_nofill(norm, ["center", "services"])
+    assert out[NOFILL].tolist() == ["acme", "acme", "services center", "", "globex"]
+    pd.testing.assert_frame_equal(out.drop(columns=NOFILL), before)   # nothing else changes
+    pd.testing.assert_frame_equal(norm, before)                        # input untouched
+    assert add_nofill(norm, [])[NOFILL].tolist() == norm["name_core"].tolist()
+    assert NOFILL not in normalise_records(_src(*MIXED)).columns       # opt-in only
+
+
+def test_sorted_words_is_the_name_sorted_form():
+    """Distinct words, sorted: the same key normalisation gives name_core in name_sorted."""
+    norm = _names("Beta Alpha Beta", "", "Zeta")
+    assert sorted_words(norm["name_core"]).tolist() == norm["name_sorted"].tolist()
+    assert sorted_words(pd.Series(["b a b", "", "c"])).tolist() == ["a b", "", "c"]

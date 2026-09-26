@@ -10,7 +10,7 @@ import pytest
 from entity_resolution import config as C
 from entity_resolution.decision import Grid, tune
 from entity_resolution.mock import build_mock
-from entity_resolution.model import MatcherParams
+from entity_resolution.model import Matcher, MatcherParams
 from entity_resolution.pipeline import fit
 from entity_resolution.split import load_fold
 from entity_resolution.stacking import (
@@ -23,6 +23,7 @@ from entity_resolution.stacking import (
 )
 from entity_resolution.submission import split_ids, validate
 from entity_resolution.twostage import (
+    SeedMean,
     TwoStage,
     TwoStageConfig,
     fit_stage2,
@@ -123,6 +124,43 @@ def test_two_stage_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
     assert again.rule == rule and again.tcfg == tcfg and len(again.models) == tcfg.folds
     matching, candidates, *_ = run_test_two_stage(cfg, again, out_dir=tmp_path / "output")
     s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_two_stage_with_learned_fillers(filler_dir: Path, tmp_path: Path) -> None:
+    """Every filler and token-evidence switch on: stage 1 reads name_core_nofill and the
+    learned evidence on the mock and on test, both survive save / load, and the test files
+    validate."""
+    from dataclasses import replace
+
+    from entity_resolution.evidence import EvidenceConfig
+    from entity_resolution.features import DEFAULT_GROUPS
+    from entity_resolution.normalize import NormaliseConfig
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True),
+                  blocking=replace(base.blocking, nofill_max_group=50),
+                  evidence=EvidenceConfig(learn=True, sample_share=1.0, min_support=1,
+                                          prior=1.0),
+                  feature_groups=(*DEFAULT_GROUPS, "nofill", "tok_evidence"))
+    stage1 = fit(cfg, load_fold("train", filler_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, model=MatcherParams(backend="heuristic"))
+    outs = mock_stage1(cfg, stage1, mock, tcfg)
+    assert all({"nofill_eq", "te_pool_sum"} <= set(o.X.columns) for o in outs.values())
+    models, info = fit_stage2(outs, mock, tcfg)
+    scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
+    val_part = mock.part("val")
+    rule, table = tune(scored, val_part.s1[C.ENTITY_ID], val_part.pairs,
+                       Grid(tau_abs=(0.3, 0.7, 0.2), tau_rel=(0.0,), single_delta=(0.0,),
+                            max_matches=(11,)))
+    again = TwoStage.load(TwoStage(stage1, models, rule, tcfg, table, info).save(
+        tmp_path / "two"), cfg)
+    assert again.stage1.fillers == stage1.fillers == ["center"]
+    assert again.stage1.token_evidence == stage1.token_evidence is not None
+    matching, candidates, *_ = run_test_two_stage(cfg, again, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
 
 
@@ -276,3 +314,92 @@ def test_train_roles_fit_and_tune(dataset_dir: Path, tmp_path: Path) -> None:
     assert len(models) == 2 and not scored[C.ENTITY_ID].duplicated().any()
     with pytest.raises(ValueError, match="val"):
         fit_stage2(outs, mock, TwoStageConfig(train_roles=("fit", "val")))
+
+
+def test_seed_mean_averages_and_round_trips(tmp_path: Path) -> None:
+    """SeedMean predicts the seeds' mean, refuses mixed features and survives save/load."""
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.random((300, 3), dtype=np.float32), columns=["a", "b", "c"])
+    y = (X["a"] + 0.3 * rng.random(300) > 0.7).astype(int)
+    seeds = [Matcher(MatcherParams(backend="xgb", device="cpu", n_estimators=20,
+                                   seed=s)).fit(X, y, X, y) for s in (1, 2)]
+    mean = SeedMean(seeds)
+    expected = np.mean([m.predict_proba(X) for m in seeds], axis=0)
+    assert np.allclose(mean.predict_proba(X), expected)
+    assert predict_stage2([mean, mean], X).tolist() == pytest.approx(expected.tolist())
+    again = SeedMean.load(mean.save(tmp_path / "seeds"))
+    assert len(again.models) == 2
+    assert np.allclose(again.predict_proba(X), expected, atol=1e-6)
+    other = Const(0.5)
+    other.feature_names_ = ["a", "b"]
+    with pytest.raises(ValueError, match="same features"):
+        SeedMean([seeds[0], other])
+
+
+def test_extra_groups_ride_on_the_kept_pairs(dataset_dir: Path, tmp_path: Path) -> None:
+    """M3's groups reach stage 2 on the kept pairs, survive save/load and the test files."""
+    from entity_resolution.features import feature_names
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    groups = ("idf", "token_freq", "ctx_idf", "address_extra")
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, extra_groups=groups,
+                          model=MatcherParams(backend="heuristic"))
+    outs = mock_stage1(cfg, stage1, mock, tcfg)
+    extra = feature_names(groups)
+    for o in outs.values():
+        assert list(o.X.columns[-len(extra):]) == extra and len(o.X) == len(o.pairs)
+        assert (o.X[extra].dtypes == np.float32).all()
+        assert (o.X["freq_name_r"].dropna() >= 1).all()  # a pool record counts itself
+    models, info = fit_stage2(outs, mock, tcfg)
+    scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
+    assert not scored[C.ENTITY_ID].duplicated().any()
+    val_part = mock.part("val")
+    rule, table = tune(scored, val_part.s1[C.ENTITY_ID], val_part.pairs,
+                       Grid(tau_abs=(0.3, 0.7, 0.2), tau_rel=(0.0,), single_delta=(0.0,),
+                            max_matches=(11,)))
+    again = TwoStage.load(TwoStage(stage1, models, rule, tcfg, table, info).save(
+        tmp_path / "two"), cfg)
+    assert again.tcfg == tcfg and again.tcfg.extra_groups == groups
+    matching, candidates, *_ = run_test_two_stage(cfg, again, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_extra_groups_are_checked(dataset_dir: Path, tmp_path: Path) -> None:
+    """Unknown extra groups fail at once; a stage-1 group twice fails before stage 1 runs."""
+    with pytest.raises(ValueError, match="unknown feature groups"):
+        TwoStageConfig(extra_groups=("nope",))
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    with pytest.raises(ValueError, match="stage-1 groups already"):
+        mock_stage1(cfg, stage1, mock, TwoStageConfig(extra_groups=("blocking",)))
+
+
+def test_stage1_cache_refuses_another_configuration(dataset_dir: Path, tmp_path: Path) -> None:
+    """A cache written under one TwoStageConfig is refused under another (stale features
+    otherwise); a sidecar without the recorded key (an older cache) is still read."""
+    import json
+    from dataclasses import replace
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    plain = TwoStageConfig(floor=0.0, max_cands=5, model=MatcherParams(backend="heuristic"))
+    with_idf = replace(plain, extra_groups=("idf",))
+    first = mock_stage1(cfg, stage1, mock, plain, cache_dir=tmp_path / "stage1")
+    with pytest.raises(ValueError, match="own cache_dir"):
+        mock_stage1(cfg, stage1, mock, with_idf, cache_dir=tmp_path / "stage1")
+    for sidecar in (tmp_path / "stage1").glob("*.json"):   # as written before the key existed
+        meta = json.loads(sidecar.read_text())
+        meta.pop("tcfg")
+        sidecar.write_text(json.dumps(meta))
+    again = mock_stage1(cfg, stage1, mock, with_idf, cache_dir=tmp_path / "stage1")
+    for c, o in first.items():
+        pd.testing.assert_frame_equal(again[c].X, o.X)

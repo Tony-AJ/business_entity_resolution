@@ -6,7 +6,8 @@
 #   ├── code/business_entity_resolution/  `git archive HEAD`: tracked files only, so dataset/,
 #   │   │                                 output/, artifacts/, .venv and .git stay out
 #   │   └── src/notebooks/                the final version's notebook + metrics.json
-#   └── Documentation_template.md         the filled methodology write-up (--doc)
+#   └── Documentation_template.md         the filled write-up (--doc, default
+#                                         docs/Documentation_template.md)
 #
 # Steps: a read-only preflight, both validators, staging under build/ (gitignored), a check
 # of the staged code tree, the zip, then sizes, sha256 and an `unzip -l` listing. The working
@@ -25,8 +26,8 @@ version's notebook and metrics.json under src/notebooks/) and the methodology wr
   --team NAME          team name; the zip is NAME_submission.zip (letters, digits, . _ -)
   --version vNNN_slug  committed experiment folder of the final version (v105_dense_blocking)
   --outputs DIR        folder holding both TSVs (default: output; e.g. submissions/v105)
-  --doc PATH           filled methodology, shipped as Documentation_template.md
-                       (default: docs/methodology.md)
+  --doc PATH           filled write-up, shipped as Documentation_template.md
+                       (default: docs/Documentation_template.md)
   --check-ids          pass --check-ids to both validators: every listed ID must exist in
                        the test split (a few GB of RAM)
   --dry-run            read-only preflight, then print each step without running it
@@ -66,7 +67,7 @@ if ! command -v sha256sum >/dev/null; then  # macOS ships shasum, not GNU sha256
 fi
 
 # -------------------------------------------------------------- arguments ----
-TEAM='' VERSION='' OUTPUTS=output DOC=docs/methodology.md CHECK_IDS='' DRY_RUN=0
+TEAM='' VERSION='' OUTPUTS=output DOC=docs/Documentation_template.md CHECK_IDS='' DRY_RUN=0
 while (( $# )); do
   case $1 in
     --team | --version | --outputs | --doc)
