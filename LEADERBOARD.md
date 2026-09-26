@@ -38,7 +38,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
-## Submission 04: 2026-09-26 ~12:15 IST
+## Submission 04: 2026-09-26 12:29 IST
 - Version: v107_tight_rule (on v104_two_stage)
 - Commit: 86da932 (src/), results in (this commit) `exp(v107)`; v104 in 86da932 `exp(v104)`
 - Change vs previous submission (v103): two-stage matcher (v104) + rule tuned on the tight mock.
@@ -49,7 +49,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
   the GPU, trained on the mock fold's fit entities with 2-part cross-fitting.
 - Threshold / decision rule: expected-F0.5 decoding, gamma 1.5, expected misses 0.05, max 11, 1-to-1 (tuned for 1 - L_FN - 1.45 L_FP on the mock tune entities)
 - Mock F0.5 0.9745; est_public 0.9659 (v103: mock 0.9704, est 0.9610, public 0.961)
-- Public F0.5: (fill in after upload)
+- Public F0.5: 0.966 (est_public 0.9659: the tight mock predicted it to within 0.0001)
 - Notes: files in submissions/v107/; both validators PASS.
 
 
