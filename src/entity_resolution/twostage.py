@@ -185,13 +185,28 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     return Stage1Output(kept, X, len(pairs))
 
 
-def save_stage1(o: Stage1Output, path: Path) -> Path:
-    """Write a partition's stage-1 output as one Parquet file (pairs + frame) and a sidecar."""
+# TwoStageConfig fields a stage-1 output depends on (the rest only shapes stage 2)
+_STAGE1_FIELDS = ("floor", "max_cands", "anchors", "cohesion", "rivals", "extra_groups")
+
+
+def stage1_key(tcfg: TwoStageConfig) -> dict:
+    """The fields of ``tcfg`` that change a stage-1 output, as JSON-ready values."""
+    rec = tcfg.record()
+    return {k: rec[k] for k in _STAGE1_FIELDS}
+
+
+def save_stage1(o: Stage1Output, path: Path, key: dict | None = None) -> Path:
+    """Write a partition's stage-1 output as one Parquet file (pairs + frame) and a sidecar.
+
+    The sidecar holds the candidate count and, when given, the ``stage1_key`` it was built
+    with, so a cache read under another configuration can be refused.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     pd.concat([o.pairs, o.X], axis=1).to_parquet(tmp, index=False)
     tmp.replace(path)
-    path.with_suffix(".json").write_text(json.dumps({"n_all": o.n_all}) + "\n")
+    meta = {"n_all": o.n_all, **({"tcfg": key} if key is not None else {})}
+    path.with_suffix(".json").write_text(json.dumps(meta) + "\n")
     return path
 
 
@@ -204,17 +219,26 @@ def load_stage1(path: Path) -> Stage1Output:
     return Stage1Output(pairs, X, n_all)
 
 
-def _cached_stage1(cache_dir: Path | None, name: str, compute) -> Stage1Output:
+def _cached_stage1(cache_dir: Path | None, name: str, compute,
+                   key: dict | None = None) -> Stage1Output:
     """``compute()`` or its cached result under ``cache_dir/name.parquet``.
 
-    The cache is only valid for one stage-1 model, blocking configuration, filter and anchor
-    switch: callers give each such combination its own directory.
+    The cache is only valid for one stage-1 model and blocking configuration: callers give
+    each such combination its own directory. The ``TwoStageConfig`` side is checked here:
+    a cache written with another ``key`` (``stage1_key``: filter, anchors, cohesion, rivals,
+    extra groups) raises instead of returning stale features; sidecars written before the
+    key existed are trusted.
     """
-    if cache_dir is not None and (Path(cache_dir) / f"{name}.parquet").exists():
-        return load_stage1(Path(cache_dir) / f"{name}.parquet")
+    path = None if cache_dir is None else Path(cache_dir) / f"{name}.parquet"
+    if path is not None and path.exists():
+        stored = json.loads(path.with_suffix(".json").read_text()).get("tcfg")
+        if key is not None and stored is not None and stored != key:
+            raise ValueError(f"stage-1 cache {path} holds {stored}, not {key}: give each "
+                             "configuration its own cache_dir")
+        return load_stage1(path)
     o = compute()
-    if cache_dir is not None:
-        save_stage1(o, Path(cache_dir) / f"{name}.parquet")
+    if path is not None:
+        save_stage1(o, path, key)
     return o
 
 
@@ -233,7 +257,7 @@ def mock_stage1(cfg: PipelineConfig, stage1: Fitted, mock: MockFold, tcfg: TwoSt
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
 
-        out[country] = _cached_stage1(cache_dir, f"mock_{country}", compute)
+        out[country] = _cached_stage1(cache_dir, f"mock_{country}", compute, stage1_key(tcfg))
         timings[f"stage1_{country}_seconds"] = round(time.perf_counter() - t0, 2)
         mem_guard(f"mock_stage1 {country}")
     return out
@@ -408,7 +432,7 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
 
-        o = _cached_stage1(cache_dir, f"test_{country}", compute)
+        o = _cached_stage1(cache_dir, f"test_{country}", compute, stage1_key(ts.tcfg))
         names = ts.models[0].feature_names_
         X = o.X if list(o.X.columns) == names else o.X[names]
         scored = o.pairs.assign(prob=predict_stage2(ts.models, X))[SCORED_COLUMNS]

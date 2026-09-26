@@ -321,3 +321,27 @@ def test_extra_groups_are_checked(dataset_dir: Path, tmp_path: Path) -> None:
     mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
     with pytest.raises(ValueError, match="stage-1 groups already"):
         mock_stage1(cfg, stage1, mock, TwoStageConfig(extra_groups=("blocking",)))
+
+
+def test_stage1_cache_refuses_another_configuration(dataset_dir: Path, tmp_path: Path) -> None:
+    """A cache written under one TwoStageConfig is refused under another (stale features
+    otherwise); a sidecar without the recorded key (an older cache) is still read."""
+    import json
+    from dataclasses import replace
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    plain = TwoStageConfig(floor=0.0, max_cands=5, model=MatcherParams(backend="heuristic"))
+    with_idf = replace(plain, extra_groups=("idf",))
+    first = mock_stage1(cfg, stage1, mock, plain, cache_dir=tmp_path / "stage1")
+    with pytest.raises(ValueError, match="own cache_dir"):
+        mock_stage1(cfg, stage1, mock, with_idf, cache_dir=tmp_path / "stage1")
+    for sidecar in (tmp_path / "stage1").glob("*.json"):   # as written before the key existed
+        meta = json.loads(sidecar.read_text())
+        meta.pop("tcfg")
+        sidecar.write_text(json.dumps(meta))
+    again = mock_stage1(cfg, stage1, mock, with_idf, cache_dir=tmp_path / "stage1")
+    for c, o in first.items():
+        pd.testing.assert_frame_equal(again[c].X, o.X)
