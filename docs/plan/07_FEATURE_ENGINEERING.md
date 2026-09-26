@@ -204,3 +204,17 @@ pools. In stage 2 the M3 columns take 2.4 % of the gain (idf 1.25 %, token_freq 
 address_extra 0.36 %, ctx_idf 0.26 %); `freq_addr_r` (#7) and `idf_name_cover_r` (#8) are the
 strongest pair features of the model. `addr_empty_l` and `postcode_prefix_eq` stay at zero
 gain in every version (candidates for a cleanup once no saved model reads them).
+
+v043 puts the groups into stage 1 instead (they then also reach stage 2 through its frame):
+
+| Version | Stage 1 (plain val F0.5) | est_public | Mock F0.5 | Singletons | False merges | Misses |
+|---|---|---|---|---|---|---|
+| v107 / v042 arm A | v101 (0.98582) | 0.96588 | 0.97451 | 0.98367 | 3,522 | 74,223 |
+| v042 (stage 2 only) | v101 (0.98582) | **0.96788** | 0.97623 | 0.98655 | **2,744** | 69,866 |
+| v043 (stage 1) | v101 + M3 (**0.98756**) | 0.96782 | 0.97618 | **0.99021** | 3,182 | **67,844** |
+
+Both are KEEP and tie on est_public. In stage 1 the groups take 14.2 % of the gain
+(address_extra 6.3 %, idf 5.6 %; `num_contain_l` #7, `idf_addr_cos` #8), cut tune logloss by
+16 % and let the filter keep 4.37 candidates per S1 instead of 4.59 at the same recall. v042
+goes to test inference: fewer false merges, v101's public-proven stage 1 unchanged, and the
+M3 groups cost only the kept pairs at test scale.
