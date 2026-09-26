@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from entity_resolution import config as C
 from entity_resolution.blocking import PAIR_COLUMNS, BlockingConfig, TopKSpec, block, to_id_lists
@@ -77,6 +78,9 @@ def test_fit_and_run_fold_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path
     assert again.rule == fitted.rule
     _, _, _, matches2 = run_fold(cfg, again, val)
     assert matches2.equals(matches)
+    # fillers are opt-in: a default version learns, logs and saves none
+    assert fitted.fillers is None and again.fillers is None and "fillers" not in fitted.info
+    assert not (tmp_path / "art" / "fillers.json").exists()
 
 
 def test_end_to_end_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path) -> None:
@@ -211,3 +215,64 @@ def test_stats_feature_groups_end_to_end(dataset_dir: Path, tmp_path: Path) -> N
     matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
     s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+# ------------------------------------------------------------ learned fillers ----
+# The pool writes "Center" / "Services" into six true matches; "Holdings" is part of two S1
+# names and is copied as is. Ids from 9 on put entities on every side at frac=0.5 (val: 1, 4,
+# 7; inner tune: 0, 6; fit: 2, 3, 5). The test split is the shared fixture's.
+FILLER_NAMES = [("Acme", "Acme Center"), ("Globex", "Globex Services Center"),
+                ("Initech", "Center Initech"), ("Umbrella", "Umbrella Center"),
+                ("Soylent", "Soylent Center"), ("Vandelay", "Vandelay Center"),
+                ("Hooli Holdings", "Hooli Holdings"), ("Stark Holdings", "Stark Holdings")]
+
+
+@pytest.fixture
+def filler_dir(tmp_path: Path) -> Path:
+    """Challenge files whose pool names carry filler words (8 US entities, 8 true pairs)."""
+    from conftest import HEADER, TEST, write_tsv
+    root = tmp_path / "fill"
+    s1 = [[f"S1-2{i + 9:04d}", n, f"{i + 1} Main St, Springfield", "US"]
+          for i, (n, _) in enumerate(FILLER_NAMES)]
+    pool = [[f"S{2 + i % 2}-2{i + 9:04d}", p, f"{i + 1} Main Street, Springfield", "US"]
+            for i, (_, p) in enumerate(FILLER_NAMES)]
+    for s, rows in ((1, s1), (2, pool[0::2]), (3, pool[1::2])):
+        write_tsv(root / "train" / f"train_source{s}.tsv", HEADER, rows)
+    for s, rows in TEST.items():
+        write_tsv(root / "test" / f"test_source{s}.tsv", HEADER, rows)
+    write_tsv(root / "train" / "train_ground_truth.tsv",
+              ["source1_entity_id", "matched_entity_ids"], [[a[0], b[0]] for a, b in zip(
+                  s1, pool, strict=True)])
+    return root
+
+
+def test_learn_fillers_and_the_nofill_pass(filler_dir: Path, tmp_path: Path) -> None:
+    """Fillers are learned from the train fold (cached), loaded as name_core_nofill, and the
+    nofill pass meets the six filler variants; everything stays off by default."""
+    from entity_resolution.normalize import NormaliseConfig
+    from entity_resolution.pipeline import _static_key, learn_fillers, load_normalised, prepare
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True))
+    train = load_fold("train", filler_dir, frac=0.0)            # every entity in train
+    assert learn_fillers(base, train) is None
+    fillers = learn_fillers(cfg, train)
+    assert fillers == ["center", "services"]                     # "holdings" is held by S1
+    assert learn_fillers(cfg, train) == fillers and len(list(cfg.cache_dir.glob("fillers_*")))
+    # the learned-filler switches never touch the static normalisation cache
+    assert _static_key(NormaliseConfig(learn_fillers=True, filler_min_ratio=2.0)) == \
+        _static_key(NormaliseConfig())
+    assert "name_core_nofill" not in load_normalised("train", (2, 3), cfg).columns
+    s1n = load_normalised("train", (1,), cfg, fillers=fillers)
+    pooln = load_normalised("train", (2, 3), cfg, fillers=fillers)
+    bare = dict(zip(pooln[C.ENTITY_ID], pooln["name_core_nofill"], strict=True))
+    assert bare["S3-20010"] == "globex" and bare["S3-20016"] == "stark holdings"
+    on = replace(cfg, blocking=replace(cfg.blocking, nofill_max_group=50))
+    pairs = prepare(s1n, pooln, on, "t", fillers=fillers)
+    bits = pairs["pass"].to_numpy()
+    assert ((bits & 128) != 0).sum() == 8                        # every pair: equal once bare
+    only = pairs[((bits & 128) != 0) & ((bits & 7) == 0)]        # ... and no other exact key
+    assert set(zip(only[C.S1_ID], only[C.ENTITY_ID], strict=True)) == {
+        (f"S1-2{i + 9:04d}", f"S{2 + i % 2}-2{i + 9:04d}") for i in range(6)}
+    with pytest.raises(ValueError, match="fillers"):
+        prepare(s1n, pooln, on, "t")                             # the pass needs the fillers
+
