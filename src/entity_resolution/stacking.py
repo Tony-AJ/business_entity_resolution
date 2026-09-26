@@ -50,6 +50,7 @@ STACK_COLUMNS = ["p1", "s1_rank", "s1_best_other", "s1_gap", "s1_p1_sum", "s1_n_
                  "pool_rank", "pool_best_other", "pool_gap", "pool_p1_sum", "pool_n_likely",
                  "pool_degree"]
 ANCHOR_COLUMNS = ["anc_p1", "anc_addr_ts", "anc_addr_ratio", "anc_name_ts", "anc_nums_eq"]
+ANCHOR_CHUNK = 1_000_000   # rows per rapidfuzz batch in anchor_features
 
 
 def group_stats(codes: np.ndarray, p1: np.ndarray,
@@ -76,34 +77,40 @@ def group_stats(codes: np.ndarray, p1: np.ndarray,
     return rank, np.where(rank == 1, top2[codes], top1[codes]).astype(np.float32)
 
 
-def competition_features(pairs: pd.DataFrame, p1: np.ndarray) -> pd.DataFrame:
-    """``STACK_COLUMNS`` for every row of ``pairs`` (S1 id, pool id) given stage-1 ``p1``.
+def competition_features(pairs: pd.DataFrame, p1: np.ndarray,
+                         keep: np.ndarray | None = None) -> pd.DataFrame:
+    """``STACK_COLUMNS`` for the rows of ``pairs`` (S1 id, pool id) given stage-1 ``p1``.
 
-    ``p1`` is aligned to ``pairs`` rows (NaN counts as 0). Returns float32 columns on
-    ``pairs.index``.
+    ``p1`` is aligned to ``pairs`` rows (NaN counts as 0). Every statistic is computed over
+    all rows; with ``keep`` (a boolean row mask) only the kept rows are returned, on a fresh
+    RangeIndex, so a 25M-row partition never materialises 25M x 12 values. Without ``keep``
+    the frame is on ``pairs.index``. float32 throughout.
     """
     p = np.nan_to_num(np.asarray(p1, dtype=np.float32), nan=0.0)
     if len(p) != len(pairs):
         raise ValueError(f"p1 has {len(p)} values for {len(pairs)} pairs")
+    rows = np.flatnonzero(keep) if keep is not None else slice(None)
     s1, s1_ids = pd.factorize(pairs[C.S1_ID], use_na_sentinel=False)
     pool, pool_ids = pd.factorize(pairs[C.ENTITY_ID], use_na_sentinel=False)
     likely = (p >= LIKELY).astype(np.float32)
-    s1_rank, s1_best_other = group_stats(s1, p, len(s1_ids))
-    pool_rank, pool_best_other = group_stats(pool, p, len(pool_ids))
-    s1_sum = np.bincount(s1, weights=p, minlength=len(s1_ids)).astype(np.float32)
-    s1_likely = np.bincount(s1, weights=likely, minlength=len(s1_ids)).astype(np.float32)
-    pool_likely = np.bincount(pool, weights=likely, minlength=len(pool_ids)).astype(np.float32)
-    pool_sum = np.bincount(pool, weights=p, minlength=len(pool_ids)).astype(np.float32)
-    degree = np.bincount(pool, minlength=len(pool_ids)).astype(np.float32)
-    cols = {
-        "p1": p, "s1_rank": s1_rank, "s1_best_other": s1_best_other,
-        "s1_gap": p - s1_best_other, "s1_p1_sum": s1_sum[s1], "s1_n_likely": s1_likely[s1],
-        "pool_rank": pool_rank, "pool_best_other": pool_best_other,
-        "pool_gap": p - pool_best_other, "pool_p1_sum": pool_sum[pool],
-        "pool_n_likely": pool_likely[pool], "pool_degree": degree[pool],
-    }
-    return pd.DataFrame({k: np.asarray(v, dtype=np.float32) for k, v in cols.items()},
-                        index=pairs.index)
+    cols: dict[str, np.ndarray] = {"p1": p[rows]}
+    rank, best_other = group_stats(s1, p, len(s1_ids))
+    cols["s1_rank"], cols["s1_best_other"] = rank[rows], best_other[rows]
+    cols["s1_gap"] = cols["p1"] - cols["s1_best_other"]
+    s1k = s1[rows]
+    cols["s1_p1_sum"] = np.bincount(s1, weights=p, minlength=len(s1_ids))[s1k]
+    cols["s1_n_likely"] = np.bincount(s1, weights=likely, minlength=len(s1_ids))[s1k]
+    del rank, best_other, s1, s1k
+    rank, best_other = group_stats(pool, p, len(pool_ids))
+    cols["pool_rank"], cols["pool_best_other"] = rank[rows], best_other[rows]
+    cols["pool_gap"] = cols["p1"] - cols["pool_best_other"]
+    pk = pool[rows]
+    cols["pool_p1_sum"] = np.bincount(pool, weights=p, minlength=len(pool_ids))[pk]
+    cols["pool_n_likely"] = np.bincount(pool, weights=likely, minlength=len(pool_ids))[pk]
+    cols["pool_degree"] = np.bincount(pool, minlength=len(pool_ids))[pk]
+    index = pairs.index if keep is None else pd.RangeIndex(len(cols["p1"]))
+    return pd.DataFrame({k: np.asarray(cols[k], dtype=np.float32) for k in STACK_COLUMNS},
+                        index=index)
 
 
 def best_other_rows(codes: np.ndarray, p1: np.ndarray) -> np.ndarray:
@@ -140,19 +147,23 @@ def anchor_features(pairs: pd.DataFrame, p1: np.ndarray, pooln: pd.DataFrame) ->
     at = positions(pairs[C.ENTITY_ID], pooln[C.ENTITY_ID])
     if (at < 0).any():
         raise ValueError(f"{int((at < 0).sum())} pool ids of pairs are not in pooln")
-    mine, theirs = at[rows], at[anchor[rows]]
 
     def side(column: str, idx: np.ndarray):
         return _arrow(pooln[column].iloc[idx].reset_index(drop=True))
 
     out = {c: np.full(len(pairs), np.nan, dtype=np.float32) for c in ANCHOR_COLUMNS}
     out["anc_p1"][rows] = p[anchor[rows]]
-    if len(rows):
-        ts, ratio = _fuzzy(side("addr_norm", mine), side("addr_norm", theirs),
+    # rapidfuzz reads Python strings: 1M rows at a time bounds that copy; the anchor side goes
+    # first (it repeats along the entity's rows, so it is converted once per run) and every
+    # scorer is symmetric
+    for lo in range(0, len(rows), ANCHOR_CHUNK):
+        r = rows[lo:lo + ANCHOR_CHUNK]
+        mine, theirs = at[r], at[anchor[r]]
+        ts, ratio = _fuzzy(side("addr_norm", theirs), side("addr_norm", mine),
                            (_TOKEN_SET, _RATIO))
-        (name_ts,) = _fuzzy(side("name_norm", mine), side("name_norm", theirs), (_TOKEN_SET,))
-        eq, both = _eq(side("addr_nums", mine), side("addr_nums", theirs))
-        out["anc_addr_ts"][rows], out["anc_addr_ratio"][rows] = ts, ratio
-        out["anc_name_ts"][rows] = name_ts
-        out["anc_nums_eq"][rows] = np.where(both, eq, np.nan)
+        (name_ts,) = _fuzzy(side("name_norm", theirs), side("name_norm", mine), (_TOKEN_SET,))
+        eq, both = _eq(side("addr_nums", theirs), side("addr_nums", mine))
+        out["anc_addr_ts"][r], out["anc_addr_ratio"][r] = ts, ratio
+        out["anc_name_ts"][r] = name_ts
+        out["anc_nums_eq"][r] = np.where(both, eq, np.nan)
     return pd.DataFrame(out, index=pairs.index)
