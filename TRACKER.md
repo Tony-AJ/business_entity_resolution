@@ -10,7 +10,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 11:25 IST (day 2).
+Last updated: 2026-09-26 11:55 IST (day 2).
 
 ## Day 1 — Fri 25 Sep
 
@@ -69,8 +69,8 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 30 | v104: matcher trained on test-density candidates (fit sample vs the whole train-fold pool) | M1 | D3 / HN | 16:00 | todo | Was #20 (hard negatives): density brings the decoys |
 | 31 | Mock error report: false merges vs misses by category (same-name decoy, empty address, unowned record, France-like cases) | M1 | E | 16:30 | todo | Was #22; picks the next fixes |
 | 32 | France: French legal forms (SARL, SAS, SASU, EURL, SNC, SCI, SA) and street types (rue, av, bd, pl, imp, rte, chem, fbg, St/Ste) in the token maps; test-side sample check | M1 | B2 / B3 | 17:00 | todo | Was #15; 15 % of test S1, never seen in train |
-| 33 | v104: two-stage matcher: v101 as stage 1 → competition + anchor features → stage 2 trained on the mock's fit entities, cross-fitted, XGBoost on the GPU; 2 ablations | M1 | C5 / D3 | 11:45 | doing | Was #17; started 10:46; files → `submissions/v104/` (**upload #4**) |
-| 34 | Stage-1 candidate filter: keep the top 16 per S1 with p1 ≥ 0.01, so `candidate_pairs.tsv` shrinks from ~35 per S1 at ≤ 0.002 recall loss | M1 | A5 | 13:00 | doing | Was #13b; part of v104 (`twostage.keep_mask`) |
+| 33 | v104: two-stage matcher: v101 as stage 1 → competition + anchor features → stage 2 trained on the mock's fit entities, cross-fitted, XGBoost on the GPU; 2 ablations | M1 | C5 / D3 | 12:05 | done | **Mock 0.9744** (+0.0040), est_public 0.9654 (tight rule 0.9657). Ablations: competition features +0.0018, anchors +0.0002; `pool_gap` carries 72 % of the gain. Stage-2 fits ~5 min each on the GPU |
+| 34 | Stage-1 candidate filter: keep the top 16 per S1 with p1 ≥ 0.01, so `candidate_pairs.tsv` shrinks from ~35 per S1 at ≤ 0.002 recall loss | M1 | A5 | 12:05 | done | **34.5 → 4.6 candidates per S1** for −0.0011 candidate recall (mock). Loss split of true pairs: 3.45 % not a blocking candidate, 0.11 % filter, 0.94 % lost in 1-to-1 conflicts, 1.96 % below the rule |
 | 35 | v106: best of v104–v105 + France + filter; test inference; **upload #4** | M1 | INT | 21:00 | todo | |
 | 36 | Stage-2 capacity on the GPU (leaves 127/255, lr 0.03), expected-F0.5 set decoding, per-source thresholds | M1 | D3 / E5 | 23:00 | todo | Was #18, #19, #21; XGBoost CUDA backend in `model.py` (4× LightGBM CPU); `decision.decide_expected` / `tune_expected` done + tests |
 | 37 | Best mock version of the day; **upload #5** | M1 | INT | 23:30 | todo | |
