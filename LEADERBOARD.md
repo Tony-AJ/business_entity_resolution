@@ -8,7 +8,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 | Day | Date | Used | Left |
 |---|---|---|---|
-| 1 | 2026-09-25 | 1 | 4 |
+| 1 | 2026-09-25 | 2 | 3 (expired) |
 | 2 | 2026-09-26 | 0 | 5 |
 | 3 | 2026-09-27 | 0 | 5 |
 
@@ -48,10 +48,12 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 - Threshold / decision rule: tau_abs 0.42, tau_rel 0.0, tau_single 0.52, max_matches 11,
   one_to_one true (tune F0.5 0.9862)
 - Local F0.5 (validation fold): 0.9858 (harder-val 0.9852, singletons 0.9874)
-- Public F0.5: (fill in after upload)
+- Public F0.5: 0.955 (uploaded 2026-09-25 19:56 IST)
 - Notes: both validators PASS; test S1 matched France 0.949 / India 0.940 / US 0.943. Expected
   public ~0.956-0.960: the val gain is precision (false-merge pairs -29%), which counts more
-  at test decoy density. Files in submissions/v101/.
+  at test decoy density. Files in submissions/v101/. Result: public +0.001 over v001 against
+  +0.0014 on val; the offset stayed at -0.031 because val does not see the test's decoy
+  density (TRACKER.md, mock-test protocol).
 
 ## Submission 01: 2026-09-25 18:59 IST
 - Version: v001_base_model
