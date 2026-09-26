@@ -101,6 +101,9 @@ class TwoStageConfig:
     # stage-2 frame; the stage-1 matcher never reads them. A stage-1 cache holds one
     # combination: give each extra_groups value its own cache directory
     extra_groups: tuple[str, ...] = ()
+    # columns stage 2 leaves out (e.g. features.ZERO_GAIN_COLUMNS). The stage-1 output keeps
+    # them, since the stage-1 model reads them; only the stage-2 models never see them
+    drop_columns: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Cross-fitting needs two parts: with one, fit entities would be scored in-sample.
@@ -292,8 +295,12 @@ def fit_stage2(outs: dict[str, Stage1Output], mock: MockFold, tcfg: TwoStageConf
 
     Early stopping reads the kept pairs of ``n_stop_s1`` mock tune entities (the rule is later
     tuned on all tune entities, as in ``pipeline.fit``). ``columns`` restricts the features
-    (ablations); None = every column of the stage-1 output.
+    (ablations); None = every column of the stage-1 output. ``tcfg.drop_columns`` are left out
+    of either.
     """
+    if tcfg.drop_columns:
+        base = columns if columns is not None else list(next(iter(outs.values())).X.columns)
+        columns = [c for c in base if c not in set(tcfg.drop_columns)]
     fit_ids = pd.Series(_train_ids(mock, tcfg))
     part_of_id = fold_of(fit_ids, tcfg.folds, tcfg.seed)
     held_out_stop = "tune" in tcfg.train_roles
@@ -398,7 +405,8 @@ class TwoStage:
         tc = json.loads((out / "two_stage.json").read_text())
         tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"]),
                                  "train_roles": tuple(tc.get("train_roles", ("fit",))),
-                                 "extra_groups": tuple(tc.get("extra_groups", ()))})
+                                 "extra_groups": tuple(tc.get("extra_groups", ())),
+                                 "drop_columns": tuple(tc.get("drop_columns", ()))})
         rule = rule_from_json(json.loads((out / "rule.json").read_text()))
         models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
         info_path = out / "fit_info.json"
