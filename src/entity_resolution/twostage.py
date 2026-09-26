@@ -57,7 +57,7 @@ from .pipeline import (
     sort_matches,
 )
 from .split import hash_unit
-from .stacking import anchor_features, competition_features, group_stats
+from .stacking import anchor_features, cohesion_features, competition_features, group_stats
 from .submission import write_pairs
 from .trainset import label_pairs, sample_s1
 
@@ -74,6 +74,7 @@ class TwoStageConfig:
     seed: int = FOLD_SEED
     n_stop_s1: int = 50_000      # mock tune entities whose kept pairs drive early stopping
     anchors: bool = True         # add stacking.ANCHOR_COLUMNS to the stage-2 frame
+    cohesion: bool = False       # add stacking.COHESION_COLUMNS (each vs all other candidates)
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
 
     def __post_init__(self) -> None:
@@ -127,6 +128,8 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     kept = pairs.loc[keep, [C.S1_ID, C.ENTITY_ID]].reset_index(drop=True)
     if tcfg.anchors:
         extra.append(anchor_features(kept, p1[keep], pooln).reset_index(drop=True))
+    if tcfg.cohesion:
+        extra.append(cohesion_features(kept, p1[keep], pooln).reset_index(drop=True))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 

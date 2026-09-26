@@ -167,3 +167,77 @@ def anchor_features(pairs: pd.DataFrame, p1: np.ndarray, pooln: pd.DataFrame) ->
         out["anc_name_ts"][r] = name_ts
         out["anc_nums_eq"][r] = np.where(both, eq, np.nan)
     return pd.DataFrame(out, index=pairs.index)
+
+
+COHESION_COLUMNS = ["coh_addr", "coh_name", "coh_support"]
+COHESION_ROWS = 1_000_000   # kept rows per batch (their within-entity comparisons: ~7x that)
+SUPPORT_P1, SUPPORT_SIM = 0.5, 0.8
+
+
+def within_group_pairs(starts: np.ndarray, sizes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Every ordered pair (b, c), b != c, of rows inside the same contiguous group.
+
+    ``starts``/``sizes`` describe contiguous row groups; returns row indices ``b`` (each row
+    repeated size - 1 times, rows in order) and ``c`` (the other rows of its group, in order).
+    """
+    start = np.repeat(starts, sizes)                               # group start of each row
+    off = np.arange(len(start)) - np.repeat(np.cumsum(sizes) - sizes, sizes)
+    rows = start + off                                             # absolute row index
+    nb = np.repeat(sizes, sizes) - 1                               # partners per row
+    b = np.repeat(rows, nb)
+    j = np.arange(len(b)) - np.repeat(np.cumsum(nb) - nb, nb)      # 0 .. size-2 per row
+    c = np.repeat(start, nb) + np.where(j < np.repeat(off, nb), j, j + 1)
+    return b, c
+
+
+def cohesion_features(pairs: pd.DataFrame, p1: np.ndarray, pooln: pd.DataFrame) -> pd.DataFrame:
+    """``COHESION_COLUMNS``: each candidate against ALL other candidates of its S1 entity.
+
+    coh_addr     p1-weighted mean token-set similarity of this pool address to the entity's
+                 other candidates' addresses (NaN without another candidate or weight)
+    coh_name     the same on pool names
+    coh_support  other candidates with p1 >= 0.5 whose address is >= 0.8 similar to this one
+
+    The anchor features compare with the single best other candidate; cohesion asks how
+    well a record fits the whole group the entity's likely records form. ``pairs`` must be
+    grouped by S1 id (kept pairs are). Returns float32 on ``pairs.index``.
+    """
+    n = len(pairs)
+    p = np.nan_to_num(np.asarray(p1, dtype=np.float32), nan=0.0)
+    out = {c: np.full(n, np.nan, dtype=np.float32) for c in COHESION_COLUMNS}
+    if n == 0:
+        return pd.DataFrame(out, index=pairs.index)
+    ids = pairs[C.S1_ID].to_numpy()
+    starts = np.flatnonzero(np.r_[True, ids[1:] != ids[:-1]])
+    sizes = np.diff(np.r_[starts, n])
+    at = positions(pairs[C.ENTITY_ID], pooln[C.ENTITY_ID])
+    if (at < 0).any():
+        raise ValueError(f"{int((at < 0).sum())} pool ids of pairs are not in pooln")
+
+    def side(column: str, idx: np.ndarray):
+        return _arrow(pooln[column].iloc[idx].reset_index(drop=True))
+
+    g = 0
+    while g < len(starts):                            # batches of whole groups
+        h = int(np.searchsorted(np.cumsum(sizes[g:]), COHESION_ROWS)) + g + 1
+        h = min(max(h, g + 1), len(starts))
+        b, c = within_group_pairs(starts[g:h], sizes[g:h])
+        if len(b):
+            (addr,) = _fuzzy(side("addr_norm", at[c]), side("addr_norm", at[b]), (_TOKEN_SET,))
+            (name,) = _fuzzy(side("name_norm", at[c]), side("name_norm", at[b]), (_TOKEN_SET,))
+            w = p[c].astype(np.float64)
+            lo = int(starts[g])
+            m = int(starts[h - 1] + sizes[h - 1]) - lo
+            for col, sim in (("coh_addr", addr), ("coh_name", name)):
+                ok = ~np.isnan(sim)
+                num = np.bincount(b[ok] - lo, weights=w[ok] * sim[ok], minlength=m)
+                den = np.bincount(b[ok] - lo, weights=w[ok], minlength=m)
+                val = np.full(m, np.nan)
+                np.divide(num, den, out=val, where=den > 0)
+                out[col][lo:lo + m] = val
+            sup = (p[c] >= SUPPORT_P1) & (np.nan_to_num(addr) >= SUPPORT_SIM)
+            out["coh_support"][lo:lo + m] = np.bincount(b[sup] - lo, minlength=m)
+        g = h
+    single = np.repeat(sizes == 1, sizes)
+    out["coh_support"][single] = 0.0
+    return pd.DataFrame(out, index=pairs.index)

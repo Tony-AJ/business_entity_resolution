@@ -197,3 +197,28 @@ def test_stage1_cache_round_trip(dataset_dir: Path, tmp_path: Path) -> None:
         pd.testing.assert_frame_equal(again[c].pairs, o.pairs)
         pd.testing.assert_frame_equal(again[c].X, o.X)
         assert again[c].n_all == o.n_all
+
+
+def test_within_group_pairs() -> None:
+    from entity_resolution.stacking import within_group_pairs
+    b, c = within_group_pairs(np.array([10, 13, 14]), np.array([3, 1, 2]))
+    assert list(zip(b.tolist(), c.tolist(), strict=True)) == [
+        (10, 11), (10, 12), (11, 10), (11, 12), (12, 10), (12, 11), (14, 15), (15, 14)]
+
+
+def test_cohesion_features() -> None:
+    """True records support each other; the decoy has no support; a lone record is 0/NaN."""
+    from entity_resolution.stacking import COHESION_COLUMNS, cohesion_features
+    pairs = pd.DataFrame({C.S1_ID: ["a", "a", "a", "b"], C.ENTITY_ID: ["t1", "t2", "d1", "z"]})
+    p1 = np.array([0.95, 0.6, 0.7, 0.8], dtype=np.float32)
+    pooln = pd.DataFrame({
+        C.ENTITY_ID: ["t1", "t2", "d1", "z"],
+        "name_norm": ["acme corp", "acme corporation", "acme corp", "zeta"],
+        "addr_norm": ["12 main st springfield", "12 main st springfield", "400 oak ave dallas",
+                      "9 elm rd"],
+    })
+    f = cohesion_features(pairs, p1, pooln)
+    assert list(f.columns) == COHESION_COLUMNS
+    assert f.loc[1, "coh_addr"] > f.loc[2, "coh_addr"]          # t2 fits the group, d1 not
+    assert f["coh_support"].tolist() == [1.0, 1.0, 0.0, 0.0]    # t1<->t2 support each other
+    assert np.isnan(f.loc[3, "coh_addr"])                        # b has no other candidate
