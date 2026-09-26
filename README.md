@@ -51,6 +51,7 @@ make cache    # ~1 min: every TSV to Parquet in <dataset>/.cache/
 | `make public V=vNNN SCORE=<f>` | record a leaderboard score in `experiments.csv` |
 | `make validate` | check `output/*.tsv` with our checker and the organisers' validator |
 | `make score PRED=<tsv> TRUTH=<tsv>` | macro F0.5 of a matching file against labels |
+| `make package TEAM=<name> V=<vNNN_slug>` | the final submission zip in `build/` ([Final package](#final-package)) |
 | `make test` / `make lint` | pytest on synthetic data / ruff |
 
 ## Layout
@@ -82,6 +83,7 @@ experiments/
 LEADERBOARD.md             every leaderboard upload, with budget
 TRACKER.md                 who does what, task status per day
 docs/                      challenge brief and guidelines
+scripts/                   package_submission.sh: the final zip (make package)
 tests/                     pytest on synthetic TSVs
 .githooks/                 identity, commit format, size and data guards
 ```
@@ -123,3 +125,33 @@ tune side, one scoring of the validation fold, and test inference writing
 configuration are saved under `experiments/v001_base_model/artifacts/`. Seeds are fixed
 (split 42, inner split 4242, samples 7, LightGBM 42, deterministic mode), so a rerun
 reproduces the files.
+
+## Final package
+
+`make package` builds the zip the organisers ask for in `build/` (gitignored), from the
+repository at HEAD, without touching the working tree. The checklist is
+[docs/plan/16](docs/plan/16_FINAL_SUBMISSION_CHECKLIST.md).
+
+```bash
+make package TEAM=<team> V=vNNN_<slug> OUT=submissions/vNNN ARGS=--dry-run   # preflight only
+make package TEAM=<team> V=vNNN_<slug> OUT=submissions/vNNN                  # build the zip
+```
+
+```
+build/<team>_submission.zip            these three at the zip root, no wrapping folder
+├── output/                            both TSVs from OUT (default output/)
+├── code/business_entity_resolution/   git archive HEAD: tracked files only
+│   └── src/notebooks/                 vNNN_<slug>.ipynb + metrics.json, copied from HEAD
+└── Documentation_template.md          docs/methodology.md (ARGS="--doc <path>" for another)
+```
+
+| Stage | What it does |
+|---|---|
+| preflight | refuses uncommitted changes to tracked files; needs V's notebook and `metrics.json` committed, both TSVs with the right header and the write-up; HEAD must not track `dataset/`, `output/`, `.venv`, `artifacts/` or a file over 50 MiB |
+| validate | our checker, then the organisers' validator (`ARGS=--check-ids` adds the ID check to both, a few GB of RAM) |
+| build | stages `build/<team>_submission/`, re-checks the staged code tree, zips it |
+| report | sizes; sha256 of the zip and both TSVs in `build/<team>_submission.sha256`; `unzip -l` in `build/<team>_submission.contents.txt` |
+
+`OUT=submissions/vNNN` ships the exact bytes of that upload. Then finish checklist §1
+step 5 (unpack into a temp dir, validate inside it, fresh-venv smoke test) and record the
+size and sha256 in [LEADERBOARD.md](LEADERBOARD.md).
