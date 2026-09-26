@@ -9,7 +9,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 | Day | Date | Used | Left |
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
-| 2 | 2026-09-26 | 1 | 4 |
+| 2 | 2026-09-26 | 2 | 3 |
 | 3 | 2026-09-27 | 0 | 5 |
 
 ## Before every upload
@@ -37,6 +37,21 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 ```
 
 <!-- Add submissions below this line, newest first. -->
+
+## Submission 04: 2026-09-26 ~12:15 IST
+- Version: v107_tight_rule (on v104_two_stage)
+- Commit: 86da932 (src/), results in (this commit) `exp(v107)`; v104 in 86da932 `exp(v104)`
+- Change vs previous submission (v103): two-stage matcher (v104) + rule tuned on the tight mock.
+  v101 stays stage 1: it scores every candidate, keeps the 16 best per S1 with p1 >= 0.01
+  (the final candidate set: 4.8-6.0 per S1 on test instead of ~35), and its probabilities give
+  competition features (rank, best rival and gap on the S1 side and the pool side) and anchor
+  features (each candidate against its entity's best other candidate). Stage 2 is XGBoost on
+  the GPU, trained on the mock fold's fit entities with 2-part cross-fitting.
+- Threshold / decision rule: expected-F0.5 decoding, gamma 1.5, expected misses 0.05, max 11, 1-to-1 (tuned for 1 - L_FN - 1.45 L_FP on the mock tune entities)
+- Mock F0.5 0.9745; est_public 0.9659 (v103: mock 0.9704, est 0.9610, public 0.961)
+- Public F0.5: (fill in after upload)
+- Notes: files in submissions/v107/; both validators PASS.
+
 
 ## Submission 03: 2026-09-26 10:50 IST
 - Version: v103_mock_rule
