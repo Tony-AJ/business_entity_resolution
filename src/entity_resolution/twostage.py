@@ -203,7 +203,8 @@ def mock_stage1(cfg: PipelineConfig, stage1: Fitted, mock: MockFold, tcfg: TwoSt
         t0 = time.perf_counter()
 
         def compute(country: str = country) -> Stage1Output:
-            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag)
+            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag,
+                                               stage1.fillers)
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
 
@@ -406,7 +407,8 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
     the stage-1 outputs are read from / written to it (``_cached_stage1``).
     """
     timings = {} if timings is None else timings
-    s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map)
+    s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map,
+                          fillers=ts.stage1.fillers)
     matches, cands, summary = [], [], []
     for country in sorted(s1n[C.COUNTRY].unique()):
         t0 = time.perf_counter()
@@ -414,9 +416,10 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
         def compute(country: str = country) -> Stage1Output:
             s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
             poolc = load_normalised("test", (2, 3), cfg, token_map=ts.stage1.token_map,
-                                    country=country)
+                                    country=country, fillers=ts.stage1.fillers)
             s1c, poolc = _with_frequencies(cfg, s1c, poolc)
-            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map))
+            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map),
+                            fillers=ts.stage1.fillers)
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
 

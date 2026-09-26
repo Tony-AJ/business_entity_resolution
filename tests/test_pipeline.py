@@ -218,34 +218,6 @@ def test_stats_feature_groups_end_to_end(dataset_dir: Path, tmp_path: Path) -> N
 
 
 # ------------------------------------------------------------ learned fillers ----
-# The pool writes "Center" / "Services" into six true matches; "Holdings" is part of two S1
-# names and is copied as is. Ids from 9 on put entities on every side at frac=0.5 (val: 1, 4,
-# 7; inner tune: 0, 6; fit: 2, 3, 5). The test split is the shared fixture's.
-FILLER_NAMES = [("Acme", "Acme Center"), ("Globex", "Globex Services Center"),
-                ("Initech", "Center Initech"), ("Umbrella", "Umbrella Center"),
-                ("Soylent", "Soylent Center"), ("Vandelay", "Vandelay Center"),
-                ("Hooli Holdings", "Hooli Holdings"), ("Stark Holdings", "Stark Holdings")]
-
-
-@pytest.fixture
-def filler_dir(tmp_path: Path) -> Path:
-    """Challenge files whose pool names carry filler words (8 US entities, 8 true pairs)."""
-    from conftest import HEADER, TEST, write_tsv
-    root = tmp_path / "fill"
-    s1 = [[f"S1-2{i + 9:04d}", n, f"{i + 1} Main St, Springfield", "US"]
-          for i, (n, _) in enumerate(FILLER_NAMES)]
-    pool = [[f"S{2 + i % 2}-2{i + 9:04d}", p, f"{i + 1} Main Street, Springfield", "US"]
-            for i, (_, p) in enumerate(FILLER_NAMES)]
-    for s, rows in ((1, s1), (2, pool[0::2]), (3, pool[1::2])):
-        write_tsv(root / "train" / f"train_source{s}.tsv", HEADER, rows)
-    for s, rows in TEST.items():
-        write_tsv(root / "test" / f"test_source{s}.tsv", HEADER, rows)
-    write_tsv(root / "train" / "train_ground_truth.tsv",
-              ["source1_entity_id", "matched_entity_ids"], [[a[0], b[0]] for a, b in zip(
-                  s1, pool, strict=True)])
-    return root
-
-
 def test_learn_fillers_and_the_nofill_pass(filler_dir: Path, tmp_path: Path) -> None:
     """Fillers are learned from the train fold (cached), loaded as name_core_nofill, and the
     nofill pass meets the six filler variants; everything stays off by default."""

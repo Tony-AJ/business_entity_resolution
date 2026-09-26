@@ -71,3 +71,34 @@ def test_fit_stage1_caps_training_rows(tmp_path: Path) -> None:
                                            early_stopping=5, num_threads=2),
                    stop_frac=0.1, max_rows=2700)
     assert 2400 < m.fit_info_["rows"] < 3000 and m.fit_info_["entity_share_used"] == 0.5
+
+
+def test_write_chunks_and_as_fitted_carry_fillers(filler_dir: Path, tmp_path: Path) -> None:
+    """With every filler switch on, the chunks hold the nofill group (some filler pair reads
+    equal), the pass refuses to run without the fillers, and as_fitted keeps them."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import pytest
+
+    from entity_resolution.features import DEFAULT_GROUPS, FEATURE_COLUMNS
+    from entity_resolution.normalize import NormaliseConfig
+    from entity_resolution.pipeline import Fitted, learn_fillers
+    from entity_resolution.stage1 import as_fitted
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True),
+                  blocking=replace(base.blocking, nofill_max_group=50),
+                  feature_groups=(*DEFAULT_GROUPS, "nofill"))
+    fillers = learn_fillers(cfg, load_fold("train", filler_dir, frac=0.5))
+    train = load_fold("train", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    ids = pd.Index(train.s1[C.ENTITY_ID])
+    manifest = write_chunks(cfg, train, ids, {}, tmp_path / "chunks", fillers=fillers)
+    names = manifest["features"]
+    assert names[-6:] == FEATURE_COLUMNS["nofill"] and manifest["positives"] == len(ids)
+    X = np.concatenate([np.load(f"{stem}_X.npy") for stem in manifest["chunks"]])
+    assert X.shape[1] == len(names) and X[:, names.index("nofill_eq")].max() == 1.0
+    with pytest.raises(ValueError, match="fillers"):
+        write_chunks(cfg, train, ids, {}, tmp_path / "again")
+    stage1 = SimpleNamespace(fit_info_={})
+    fitted = Fitted(stage1, None, pd.DataFrame(), cfg, {}, {}, fillers)
+    assert as_fitted(stage1, fitted, cfg).fillers == fillers == ["center"]

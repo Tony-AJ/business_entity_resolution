@@ -127,6 +127,38 @@ def test_two_stage_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
 
 
+def test_two_stage_with_learned_fillers(filler_dir: Path, tmp_path: Path) -> None:
+    """Every filler switch on: stage 1 reads name_core_nofill on the mock and on test, the
+    fillers survive save / load, and the test files validate."""
+    from dataclasses import replace
+
+    from entity_resolution.features import DEFAULT_GROUPS
+    from entity_resolution.normalize import NormaliseConfig
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True),
+                  blocking=replace(base.blocking, nofill_max_group=50),
+                  feature_groups=(*DEFAULT_GROUPS, "nofill"))
+    stage1 = fit(cfg, load_fold("train", filler_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, model=MatcherParams(backend="heuristic"))
+    outs = mock_stage1(cfg, stage1, mock, tcfg)
+    assert all("nofill_eq" in o.X.columns for o in outs.values())
+    models, info = fit_stage2(outs, mock, tcfg)
+    scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
+    val_part = mock.part("val")
+    rule, table = tune(scored, val_part.s1[C.ENTITY_ID], val_part.pairs,
+                       Grid(tau_abs=(0.3, 0.7, 0.2), tau_rel=(0.0,), single_delta=(0.0,),
+                            max_matches=(11,)))
+    again = TwoStage.load(TwoStage(stage1, models, rule, tcfg, table, info).save(
+        tmp_path / "two"), cfg)
+    assert again.stage1.fillers == stage1.fillers == ["center"]
+    matching, candidates, *_ = run_test_two_stage(cfg, again, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
 def test_rule_json_round_trip_and_dispatch() -> None:
     """Both rule kinds survive JSON and apply_rule picks the matching decoder."""
     from entity_resolution.decision import (
