@@ -28,7 +28,7 @@ import json
 import time
 import warnings
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
@@ -196,10 +196,13 @@ class Matcher:
         (tests only). ``weight`` (one value >= 0 per row of ``X``; None = unweighted) goes
         to the LightGBM Dataset or the logistic regression, for hard-negative experiments.
         The heuristic learns nothing: it only checks and records the columns, so an empty
-        ``X`` is fine.
+        ``X`` is fine. ``lgbm`` bins ``X`` before boosting and drops its own reference, so a
+        caller that passes its only reference (``fit_matcher`` with a loader) frees the raw
+        matrix for the whole boosting run.
         """
         t0 = time.perf_counter()
         backend = self.params.backend
+        n_rows = len(X)
         names = _feature_columns(X, "X")
         labels = _aligned_vector(y, X, "y", labels=True)
         w = None if weight is None else _aligned_vector(weight, X, "weight", labels=False)
@@ -220,7 +223,9 @@ class Matcher:
         elif len(X) == 0:
             raise ValueError(f"cannot fit the {backend} backend on an empty X")
         elif backend == "lgbm":
-            model, best = self._fit_lgbm(X, labels, w, X_val, val_labels)
+            train = self._lgbm_train_set(X, labels, w)
+            del X   # the Dataset holds the binned rows; the float matrix is not needed again
+            model, best = self._fit_lgbm(train, X_val, val_labels)
         elif backend == "xgb":
             model, best = self._fit_xgb(X, labels, w, X_val, val_labels)
         else:
@@ -233,7 +238,7 @@ class Matcher:
         if X_val is not None and len(X_val):
             tune_logloss, tune_auc = _tune_scores(val_labels, self.predict_proba(X_val))
         self.fit_info_ = {
-            "rows": len(X),
+            "rows": n_rows,
             "positive_rate": float(labels.mean()) if len(labels) else None,
             "best_iteration": best,
             "tune_logloss": tune_logloss,
@@ -242,18 +247,26 @@ class Matcher:
         }
         return self
 
+    def _lgbm_train_set(self, X: pd.DataFrame, y: np.ndarray,
+                        weight: np.ndarray | None) -> lgb.Dataset:
+        """The binned LightGBM training set, constructed now rather than inside ``lgb.train``.
+
+        It is built with the training parameters, which are all ``lgb.train`` would pass to
+        the lazy construction (it adds only boosting settings), so the bins and the model are
+        the same; ``free_raw_data`` then drops the Dataset's view of the float matrix.
+        """
+        return lgb.Dataset(_to_float32(X), y, weight=weight, feature_name=list(X.columns),
+                           params=lgbm_params(self.params), free_raw_data=True).construct()
+
     def _fit_lgbm(
         self,
-        X: pd.DataFrame,
-        y: np.ndarray,
-        weight: np.ndarray | None,
+        train: lgb.Dataset,
         X_val: pd.DataFrame | None,
         y_val: np.ndarray | None,
     ) -> tuple[lgb.Booster, int]:
-        """Train the booster; return it with the number of rounds to predict with."""
+        """Train the booster on the constructed ``train`` set; return it with the number of
+        rounds to predict with."""
         p = self.params
-        train = lgb.Dataset(_to_float32(X), y, weight=weight, feature_name=list(X.columns),
-                            free_raw_data=True)
         valid_sets, callbacks = [], []
         if X_val is None:
             warnings.warn("no tune set (X_val): training all n_estimators rounds without "
@@ -491,24 +504,30 @@ class SeedEnsemble:
         return ens
 
 
-def fit_matcher(params: MatcherParams, X: pd.DataFrame, y: np.ndarray, X_stop: pd.DataFrame,
-                y_stop: np.ndarray, weight: np.ndarray | None = None,
+def fit_matcher(params: MatcherParams, X: pd.DataFrame | Callable[[], pd.DataFrame],
+                y: np.ndarray, X_stop: pd.DataFrame, y_stop: np.ndarray,
+                weight: np.ndarray | None = None,
                 seeds: Sequence[int] | None = None) -> Matcher | SeedEnsemble:
     """``Matcher(params).fit`` exactly as ``pipeline.fit`` calls it, or one fit per seed.
 
     With ``seeds`` every member is ``params`` with that ``seed``; the ensemble's tune logloss
-    and AUC are recomputed on its mean probabilities over the stop set.
+    and AUC are recomputed on its mean probabilities over the stop set. ``X`` may be a
+    loader (no argument, returns the frame) called once per fit: its frame is then
+    referenced by ``Matcher.fit`` alone, so ``lgbm`` frees it once binned (the snapshot's
+    evaluation keeps ~2 GB of fit rows out of memory during boosting this way).
     """
+    load = X if callable(X) else (lambda: X)
     if not seeds:
-        return Matcher(params).fit(X, y, X_stop, y_stop, weight=weight)
+        return Matcher(params).fit(load(), y, X_stop, y_stop, weight=weight)
     t0 = time.perf_counter()
-    members = [Matcher(replace(params, seed=int(s))).fit(X, y, X_stop, y_stop, weight=weight)
+    members = [Matcher(replace(params, seed=int(s))).fit(load(), y, X_stop, y_stop,
+                                                          weight=weight)
                for s in seeds]
     ens = SeedEnsemble(members)
     logloss = auc = None
     if len(X_stop):
         logloss, auc = _tune_scores(np.asarray(y_stop, dtype=np.int8), ens.predict_proba(X_stop))
-    ens.fit_info_ = {"rows": len(X), "positive_rate": members[0].fit_info_["positive_rate"],
+    ens.fit_info_ = {"rows": len(y), "positive_rate": members[0].fit_info_["positive_rate"],
                      "best_iteration": ens.best_iteration_,
                      "best_iterations": [m.best_iteration_ for m in members],
                      "tune_logloss": logloss, "tune_auc": auc,
