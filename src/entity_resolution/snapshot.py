@@ -15,6 +15,11 @@ once per data configuration, as Parquet under ``<dataset>/.cache/m4/<key>/``:
             rows (``evaluate.slice_report``)
     harder  ``evaluate.harder_fold(val)`` re-blocked as ``run_fold(..., tag="harder")`` does
 
+``evaluate_params`` then trains a matcher on fit/stop, tunes the rule on tune, freezes it on
+val (and harder) and returns the metrics.json keys of 13 §2.2 plus calibration (08 §5), in
+minutes instead of rebuilding features. The model-level helpers it calls, ``SeedEnsemble`` /
+``fit_matcher`` (seed averaging) and ``reliability`` (calibration), live in model.py.
+
 Equivalence with the pipeline is the contract. Every side is built by the pipeline's own
 functions with the same arguments: ``normalise_split``, ``learn_token_map``,
 ``trainset.inner_split`` / ``sample_s1``, ``pipeline._side`` (read-only use of a private
@@ -23,23 +28,27 @@ of ``run_fold`` (val, harder), ``label_pairs`` and ``build_features``. Features 
 like the pipeline builds them: whole side at once for fit/stop (``fit``), per
 ``iter_chunks`` slice for tune/val/harder (``score``), so even the chunk-dependent
 ``pool_context`` group matches. Rows keep the pipeline's pair order; float32 values
-round-trip Parquet bit for bit.
+round-trip Parquet bit for bit. Evaluation reuses ``Matcher``, ``decision.tune``,
+``pipeline.decide_by_country`` and ``evaluate.score_pairs``, so default ``PipelineConfig()``
+and ``MatcherParams()`` reproduce ``pipeline.fit`` + ``run_fold`` exactly (same rule,
+``tune_f_beta``, val ``f_beta``, matches; tests/test_snapshot.py).
 
 Key: a short hash of the code that produces the data (content of the data modules, not the
 git commit, so edits to model.py or decision.py keep the snapshot valid), the normalisation,
 blocking and feature configuration, the learned token map, sample sizes, seeds and the fold
-id fingerprints. The model and grid are not in it: model experiments vary them.
+id fingerprints. The model and grid are not in it: they are what ``evaluate_params`` varies.
 The git commit is recorded in ``manifest.json`` for the record.
 
 Memory: one side is in memory at a time and tune/val/harder features are streamed to Parquet
-per chunk (peak about the pipeline's own ``score``).
+per chunk (peak about the pipeline's own ``score``); ``evaluate_params`` reads fit/stop into
+one float32 matrix each and streams tune/val/harder in ``batch_rows`` batches.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -52,10 +61,17 @@ import pyarrow.parquet as pq
 from . import config as C
 from . import pipeline as P
 from .data import isin
-from .decision import DecisionRule
-from .evaluate import blocking_report, harder_fold, positions
+from .decision import DEFAULT_GRID, DecisionRule, Grid, tune
+from .evaluate import (
+    blocking_report,
+    entity_counts,
+    harder_fold,
+    positions,
+    score_pairs,
+    slice_report,
+)
 from .features import build_features, feature_names, iter_chunks
-from .model import Matcher
+from .model import Matcher, MatcherParams, SeedEnsemble, fit_matcher, reliability
 from .split import Fold
 from .tracking import git_commit
 from .trainset import INNER_FRAC, INNER_SEED, SAMPLE_SEED, inner_split, label_pairs, sample_s1
@@ -68,9 +84,12 @@ COMPRESSION = "zstd"
 LABEL = "label"
 PASS = "pass"
 META_COLUMNS = [C.S1_ID, C.ENTITY_ID, C.COUNTRY, PASS, LABEL]
+RANK1_COLUMN = "ctx_rank_name"  # 08 §5: reliability of the pairs the decision layer sees first
 # modules whose code decides the snapshot's rows and values: their content is in the key
 DATA_MODULES = ("config", "data", "split", "normalize", "token_maps", "blocking", "features",
                 "trainset", "evaluate", "pipeline")
+
+WeightFn = Callable[[pd.DataFrame, pd.DataFrame], np.ndarray]
 
 
 # -------------------------------------------------------------------- key ----
@@ -464,3 +483,172 @@ def load_snapshot(path: Path, sides: Sequence[str] | None = None,
     if len(set(cols)) != len(cols):
         raise ValueError("feature columns repeat")
     return Snapshot(path, manifest, tuple(sides), cols)
+
+
+# --------------------------------------------------------------- evaluate ----
+def _score_side(snap: Snapshot, side: str, model: Matcher | SeedEnsemble,
+                batch_rows: int) -> tuple[pd.DataFrame, np.ndarray]:
+    """``(scored, labels)`` of ``side``: SCORED_COLUMNS in the pipeline's pair order."""
+    meta = snap.meta(side, [C.S1_ID, C.ENTITY_ID, LABEL])
+    prob = np.empty(len(meta), dtype=np.float32)
+    for sl, X in snap.iter_features(side, batch_rows):
+        prob[sl] = model.predict_proba(X)
+    scored = pd.DataFrame({C.S1_ID: meta[C.S1_ID], C.ENTITY_ID: meta[C.ENTITY_ID],
+                           "prob": prob})
+    return scored, meta[LABEL].to_numpy(np.int8)
+
+
+def error_counts(matches: pd.DataFrame, fold: Fold) -> dict[str, int]:
+    """Pair counts of the four ``evaluate.error_samples`` kinds, from entity counts.
+
+    Equal to ``len(error_samples(matches, fold, kind, n=10**9))`` (v001's numbers) without
+    building the sample frames: false_merge / singleton_merge are the wrong predicted pairs
+    of matched / singleton entities, missed the unpredicted true pairs of entities that
+    predicted something, false_singleton those of entities that predicted nothing.
+    """
+    tp, n_pred, n_true = entity_counts(matches, fold)
+    fp, fn, matched, predicted = n_pred - tp, n_true - tp, n_true > 0, n_pred > 0
+    return {"false_merge": int(fp[matched].sum()), "missed": int(fn[predicted].sum()),
+            "false_singleton": int(fn[~predicted].sum()),
+            "singleton_merge": int(fp[~matched].sum())}
+
+
+def _by_country(matches: pd.DataFrame, fold: Fold) -> dict[str, float]:
+    """Val F0.5 per S1 country (CLAUDE.md §8 extra): ``score_pairs`` on each country's S1."""
+    out = {}
+    country = fold.s1[C.COUNTRY]
+    for c in sorted(country.unique()):
+        s1 = fold.s1[(country == c).to_numpy()].reset_index(drop=True)
+        pairs = fold.pairs[isin(fold.pairs[C.S1_ID], pd.Index(s1[C.ENTITY_ID]))]
+        out[str(c)] = score_pairs(matches, Fold(fold.name, s1, fold.s2, fold.s3, pairs))["f_beta"]
+    return out
+
+
+def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
+                    weight_fn: WeightFn | None = None, grid: Grid | None = None,
+                    calibration: bool = True, seeds: Sequence[int] | None = None,
+                    harder: bool = True, batch_rows: int = 1_000_000,
+                    artifacts: dict | None = None
+                    ) -> tuple[dict, Matcher | SeedEnsemble, DecisionRule]:
+    """Train on fit/stop, tune the rule on tune, score val (and harder) with it frozen.
+
+    The same calls as ``pipeline.fit`` + ``run_fold``: ``Matcher(params).fit(X_fit, y_fit,
+    X_stop, y_stop)``; ``decision.tune(scored_tune, tune S1 ids, tune truth, grid)``;
+    ``pipeline.decide_by_country`` and ``evaluate.score_pairs`` on val. ``weight_fn(meta,
+    X_fit)`` returns one weight >= 0 per fit row (``meta`` = ``Snapshot.meta("fit")``: ids,
+    country, pass, label), for hard-negative experiments. ``seeds`` trains one model per
+    seed and averages their probabilities. ``grid`` defaults to ``decision.DEFAULT_GRID``
+    (pass ``cfg.grid`` to match a pipeline run with another grid). ``harder`` scores the
+    harder side when the snapshot has it (``harder_f_beta``).
+
+    Returns ``(metrics, matcher, rule)``: ``metrics`` holds the 13 §2.2 keys this stage
+    produces (val scores, blocking, ``tune_f_beta``, ``harder_f_beta``, errors, timings,
+    ``peak_rss_gb``) plus ``best_iteration``, ``tune_logloss``, ``tune_auc`` (stop set, as
+    ``Matcher.fit_info_``), ``importance_top20``, ``f_beta_by_country`` and, with
+    ``calibration``, ``ece_tune``, ``brier_tune``, ``ece_tune_rank1``, ``ece_val``,
+    ``brier_val``. A dict passed as ``artifacts`` receives ``tune_table``, ``reliability``,
+    ``importance``, ``val_scored``, ``val_matches`` and ``slices`` (``slice_report``).
+    """
+    params = MatcherParams() if params is None else params
+    grid = DEFAULT_GRID if grid is None else grid
+    timings: dict[str, float] = {}
+    P.mem_guard("evaluate start")
+
+    t0 = time.perf_counter()
+    X_fit, y_fit = snap.features("fit", batch_rows=batch_rows), snap.labels("fit")
+    X_stop, y_stop = snap.features("stop", batch_rows=batch_rows), snap.labels("stop")
+    weight = None
+    if weight_fn is not None:
+        weight = np.asarray(weight_fn(snap.meta("fit"), X_fit), dtype=np.float64)
+        if weight.shape != (len(X_fit),):
+            raise ValueError(f"weight_fn returned shape {weight.shape}, expected "
+                             f"({len(X_fit)},)")
+    timings["load_seconds"] = round(time.perf_counter() - t0, 2)
+    P.mem_guard("evaluate load")
+
+    t0 = time.perf_counter()
+    model = fit_matcher(params, X_fit, y_fit, X_stop, y_stop, weight, seeds)
+    timings["fit_seconds"] = round(time.perf_counter() - t0, 2)
+    del X_fit, y_fit, X_stop, y_stop, weight
+    P.mem_guard("evaluate fit")
+
+    t0 = time.perf_counter()
+    scored_tune, y_tune = _score_side(snap, "tune", model, batch_rows)
+    score_seconds = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    rule, table = tune(scored_tune, snap.s1("tune")[C.ENTITY_ID], snap.truth("tune"), grid)
+    timings["tune_seconds"] = round(time.perf_counter() - t0, 2)
+    calib: dict[str, float] = {}
+    rel_tables = []
+    if calibration:
+        ece, brier, rel = reliability(scored_tune["prob"].to_numpy(), y_tune)
+        calib.update(ece_tune=ece, brier_tune=brier)
+        rel_tables.append(rel.assign(side="tune", subset="all"))
+        if RANK1_COLUMN in snap.manifest["feature_names"]:
+            top = snap.column("tune", RANK1_COLUMN) == 1
+            ece1, _, rel1 = reliability(scored_tune["prob"].to_numpy()[top], y_tune[top])
+            calib["ece_tune_rank1"] = ece1
+            rel_tables.append(rel1.assign(side="tune", subset="rank1"))
+    del scored_tune, y_tune
+    P.mem_guard("evaluate tune")
+
+    t0 = time.perf_counter()
+    scored_val, y_val = _score_side(snap, "val", model, batch_rows)
+    score_seconds += time.perf_counter() - t0
+    val = snap.fold("val")
+    t0 = time.perf_counter()
+    matches = P.decide_by_country(scored_val, val.s1, rule)
+    decide_seconds = time.perf_counter() - t0
+    if calibration:
+        ece, brier, rel = reliability(scored_val["prob"].to_numpy(), y_val)
+        calib.update(ece_val=ece, brier_val=brier)
+        rel_tables.append(rel.assign(side="val", subset="all"))
+    del y_val
+    blocking = snap.blocking("val") or {}
+    errors = error_counts(matches, val)
+    metrics: dict = {
+        "snapshot": snap.key, "model_params": asdict(params),
+        "seeds": [int(s) for s in seeds] if seeds else None, "weighted": weight_fn is not None,
+        "n_features": len(snap.columns), "rule": asdict(rule),
+        **score_pairs(matches, val),
+        "cand_recall": blocking.get("pair_recall"),
+        "entity_recall": blocking.get("entity_recall"),
+        "ceiling_f_beta": blocking.get("ceiling_f_beta"),
+        "cands_mean": blocking.get("candidates_mean"),
+        "cands_p95": blocking.get("candidates_p95"),
+        "tune_f_beta": float(table["f_beta"].max()),
+        "f_beta_by_country": _by_country(matches, val),
+        "n_fp": errors["false_merge"] + errors["singleton_merge"], "n_fn": errors["missed"],
+        "n_false_singleton": errors["false_singleton"], "errors": errors,
+    }
+    P.mem_guard("evaluate val")
+
+    if harder and "harder" in snap.sides:
+        hard = snap.fold("harder")
+        t0 = time.perf_counter()
+        scored_h, _ = _score_side(snap, "harder", model, batch_rows)
+        score_seconds += time.perf_counter() - t0
+        t0 = time.perf_counter()
+        matches_h = P.decide_by_country(scored_h, hard.s1, rule)
+        decide_seconds += time.perf_counter() - t0
+        metrics["harder_f_beta"] = (score_pairs(matches_h, hard)["f_beta"] if len(hard.s1)
+                                    else float("nan"))
+        del scored_h, matches_h
+        P.mem_guard("evaluate harder")
+
+    importance = model.importance()
+    info = model.fit_info_
+    metrics.update(best_iteration=int(model.best_iteration_),
+                   tune_logloss=info.get("tune_logloss"), tune_auc=info.get("tune_auc"),
+                   importance_top20={k: float(v) for k, v in importance.head(20).items()},
+                   **calib, **timings, score_seconds=round(score_seconds, 2),
+                   decide_seconds=round(decide_seconds, 2), peak_rss_gb=P.peak_rss_gb())
+    if artifacts is not None:
+        artifacts.update(tune_table=table, importance=importance, val_scored=scored_val,
+                         val_matches=matches,
+                         reliability=(pd.concat(rel_tables, ignore_index=True)
+                                      if rel_tables else pd.DataFrame()))
+        if (snap.path / "val_s1n.parquet").exists() and len(val.s1):
+            s1n, pooln = snap.normalised()
+            artifacts["slices"] = slice_report(matches, val, s1n, pooln)
+    return metrics, model, rule

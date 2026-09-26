@@ -1,14 +1,16 @@
-"""Feature snapshots (snapshot.py): cache key, build, round trip, resume.
+"""Feature snapshots (snapshot.py): round trip, cache key, and equality with the pipeline.
 
 Two synthetic datasets: the six-record conftest fixture (empty fit side, so the matcher is
 the ``heuristic`` backend, as in test_pipeline.py) and the generated one of
 tests/snapshot_fixtures.py (~250 S1 entities with typo / abbreviation variants and
-same-name decoys), big enough for LightGBM to train on, so stored rows are checked against
-``pipeline.fit`` + ``run_fold`` with the default ``lgbm`` backend. Nothing here reads the
-real dataset/.
+same-name decoys), big enough for LightGBM to train on, so ``evaluate_params`` is checked
+against ``pipeline.fit`` + ``run_fold`` with the default ``lgbm`` backend. The model-level
+helpers it uses (``SeedEnsemble``, ``reliability``) are unit-tested in test_model.py.
+Nothing here reads the real dataset/.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,7 +20,7 @@ import pytest
 
 from entity_resolution import config as C
 from entity_resolution.decision import Grid
-from entity_resolution.evaluate import harder_fold
+from entity_resolution.evaluate import error_samples, harder_fold
 from entity_resolution.features import build_features
 from entity_resolution.model import MatcherParams
 from entity_resolution.pipeline import (
@@ -29,14 +31,46 @@ from entity_resolution.pipeline import (
     pool_of,
     run_fold,
 )
-from entity_resolution.snapshot import SIDES, build_snapshot, load_snapshot, snapshot_key
+from entity_resolution.snapshot import (
+    SIDES,
+    build_snapshot,
+    error_counts,
+    evaluate_params,
+    load_snapshot,
+    snapshot_key,
+)
 from entity_resolution.split import load_fold
 from snapshot_fixtures import make_dataset, tiny_blocking, tiny_cfg
 
+BREAKDOWN = ("f_beta", "f_beta_singletons", "f_beta_matched", "pair_precision",
+             "pair_recall", "entities", "singletons", "cand_recall", "entity_recall",
+             "ceiling_f_beta", "cands_mean", "cands_p95")
 FAST_LGBM = MatcherParams(num_leaves=7, learning_rate=0.1, n_estimators=80, early_stopping=10,
                           min_data_in_leaf=5, num_threads=2)
 SMALL_GRID = Grid(tau_abs=(0.1, 0.9, 0.1), tau_rel=(0.0, 0.7), single_delta=(0.0, 0.1),
                   max_matches=(3, 11))
+
+
+def without_timings(metrics: dict) -> str:
+    """Metrics minus run times and RSS, as JSON (NaN compares equal as a string)."""
+    kept = {k: v for k, v in metrics.items()
+            if not k.endswith("_seconds") and k != "peak_rss_gb"}
+    return json.dumps(kept, sort_keys=True, default=str)
+
+
+def assert_same_as_pipeline(metrics: dict, pipe_metrics: dict, fitted, rule,
+                            artifacts: dict, scored: pd.DataFrame,
+                            matches: pd.DataFrame) -> None:
+    """The snapshot evaluation equals pipeline.fit + run_fold, bit for bit."""
+    assert rule == fitted.rule
+    assert metrics["tune_f_beta"] == float(fitted.tune_table["f_beta"].max())
+    pd.testing.assert_frame_equal(artifacts["tune_table"], fitted.tune_table)
+    for key in BREAKDOWN:
+        a, b = metrics[key], pipe_metrics[key]
+        assert a == b or (np.isnan(a) and np.isnan(b)), key
+    pd.testing.assert_frame_equal(artifacts["val_scored"].reset_index(drop=True),
+                                  scored.reset_index(drop=True))
+    pd.testing.assert_frame_equal(artifacts["val_matches"], matches)
 
 
 @pytest.fixture(scope="module")
@@ -159,3 +193,45 @@ def test_chunking_does_not_change_the_data(generated) -> None:
     for side in SIDES:
         np.testing.assert_array_equal(a.features(side).to_numpy(), b.features(side).to_numpy())
         pd.testing.assert_frame_equal(a.meta(side), b.meta(side))
+
+
+def test_evaluate_equals_pipeline_lgbm(generated) -> None:
+    """Default-path evaluation on the snapshot = pipeline.fit + run_fold (lgbm backend)."""
+    cfg, fitted = generated["cfg"], generated["fitted"]
+    pipe_metrics, _, scored, matches = generated["pipe"]
+    snap = load_snapshot(generated["path"])
+    artifacts: dict = {}
+    metrics, matcher, rule = evaluate_params(snap, cfg.model, grid=cfg.grid, artifacts=artifacts)
+    assert_same_as_pipeline(metrics, pipe_metrics, fitted, rule, artifacts, scored, matches)
+    assert metrics["harder_f_beta"] == generated["harder"]["f_beta"]
+    assert matcher.best_iteration_ == fitted.matcher.best_iteration_
+    info = fitted.info["fit_info"]
+    assert metrics["tune_logloss"] == info["tune_logloss"]
+    assert metrics["tune_auc"] == info["tune_auc"]
+    assert metrics["importance_top20"] == {
+        k: float(v) for k, v in fitted.matcher.importance().head(20).items()}
+    assert set(metrics["f_beta_by_country"]) == {"India", "US"}
+
+
+def test_evaluate_equals_pipeline_heuristic(dataset_dir: Path, tmp_path: Path) -> None:
+    """The same on the conftest fixture, whose fit side is empty (heuristic backend)."""
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    train = load_fold("train", dataset_dir, frac=0.5)
+    val = load_fold("val", dataset_dir, frac=0.5)
+    fitted = fit(cfg, train)
+    pipe_metrics, _, scored, matches = run_fold(cfg, fitted, val)
+    path = build_snapshot(cfg, train, val, out_dir=tmp_path / "m4")
+    artifacts: dict = {}
+    metrics, _, rule = evaluate_params(load_snapshot(path), cfg.model, grid=cfg.grid,
+                                       artifacts=artifacts)
+    assert_same_as_pipeline(metrics, pipe_metrics, fitted, rule, artifacts, scored, matches)
+
+
+def test_error_counts_equal_error_samples(generated) -> None:
+    """error_counts = the v001 notebook's len(error_samples(..., n=10**9)) per kind."""
+    _, _, _, matches = generated["pipe"]
+    val = generated["val"]
+    counts = error_counts(matches, val)
+    for kind, n in counts.items():
+        assert n == len(error_samples(matches, val, kind, n=10**9)), kind
+    assert sum(counts.values()) > 0
