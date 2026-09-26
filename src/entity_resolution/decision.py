@@ -365,3 +365,83 @@ def tune(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.DataFrame,
     refine = _evaluate(data, grid.refine_rules(_pick(table, grid.tie_tol)), "refine")
     table = pd.concat([table, refine], ignore_index=True)
     return _pick(table, grid.tie_tol), table
+
+
+# ------------------------------------------------------- expected F0.5 ----
+@dataclass(frozen=True)
+class ExpectedRule:
+    """Expected-F0.5 set decoding (10 §7, plan E5).
+
+    Each S1 entity keeps the prefix of its ranked candidates (after the 1-to-1) with the
+    highest expected F0.5, reading ``q = prob ** gamma`` as the chance that a pair is true.
+    With ``k`` pairs kept, E[F0.5] ~ 1.25 * sum(q, top k) / (0.25 * (sum(q) + miss) + k);
+    keeping nothing is worth P(no true match) = prod(1 - q) * exp(-miss). ``miss`` is the
+    expected number of true matches the candidates lack (blocking misses).
+    """
+
+    gamma: float = 1.0
+    miss: float = 0.0
+    max_matches: int = 11
+    one_to_one: bool = True
+
+
+def _expected_keep(prob: np.ndarray, rank: np.ndarray, s1: np.ndarray, n: int,
+                   rule: ExpectedRule) -> np.ndarray:
+    """Row mask of the prefix each entity keeps under ``rule`` (rows in any order)."""
+    q = np.clip(np.nan_to_num(prob, nan=0.0), 0.0, 1.0 - 1e-7) ** rule.gamma
+    total = np.bincount(s1, weights=q, minlength=n) + rule.miss
+    empty = np.exp(np.bincount(s1, weights=np.log1p(-q), minlength=n) - rule.miss)
+    order = np.lexsort((rank, s1))                  # entity by entity, best candidate first
+    s, r, qs = s1[order], rank[order], q[order]
+    cum = np.cumsum(qs)
+    start = np.r_[True, s[1:] != s[:-1]] if len(s) else np.zeros(0, dtype=bool)
+    base = np.maximum.accumulate(np.where(start, np.arange(len(s)), 0))
+    cum = cum - np.r_[0.0, cum][base]               # running sum of q inside the entity
+    ef = 1.25 * cum / (0.25 * total[s] + r + 1)
+    ef[r >= rule.max_matches] = -1.0                # the cap: never beyond max_matches
+    best = np.full(n, -1.0)
+    k = np.zeros(n, dtype=np.int64)
+    if len(s):
+        starts = np.flatnonzero(start)
+        best[s[starts]] = np.maximum.reduceat(ef, starts)
+        at_best = np.where(ef >= best[s], r, np.iinfo(np.int64).max)
+        k[s[starts]] = np.minimum.reduceat(at_best, starts)   # first rank at the best value
+    keep_sorted = (r <= k[s]) & (best[s] > empty[s])
+    keep = np.empty(len(order), dtype=bool)
+    keep[order] = keep_sorted
+    return keep
+
+
+def decide_expected(scored: pd.DataFrame, rule: ExpectedRule) -> pd.DataFrame:
+    """The match sets of ``ExpectedRule`` decoding, in ``decide``'s output format."""
+    r = _rank(scored, rule.one_to_one)
+    keep = _expected_keep(r.prob, r.rank, r.s1, len(r.s1_ids), rule)
+    s1, pool = r.s1[keep], r.pool[keep]
+    order = np.lexsort((pool, s1))
+    return pd.DataFrame({C.S1_ID: r.s1_ids.take(s1[order]),
+                         C.ENTITY_ID: r.pool_ids.take(pool[order])})
+
+
+def tune_expected(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.DataFrame,
+                  gammas: Sequence[float] = (0.8, 1.0, 1.2, 1.5, 2.0),
+                  misses: Sequence[float] = (0.0, 0.05, 0.1, 0.2, 0.4),
+                  max_matches: int = 11) -> tuple[ExpectedRule, pd.DataFrame]:
+    """Best ``ExpectedRule`` by macro F0.5 on the tune sample, and every rule tried.
+
+    Scores exactly what ``decide_expected`` keeps (same ranked arrays), over all ``s1_ids``.
+    """
+    data = _Tuning(scored, s1_ids, truth_pairs)
+    a = data.arrays(True)
+    rows = []
+    for g, m in itertools.product(gammas, misses):
+        rule = ExpectedRule(g, m, max_matches, True)
+        keep = _expected_keep(a.prob, a.rank, a.s1, data.n, rule)
+        n_pred = np.bincount(a.s1[keep], minlength=data.n)
+        tp = np.bincount(a.s1[keep & a.is_true], minlength=data.n)
+        f_beta, tp_s, pred_s, matched = a.scorer(a.scorer.code(tp, n_pred))
+        rows.append((g, m, max_matches, f_beta, pred_s, tp_s / max(pred_s, 1),
+                     tp_s / max(int(data.n_true.sum()), 1), matched / data.n))
+    table = pd.DataFrame(rows, columns=["gamma", "miss", "max_matches", "f_beta", "n_pred",
+                                        "pair_precision", "pair_recall", "match_rate"])
+    best = table.sort_values(["f_beta", "gamma"], ascending=[False, False], kind="stable").iloc[0]
+    return ExpectedRule(float(best["gamma"]), float(best["miss"]), max_matches, True), table

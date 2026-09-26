@@ -264,3 +264,32 @@ def test_tune_rejects_s1_outside_the_sample(pairs_toy):
         evaluate_rules(scored, ids[ids != "S1-c"], truth, [DecisionRule()])
     with pytest.raises(ValueError, match="duplicate"):
         evaluate_rules(scored, pd.concat([ids, ids]), truth, [DecisionRule()])
+
+
+def test_expected_decoding_by_hand() -> None:
+    """One clear match, a coin-flip pair, a hopeless singleton: the prefix with the best E[F]."""
+    from entity_resolution.decision import ExpectedRule, decide_expected
+    scored = pd.DataFrame({
+        C.S1_ID: ["S1-a", "S1-a", "S1-a", "S1-b", "S1-c"],
+        C.ENTITY_ID: ["S2-1", "S2-2", "S2-3", "S2-4", "S2-5"],
+        "prob": np.float32([0.95, 0.9, 0.05, 0.3, 0.6]),
+    })
+    out = decide_expected(scored, ExpectedRule())
+    assert sorted(zip(out[C.S1_ID], out[C.ENTITY_ID], strict=True)) == [
+        ("S1-a", "S2-1"), ("S1-a", "S2-2"), ("S1-c", "S2-5")]
+    # E[F] of keeping S1-b's 0.3 pair: 1.25*0.3/(0.25*0.3+1) = 0.349 < P(empty) = 0.7
+    capped = decide_expected(scored, ExpectedRule(max_matches=1))
+    assert (capped[C.S1_ID] == "S1-a").sum() == 1
+    strict = decide_expected(scored, ExpectedRule(miss=2.0))    # expecting misses: keep more
+    assert set(strict[C.ENTITY_ID]) >= {"S2-1", "S2-2"}
+
+
+def test_tune_expected_scores_what_decide_expected_keeps(pairs_toy) -> None:
+    """The table's F0.5 for the chosen rule equals metrics on decide_expected's output."""
+    from entity_resolution.decision import decide_expected, tune_expected
+    scored, truth, s1_ids = pairs_toy
+    rule, table = tune_expected(scored, s1_ids, truth, gammas=(0.5, 1.0, 2.0), misses=(0.0, 0.5))
+    assert len(table) == 6
+    pred = pairs_to_lists(decide_expected(scored, rule), s1_ids)
+    ref = metrics.macro_fbeta(pred, pairs_to_lists(truth, s1_ids))
+    assert table["f_beta"].max() == pytest.approx(ref, abs=1e-12)
