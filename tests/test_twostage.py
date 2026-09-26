@@ -13,7 +13,14 @@ from entity_resolution.mock import build_mock
 from entity_resolution.model import MatcherParams
 from entity_resolution.pipeline import fit
 from entity_resolution.split import load_fold
-from entity_resolution.stacking import STACK_COLUMNS, competition_features, group_stats
+from entity_resolution.stacking import (
+    ANCHOR_COLUMNS,
+    STACK_COLUMNS,
+    anchor_features,
+    best_other_rows,
+    competition_features,
+    group_stats,
+)
 from entity_resolution.submission import split_ids, validate
 from entity_resolution.twostage import (
     TwoStage,
@@ -101,7 +108,8 @@ def test_two_stage_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
     outs = mock_stage1(cfg, stage1, mock, tcfg)
     for o in outs.values():
         assert len(o.pairs) == len(o.X) and o.n_all >= len(o.pairs)
-        assert list(o.X.columns[-len(STACK_COLUMNS):]) == STACK_COLUMNS
+        tail = STACK_COLUMNS + ANCHOR_COLUMNS
+        assert list(o.X.columns[-len(tail):]) == tail
     models, info = fit_stage2(outs, mock, tcfg)
     assert len(models) == tcfg.folds and "rows" in info
     scored, report = mock_scored(outs, models, mock, tcfg, roles=("val",))
@@ -141,3 +149,33 @@ def test_rule_json_round_trip_and_dispatch() -> None:
     assert rule_from_json({"tau_abs": 0.4, "tau_rel": 0.0, "tau_single": 0.5,
                            "max_matches": 11, "one_to_one": True, "tune_f_beta": 0.9}) == \
         DecisionRule(0.4, 0.0, 0.5, 11, True)            # rule.json written before kinds
+
+
+def test_best_other_rows() -> None:
+    codes = np.array([0, 0, 0, 1, 2, 2])
+    p1 = np.array([0.2, 0.9, 0.5, 0.7, 0.4, 0.4], dtype=np.float32)
+    assert best_other_rows(codes, p1).tolist() == [1, 2, 1, -1, 5, 4]
+    assert len(best_other_rows(np.zeros(0, np.int64), np.zeros(0, np.float32))) == 0
+
+
+def test_anchor_features_compare_with_best_other() -> None:
+    """The true record resembles the entity's best record; the decoy does not."""
+    pairs = pd.DataFrame({C.S1_ID: ["a", "a", "a", "b"],
+                          C.ENTITY_ID: ["t1", "t2", "d1", "z"]})
+    p1 = np.array([0.95, 0.6, 0.7, 0.8], dtype=np.float32)
+    pooln = pd.DataFrame({
+        C.ENTITY_ID: ["t1", "t2", "d1", "z"],
+        "name_norm": ["acme corp", "acme corporation", "acme corp", "zeta"],
+        "addr_norm": ["12 main st springfield", "12 main street springfield",
+                      "400 oak ave dallas", ""],
+        "addr_nums": ["12", "12", "400", ""],
+    })
+    f = anchor_features(pairs, p1, pooln)
+    assert list(f.columns) == ANCHOR_COLUMNS
+    assert f["anc_p1"].tolist()[:3] == pytest.approx([0.7, 0.95, 0.95])
+    assert np.isnan(f["anc_p1"].iloc[3])                       # b has one candidate
+    assert f.loc[1, "anc_addr_ts"] > f.loc[2, "anc_addr_ts"]   # true t2 vs decoy d1
+    assert f.loc[1, "anc_nums_eq"] == 1.0 and f.loc[2, "anc_nums_eq"] == 0.0
+    assert f.iloc[3].isna().all()
+    with pytest.raises(ValueError, match="not in pooln"):
+        anchor_features(pairs, p1, pooln.iloc[:3])

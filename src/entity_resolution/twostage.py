@@ -8,7 +8,10 @@ jobs:
   ``max_cands`` best. The kept pairs are all stage 2 scores, so they are the final candidate
   set written to ``candidate_pairs.tsv``: a learned last blocking stage;
 * **competition features** (``stacking.competition_features``) over all pairs of the
-  partition: rank and best rival on the S1 side and on the pool side.
+  partition: rank and best rival on the S1 side and on the pool side;
+* **anchor features** (``stacking.anchor_features``) over the kept pairs: each candidate
+  compared with its entity's best other candidate (true records of one business resemble
+  each other, a same-name decoy does not).
 
 Stage 2 is a LightGBM on the pair features plus the competition features, trained on the kept
 pairs of the mock fold's ``fit`` entities (``mock.py``), so it learns at the test's decoy
@@ -54,7 +57,7 @@ from .pipeline import (
     sort_matches,
 )
 from .split import hash_unit
-from .stacking import competition_features, group_stats
+from .stacking import anchor_features, competition_features, group_stats
 from .submission import write_pairs
 from .trainset import label_pairs, sample_s1
 
@@ -70,6 +73,7 @@ class TwoStageConfig:
     folds: int = 2               # cross-fitting parts over the mock's fit entities
     seed: int = FOLD_SEED
     n_stop_s1: int = 50_000      # mock tune entities whose kept pairs drive early stopping
+    anchors: bool = True         # add stacking.ANCHOR_COLUMNS to the stage-2 frame
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
 
     def record(self) -> dict:
@@ -82,7 +86,7 @@ class Stage1Output:
     """The kept pairs of one partition with the frame stage 2 reads (same row order)."""
 
     pairs: pd.DataFrame      # source1_entity_id, entity_id of the kept pairs
-    X: pd.DataFrame          # pair features + STACK_COLUMNS, float32, RangeIndex
+    X: pd.DataFrame          # pair features + STACK_COLUMNS (+ ANCHOR_COLUMNS), float32
     n_all: int               # candidate pairs before the filter
 
 
@@ -114,8 +118,11 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     comp = competition_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1)
     X = pd.concat(parts, ignore_index=True) if parts else build_features(
         pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups)
-    X = pd.concat([X, comp[keep].reset_index(drop=True)], axis=1)
     kept = pairs.loc[keep, [C.S1_ID, C.ENTITY_ID]].reset_index(drop=True)
+    extra = [comp[keep].reset_index(drop=True)]
+    if tcfg.anchors:
+        extra.append(anchor_features(kept, p1[keep], pooln))
+    X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 
 
@@ -139,29 +146,31 @@ def fold_of(s1_ids: pd.Series, folds: int, seed: int = FOLD_SEED) -> np.ndarray:
     return np.minimum((hash_unit(s1_ids, seed) * folds).astype(np.int64), folds - 1)
 
 
-def _rows(outs: dict[str, Stage1Output], ids: pd.Index) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Kept pairs and features of the entities ``ids``, all countries stacked."""
+def _rows(outs: dict[str, Stage1Output], ids: pd.Index,
+          columns: list[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Kept pairs and features (``columns`` only, if given) of ``ids``, countries stacked."""
     pairs, X = [], []
     for o in outs.values():
         m = isin(o.pairs[C.S1_ID], ids)
         pairs.append(o.pairs[m])
-        X.append(o.X[m])
+        X.append(o.X.loc[m, columns] if columns is not None else o.X[m])
     return (pd.concat(pairs, ignore_index=True), pd.concat(X, ignore_index=True))
 
 
-def fit_stage2(outs: dict[str, Stage1Output], mock: MockFold, tcfg: TwoStageConfig
-               ) -> tuple[list[Matcher], dict]:
+def fit_stage2(outs: dict[str, Stage1Output], mock: MockFold, tcfg: TwoStageConfig,
+               columns: list[str] | None = None) -> tuple[list[Matcher], dict]:
     """One stage-2 matcher per cross-fitting part, trained on the other parts' fit entities.
 
     Early stopping reads the kept pairs of ``n_stop_s1`` mock tune entities (the rule is later
-    tuned on all tune entities, as in ``pipeline.fit``).
+    tuned on all tune entities, as in ``pipeline.fit``). ``columns`` restricts the features
+    (ablations); None = every column of the stage-1 output.
     """
     fit_ids = mock.ids("fit")
-    pairs, X = _rows(outs, fit_ids)
+    pairs, X = _rows(outs, fit_ids, columns)
     y = label_pairs(pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
     part = fold_of(pairs[C.S1_ID], tcfg.folds, tcfg.seed)
     stop_ids = pd.Index(sample_s1(mock.part("tune").s1, tcfg.n_stop_s1)[C.ENTITY_ID])
-    stop_pairs, X_stop = _rows(outs, stop_ids)
+    stop_pairs, X_stop = _rows(outs, stop_ids, columns)
     y_stop = label_pairs(stop_pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
     models, info = [], {"rows": len(X), "positive_rate": float(y.mean()) if len(y) else None}
     for f in range(tcfg.folds):
@@ -193,7 +202,8 @@ def mock_scored(outs: dict[str, Stage1Output], models: list[Matcher], mock: Mock
     """Stage-2 scores on the mock, 1-to-1 across every present entity, rows of ``roles``.
 
     Fit entities are scored out of fold. Returns ``(scored, report)`` like
-    ``pipeline.run_mock``; the report is the candidate set after the stage-1 filter.
+    ``pipeline.run_mock``; the report is the candidate set after the stage-1 filter. The
+    models' own feature lists pick the columns they read.
     """
     fit_ids = mock.ids("fit")
     keep = pd.Index(mock.fold.s1[C.ENTITY_ID][mock.role.isin(roles).to_numpy()])
@@ -201,7 +211,10 @@ def mock_scored(outs: dict[str, Stage1Output], models: list[Matcher], mock: Mock
     for o in outs.values():
         part = np.where(isin(o.pairs[C.S1_ID], fit_ids),
                         fold_of(o.pairs[C.S1_ID], tcfg.folds, tcfg.seed), -1)
-        scored = o.pairs.assign(prob=predict_stage2(models, o.X, part))[SCORED_COLUMNS]
+        X = o.X if list(o.X.columns) == models[0].feature_names_ else o.X[
+            models[0].feature_names_]
+        scored = o.pairs.assign(prob=predict_stage2(models, X, part))[SCORED_COLUMNS]
+        del X
         kept = one_to_one_filter(scored)
         out.append(kept[isin(kept[C.S1_ID], keep)].reset_index(drop=True))
         cands.append(o.pairs[isin(o.pairs[C.S1_ID], keep)])
