@@ -20,9 +20,11 @@ from entity_resolution.features import (
     FREQ_COLUMNS,
     NAN_FEATURES,
     REGISTRY,
+    STATS_GROUPS,
     build_features,
     feature_names,
     iter_chunks,
+    pool_stats,
 )
 from entity_resolution.normalize import NORM_COLUMNS
 
@@ -30,12 +32,13 @@ NAN = np.nan
 ALL_GROUPS = tuple(REGISTRY)
 FLAGS = ["pass_exact", "pass_name_char", "pass_name_addr", "first_eq", "sorted_eq",
          "prefix4_eq", "legal_eq", "legal_missing_l", "legal_missing_r", "region_eq", "last_eq",
-         "addr_empty_r", "is_s3", "non_latin_r"]
+         "addr_empty_r", "is_s3", "non_latin_r", "addr_empty_l"]
 TRISTATE = ["num_shared_any", "num_first_eq", "postcode_eq"]  # 1 / 0, NaN when a side has none
 NAME_SIMS = [*FEATURE_COLUMNS["name_fuzzy"], "tok_jaccard", "tok_dice", "len_ratio_name"]
 ADDR_SIMS = ["ad_token_set", "ad_partial", "ad_ratio", "ad_jaccard", "ad_contain"]
 UNIT_RANGE = [*FEATURE_COLUMNS["blocking"][3:], *NAME_SIMS, "num_jaccard", *ADDR_SIMS,
-              "ctx_gap_name", "ctx_gap_addr"]
+              "ctx_gap_name", "ctx_gap_addr", "ad_contain_r", "num_contain_l", "num_contain_r",
+              "addr_len_ratio"]
 # 12 §5: equal under an L/R swap; nm_partial, ad_partial and ad_contain are asymmetric by
 # design, and ctx_*, *_l / *_r and addr_empty_r are one-sided
 SYMMETRIC = [c for c in [*FEATURE_COLUMNS["name_fuzzy"], *FEATURE_COLUMNS["name_tokens"],
@@ -45,11 +48,11 @@ SYMMETRIC = [c for c in [*FEATURE_COLUMNS["name_fuzzy"], *FEATURE_COLUMNS["name_
 
 
 def _record(entity_id: str, core: str = "", legal: str = "", addr: str = "", region: str = "",
-            non_latin: bool = False) -> dict:
+            non_latin: bool = False, country: str = "US") -> dict:
     """One normalised record from an already-normalised core name, legal form and address."""
     words, tokens = core.split(), addr.split()
     numbers = [t for t in tokens if t.isdigit()]
-    return {C.ENTITY_ID: entity_id, C.COUNTRY: "US", "non_latin": non_latin,
+    return {C.ENTITY_ID: entity_id, C.COUNTRY: country, "non_latin": non_latin,
             "name_norm": " ".join([*words, *legal.split()]), "name_core": core,
             "legal_form": legal, "name_first": words[0] if words else "",
             "name_sorted": " ".join(sorted(words)), "name_squash": core.replace(" ", ""),
@@ -107,7 +110,7 @@ def _toy() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def test_registry_names_unique_and_count():
     every = feature_names(ALL_GROUPS)
-    assert len(every) == len(set(every)) == 54
+    assert len(every) == len(set(every)) == sum(len(v) for v in FEATURE_COLUMNS.values())
     assert feature_names() == [c for g in DEFAULT_GROUPS for c in FEATURE_COLUMNS[g]]
     assert len(feature_names()) == 47 and "pool_context" not in DEFAULT_GROUPS
     assert set(FEATURE_COLUMNS) == set(REGISTRY) and NAN_FEATURES <= set(every)
@@ -159,6 +162,36 @@ def test_known_values():
     assert np.isnan(X.loc[2, "postcode_eq"])  # S1-3 has no postcode
 
 
+def test_address_extra_values():
+    addresses = [("12 main street pune 411001", "12 main street pune 411001"),  # identical
+                 ("main street dover", "main street dover near main gate"),  # pool adds words
+                 ("12 park road 411001", "12 park road 411999 gate 7"),  # same postal area
+                 ("1 hill lane 411001", "1 hill lane 560001"),  # another postal area
+                 ("3 elm road 411001", "3 elm road"),  # the pool has no postcode
+                 ("", "9 elm road 411001")]  # the S1 address is empty
+    s1n = _records(*[_record(f"S1-{i}", "acme", "", a) for i, (a, _) in enumerate(addresses)])
+    pooln = _records(*[_record(f"S2-{i}", "acme", "", b) for i, (_, b) in enumerate(addresses)])
+    pairs = _pairs(*[(f"S1-{i}", f"S2-{i}", 8, 0.5, NAN, NAN) for i in range(len(addresses))])
+    X = build_features(pairs, s1n, pooln, ("numeric", "address", "address_extra"))
+    shares = [c for c in FEATURE_COLUMNS["address_extra"] if c != "addr_empty_l"]  # NaN-able
+    assert (X.loc[0, shares] == 1).all() and X.loc[0, "addr_empty_l"] == 0
+    # {main, street, dover} in {main, street, dover, near, gate}: the repeated main counts once
+    assert X.loc[1, "ad_contain"] == 1 and X.loc[1, "ad_contain_r"] == pytest.approx(3 / 5)
+    assert X.loc[1, "addr_len_ratio"] == pytest.approx(3 / 5)
+    assert X.loc[1, ["num_contain_l", "num_contain_r", "postcode_prefix_eq"]].isna().all()
+    # numbers {12, 411001} vs {12, 411999, 7}; 3 of the pool's 6 address tokens are in S1's 4
+    assert X.loc[2, "num_contain_l"] == pytest.approx(1 / 2)
+    assert X.loc[2, "num_contain_r"] == pytest.approx(1 / 3)
+    assert X.loc[2, "ad_contain_r"] == pytest.approx(3 / 6)
+    assert X.loc[2, "addr_len_ratio"] == pytest.approx(4 / 6)
+    assert X.loc[2, "postcode_prefix_eq"] == 1 and X.loc[2, "postcode_eq"] == 0  # 411 area
+    assert X.loc[3, "postcode_prefix_eq"] == 0  # 411001 vs 560001
+    assert X.loc[4, "num_contain_l"] == pytest.approx(1 / 2) and X.loc[4, "num_contain_r"] == 1
+    assert np.isnan(X.loc[4, "postcode_prefix_eq"])
+    assert X["addr_empty_l"].tolist() == [0, 0, 0, 0, 0, 1]
+    assert X.loc[5, shares].isna().all()  # no S1 address: no tokens, numbers or postcode
+
+
 def test_token_sets_ignore_stray_spaces():
     s1n = _records(_record("S1-1", "a b", "", "12 main street"))
     pooln = _records(_record("S2-1", "b c", "", "12 main road"))
@@ -178,7 +211,7 @@ def test_nan_policy():
     assert {"sim_addr_char", "nm_ratio", "tok_jaccard", "ad_token_set", "postcode_eq",
             "ctx_gap_name", "len_ratio_name"} <= with_nan  # the toy exercises the NaN cases
     assert X[FLAGS].isin([0.0, 1.0]).all().all()  # isin is False on NaN
-    tri = X[TRISTATE]
+    tri = X[[*TRISTATE, "postcode_prefix_eq"]]  # opt-in: default-group tests read TRISTATE
     assert (tri.isin([0.0, 1.0]) | tri.isna()).all().all()
     unit = X[UNIT_RANGE]
     assert (((unit >= 0) & (unit <= 1)) | unit.isna()).all().all()
@@ -277,6 +310,21 @@ def test_symmetric_similarities():
     assert Y["tok_len_l"].equals(X["tok_len_r"]) and Y["tok_len_r"].equals(X["tok_len_l"])
 
 
+def test_address_extra_mirrors_under_swap():
+    pairs, s1n, pooln = _toy()
+    groups = ("address", "address_extra")
+    X = build_features(pairs, s1n, pooln, groups)
+    swapped = pairs.rename(columns={C.S1_ID: C.ENTITY_ID, C.ENTITY_ID: C.S1_ID})[PAIR_COLUMNS]
+    swapped = swapped.sort_values(C.S1_ID, kind="stable")  # regroup by the new S1 side
+    Y = build_features(swapped, pooln, s1n, groups).loc[X.index]
+    # the one-sided columns trade places under an L/R swap: *_r is the reverse of *_l
+    for a, b in (("ad_contain", "ad_contain_r"), ("num_contain_l", "num_contain_r"),
+                 ("addr_empty_l", "addr_empty_r")):
+        assert Y[a].equals(X[b]) and Y[b].equals(X[a])
+    both = ["postcode_prefix_eq", "addr_len_ratio"]
+    pd.testing.assert_frame_equal(Y[both], X[both])
+
+
 def test_groups_alone_match_full_build():
     pairs, s1n, pooln = _toy()
     whole = build_features(pairs, s1n, pooln, ALL_GROUPS)
@@ -291,7 +339,9 @@ def test_groups_are_functions_of_aligned_rows():
     right = pooln.set_index(C.ENTITY_ID).loc[pairs[C.ENTITY_ID]].reset_index()
     whole = build_features(pairs, s1n, pooln, ALL_GROUPS)
     for g, group in REGISTRY.items():
-        pd.testing.assert_frame_equal(group(pairs, left, right), whole[FEATURE_COLUMNS[g]])
+        extra = {"stats": pool_stats(pooln, (g,))} if g in STATS_GROUPS else {}
+        pd.testing.assert_frame_equal(group(pairs, left, right, **extra),
+                                      whole[FEATURE_COLUMNS[g]])
 
 
 def test_bad_input_raises():
@@ -319,3 +369,124 @@ def test_frequency_group_passes_rates_and_core_eq() -> None:
     assert out["core_eq"].tolist() == [1.0, 0.0]
     assert out["fq_s1_l"].tolist() == [2.0, 2.0] and out["fq_pool_r"].iloc[0] == 3.0
     assert np.isnan(out["fq_s1_r"].iloc[1])
+
+
+# ------------------------------------------------ pool-statistics groups (C2, C5) ----
+IDF_NAME = [c for c in FEATURE_COLUMNS["idf"] if c.startswith("idf_name")]
+IDF_ADDR = [c for c in FEATURE_COLUMNS["idf"] if c.startswith("idf_addr")]
+
+
+def _cafes() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """One S1 "acme cafe" against three pool records: identical, other rare word, bare."""
+    s1n = _records(_record("S1-1", "acme cafe", "", "1 main road"))
+    pooln = _records(_record("S2-1", "acme cafe", "", "1 main road"),
+                     _record("S2-2", "zenith cafe", "", "2 main road"),
+                     _record("S2-3", "cafe"),
+                     _record("S2-4", "blue cafe", "", "3 main road"))
+    pairs = _pairs(("S1-1", "S2-1", 1, 1.0, NAN, NAN), ("S1-1", "S2-2", 8, 0.5, NAN, NAN),
+                   ("S1-1", "S2-3", 8, 0.6, NAN, NAN))
+    return pairs, s1n, pooln
+
+
+def test_idf_known_values():
+    pairs, s1n, pooln = _cafes()
+    X = build_features(pairs, s1n, pooln, ("idf",))
+    n = 4  # pool records of the country; idf = ln((1 + n) / (1 + df)) + 1
+    rare, cafe, best = np.log(5 / 2) + 1, np.log(5 / 5) + 1, np.log(1 + n) + 1
+    assert X.loc[0, IDF_NAME].tolist() == pytest.approx([1.0, rare / best, 1.0, 1.0])
+    # acme cafe vs zenith cafe: only the common "cafe" is shared
+    assert X.loc[1, "idf_name_cos"] == pytest.approx(cafe**2 / (rare**2 + cafe**2))
+    assert X.loc[1, "idf_name_top"] == pytest.approx(cafe / best)
+    assert X.loc[1, "idf_name_cover_l"] == pytest.approx(cafe / (rare + cafe))
+    assert X.loc[1, "idf_name_cover_r"] == pytest.approx(cafe / (rare + cafe))
+    # acme cafe vs cafe: the pool name is fully covered, the S1 name only by its common word
+    assert X.loc[2, "idf_name_cos"] == pytest.approx(cafe / np.sqrt(rare**2 + cafe**2))
+    assert X.loc[2, "idf_name_cover_l"] == pytest.approx(cafe / (rare + cafe))
+    assert X.loc[2, "idf_name_cover_r"] == pytest.approx(1.0)
+    # addresses: "main" and "road" are in 3 of 4 records, each house number in one
+    num, word = np.log(5 / 2) + 1, np.log(5 / 4) + 1
+    assert X.loc[1, "idf_addr_cos"] == pytest.approx(2 * word**2 / (num**2 + 2 * word**2))
+    assert X.loc[1, "idf_addr_top"] == pytest.approx(word / best)
+    assert X.loc[2, IDF_ADDR].isna().all()  # the pool address is empty
+
+
+def test_stats_are_counted_per_country():
+    s1n = _records(_record("S1-1", "cafe roma", "", "1 rue", country="France"),
+                   _record("S1-2", "cafe roma", "", "1 main st"))
+    pooln = _records(_record("S2-1", "cafe roma", "", "1 rue", country="France"),
+                     *[_record(f"S2-{i}", "cafe roma", "", f"{i} main st") for i in (2, 3, 4)])
+    pairs = _pairs(("S1-1", "S2-1", 1, 1.0, NAN, NAN),
+                   *[("S1-2", f"S2-{i}", 1, 1.0, NAN, NAN) for i in (2, 3, 4)])
+    groups = ("idf", "token_freq")
+    X = build_features(pairs, s1n, pooln, groups)
+    # every name token is in every record of its country: idf 1, N = 1 (France) or 3 (US)
+    assert X["idf_name_top"].tolist() == pytest.approx([1 / (np.log(2) + 1)]
+                                                       + [1 / (np.log(4) + 1)] * 3)
+    assert X["freq_name_l"].tolist() == [1, 3, 3, 3]  # France holds one "cafe roma", US three
+    assert X["freq_name_r"].tolist() == [1, 3, 3, 3]
+    assert X["freq_addr_l"].tolist() == [1, 0, 0, 0]  # "1 main st" is in no US pool record
+    assert X["freq_addr_r"].tolist() == [1, 1, 1, 1]
+    # a mixed-country fold (val) gives France the same values as its own partition (test)
+    alone = build_features(pairs.iloc[:1], s1n.iloc[:1], pooln.iloc[:1], groups)
+    pd.testing.assert_frame_equal(alone, X.iloc[:1])
+
+
+def test_token_freq_missing_and_counts():
+    pairs, s1n, pooln = _toy()
+    X = build_features(pairs, s1n, pooln, ("token_freq",))
+    assert np.isnan(X.loc[6, "freq_name_l"])  # S1-4 has no name
+    assert np.isnan(X.loc[3, "freq_addr_r"]) and np.isnan(X.loc[5, "freq_addr_l"])
+    named = X["freq_name_r"].notna()
+    assert (X.loc[named, "freq_name_r"] >= 1).all()  # the pool record counts itself
+    assert X.loc[0, "freq_name_l"] == 1 and X.loc[1, "freq_name_l"] == 1  # one "acme traders"
+
+
+def test_ctx_idf_rank_gap_and_same_name():
+    s1n = _records(_record("S1-1", "acme cafe", "", "1 main road"))
+    pooln = _records(_record("S2-1", "acme cafe", "", "1 main road"),
+                     _record("S2-2", "acme cafe", "", "9 oak lane"),
+                     _record("S2-3", "zenith cafe", "", "1 main road"))
+    pairs = _pairs(*[("S1-1", f"S2-{i}", 8, 0.5, NAN, NAN) for i in (1, 2, 3)])
+    X = build_features(pairs, s1n, pooln, ("idf", "ctx_idf"))
+    assert X["ctx_rank_idf_name"].tolist() == [1, 1, 3]  # the two exact names tie
+    assert X["ctx_gap_idf_name"].tolist() == pytest.approx(
+        [0.0, 0.0, 1 - X.loc[2, "idf_name_cos"]])
+    assert X["ctx_rank_idf_addr"].tolist() == [1, 3, 1]
+    assert X.loc[1, "ctx_gap_idf_addr"] == pytest.approx(1.0)  # no address token shared
+    assert X["ctx_n_same_name"].tolist() == [2, 2, 2]
+    alone = build_features(pairs, s1n, pooln, ("ctx_idf",))  # computes the cosines itself
+    pd.testing.assert_frame_equal(alone, X[FEATURE_COLUMNS["ctx_idf"]])
+
+
+def test_stats_group_ranges():
+    pairs, s1n, pooln = _toy()
+    X = build_features(pairs, s1n, pooln, tuple(g for g in ALL_GROUPS if g in STATS_GROUPS))
+    unit = X[[*FEATURE_COLUMNS["idf"], "ctx_gap_idf_name", "ctx_gap_idf_addr"]]
+    assert (((unit >= 0) & (unit <= 1)) | unit.isna()).all().all()
+    counts = X[[*FEATURE_COLUMNS["token_freq"], "ctx_n_same_name"]]
+    assert (((counts >= 0) & (counts == counts.round())) | counts.isna()).all().all()
+    ranks = X[["ctx_rank_idf_name", "ctx_rank_idf_addr"]]
+    assert (ranks >= 1).all().all() and (ranks == ranks.round()).all().all()
+
+
+def test_stats_groups_need_pool_statistics():
+    pairs, s1n, pooln = _toy()
+    left = s1n.set_index(C.ENTITY_ID).loc[pairs[C.S1_ID]].reset_index()
+    right = pooln.set_index(C.ENTITY_ID).loc[pairs[C.ENTITY_ID]].reset_index()
+    for g in STATS_GROUPS:
+        with pytest.raises(ValueError, match="needs pool statistics"):
+            REGISTRY[g](pairs, left, right)
+    assert pool_stats(pooln, DEFAULT_GROUPS) is None  # the v001 groups read no statistics
+    with pytest.raises(ValueError, match="pooln lacks columns"):
+        pool_stats(pooln.drop(columns=[C.COUNTRY]), ("idf",))
+
+
+def test_shared_stats_match_whole_build():
+    # pipeline.score features one slice at a time with statistics of the whole pool
+    pairs, s1n, pooln = _toy()
+    groups = ("idf", "ctx_idf", "token_freq")
+    whole = build_features(pairs, s1n, pooln, groups)
+    stats = pool_stats(pooln, groups)
+    parts = [build_features(pairs.iloc[sl], s1n, pooln, groups, stats=stats)
+             for sl in iter_chunks(pairs, 1)]
+    pd.testing.assert_frame_equal(pd.concat(parts), whole)

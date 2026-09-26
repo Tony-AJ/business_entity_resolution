@@ -42,7 +42,7 @@ from .decision import (
     rule_to_json,
 )
 from .evaluate import blocking_report
-from .features import _ALL_INPUTS, FREQ_COLUMNS, build_features, iter_chunks
+from .features import _ALL_INPUTS, FREQ_COLUMNS, build_features, iter_chunks, pool_stats
 from .mock import MockFold
 from .model import Matcher, MatcherParams
 from .pipeline import (
@@ -134,9 +134,10 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     p1 = np.empty(len(pairs), dtype=np.float32)
     keep = np.zeros(len(pairs), dtype=bool)
     parts = []
+    stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None  # once per partition
     for sl in iter_chunks(pairs, cfg.chunk_rows):
         X = build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows)
+                           chunk_rows=cfg.chunk_rows, stats=stats)
         p = stage1.matcher.predict_proba(X)
         k = keep_mask(pairs[C.S1_ID].iloc[sl], p, tcfg.floor, tcfg.max_cands)
         p1[sl], keep[sl] = p, k

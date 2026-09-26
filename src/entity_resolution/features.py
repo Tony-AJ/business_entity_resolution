@@ -14,6 +14,11 @@ pool record of each pair, row for row. Conventions (07 §1):
 * no country feature (the country set is open) and no randomness: two runs are identical;
 * chunks never split a Source 1 group, so no feature depends on ``chunk_rows``.
 
+Some groups (``STATS_GROUPS``) read counts over the whole pool of a partition, which no
+chunk sees: ``pool_stats(pooln)`` computes them once, per country, and ``build_features``
+hands them to every chunk. Only pool records are counted: the pool is complete in every
+setting, while Source 1 is sampled on the fit side (07 §5).
+
 Speed is the main constraint (~25M test pairs): no Python loop touches individual pairs.
 Strings stay in Arrow and go through its C++ kernels; rapidfuzz scores aligned pairs in C++
 threads (``process.cpdist``); token-set overlaps are row-wise products of binary sparse
@@ -23,6 +28,7 @@ runs of equal strings are converted to Python and tokenised only once.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -54,6 +60,15 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     "meta": ["is_s3", "non_latin_r", "len_ratio_name"],
     "pool_context": ["ctx_pool_indegree"],
     "frequency": ["fq_s1_l", "fq_pool_l", "fq_first_pool_l", "fq_pool_r", "fq_s1_r", "core_eq"],
+    "idf": ["idf_name_cos", "idf_name_top", "idf_name_cover_l", "idf_name_cover_r",
+            "idf_addr_cos", "idf_addr_top", "idf_addr_cover_l", "idf_addr_cover_r"],
+    # M3's pool counts of an exact name / address (v040's "frequency" group, renamed on merge:
+    # "frequency" is v101's core-name rates, which saved models already use)
+    "token_freq": ["freq_name_l", "freq_name_r", "freq_addr_l", "freq_addr_r"],
+    "ctx_idf": ["ctx_rank_idf_name", "ctx_gap_idf_name", "ctx_rank_idf_addr",
+                "ctx_gap_idf_addr", "ctx_n_same_name"],
+    "address_extra": ["ad_contain_r", "addr_empty_l", "num_contain_l", "num_contain_r",
+                      "postcode_prefix_eq", "addr_len_ratio"],
 }
 # Per-record columns the frequency group reads; pipeline.add_frequencies adds them to the
 # normalised frames from the whole fold (never from a training sample).
@@ -65,6 +80,9 @@ NAN_FEATURES = frozenset({
     *FEATURE_COLUMNS["numeric"], "ad_token_set", "ad_partial", "ad_ratio", "ad_jaccard",
     "ad_contain", "ctx_gap_name", "ctx_gap_addr", "len_ratio_name",
     "fq_s1_l", "fq_pool_l", "fq_first_pool_l", "fq_pool_r", "fq_s1_r",
+    *FEATURE_COLUMNS["idf"], *FEATURE_COLUMNS["token_freq"], "ctx_gap_idf_name",
+    "ctx_gap_idf_addr",
+    "ad_contain_r", "num_contain_l", "num_contain_r", "postcode_prefix_eq", "addr_len_ratio",
 })
 
 # Normalised columns each group reads: build_features aligns only these to the pairs.
@@ -79,20 +97,40 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "meta": ("name_core", "non_latin"),
     "pool_context": (),
     "frequency": ("name_core", *FREQ_COLUMNS),
+    "idf": ("name_core", "addr_norm", C.COUNTRY),
+    "token_freq": ("name_core", "addr_norm", C.COUNTRY),
+    "ctx_idf": ("name_core", "addr_norm", C.COUNTRY),  # name_core only after the idf group
+    "address_extra": ("addr_norm", "addr_nums", "postcode"),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
 # The order build_features computes groups in (the output order is feature_names'): address
-# before context, which reuses its ad_token_set, and the address-side groups before the
-# name-side ones, so fewer aligned string columns are alive at the same time.
-_COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "context", "name_fuzzy",
-                  "name_tokens", "meta", "pool_context", "frequency")
+# before context and idf before ctx_idf, which reuse their similarities, and the address-side
+# groups before the name-side ones, so fewer aligned string columns are alive at the same time.
+_COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "address_extra", "context", "idf",
+                  "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "meta", "pool_context",
+                  "frequency")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
-# group ranks candidates on the address group's ad_token_set).
+# groups rank candidates on the address group's ad_token_set and the idf group's cosines).
 _INDEGREE = "ctx_pool_indegree"
 _AD_TOKEN_SET = "ad_token_set"
+_IDF_NAME, _IDF_ADDR = "idf_name_cos", "idf_addr_cos"
+_CARRY: dict[str, tuple[str, tuple[str, ...]]] = {  # group -> (consumer group, columns)
+    "address": ("context", (_AD_TOKEN_SET,)),
+    "idf": ("ctx_idf", (_IDF_NAME, _IDF_ADDR)),
+}
+
+# Pool statistics each group reads, as (normalised column, kind): "tokens" counts in how many
+# pool records each token occurs (document frequency), "values" how many records hold each
+# whole string.
+_STATS_NEEDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "idf": (("name_core", "tokens"), ("addr_norm", "tokens")),
+    "ctx_idf": (("name_core", "tokens"), ("addr_norm", "tokens")),
+    "token_freq": (("name_core", "values"), ("addr_norm", "values")),
+}
+STATS_GROUPS = frozenset(_STATS_NEEDS)
 
 # (scorer, divisor mapping its range to [0, 1]). All are symmetric and score equal strings at
 # their maximum, which _fuzzy relies on to skip identical pairs.
@@ -214,14 +252,15 @@ def _fuzzy(left: pa.Array, right: pa.Array, scorers: Sequence[Scorer]) -> list[n
     return outs
 
 
-def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
-    """Distinct-token overlap of aligned space-separated strings.
+def _token_matrix(left: pa.Array, right: pa.Array
+                  ) -> tuple[sp.csr_array, pa.Array, np.ndarray, np.ndarray, np.ndarray]:
+    """Binary string x token matrix of aligned space-separated strings (set semantics).
 
-    Returns per pair ``(common, n_left, n_right, first_left, first_right)``: distinct tokens
-    shared, distinct tokens on each side, and the vocabulary code of each side's first token
-    (-1 for an empty string; codes compare across sides). Every run of equal strings becomes
-    one row of a binary CSR matrix over a vocabulary shared by both sides; ``common`` is the
-    row-wise size of the elementwise product of the two sides' rows.
+    Every run of equal left strings (the S1 record repeats once per candidate) and every
+    right string becomes one CSR row over a vocabulary shared by both sides. Returns
+    ``(matrix, vocabulary, left_row, right_row, first)``: the matrix, its token strings, the
+    row of each pair's left and right string, and the vocabulary code of each row's first
+    token (-1 for an empty string; codes compare across sides).
     """
     docs_l, run_l = _runs(left, repeats=True)
     docs_r, run_r = _runs(right, repeats=False)
@@ -245,10 +284,141 @@ def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
                        shape=(len(docs), max(len(vocab.dictionary), 1)))
     mat.sum_duplicates()  # sorts each row and merges repeated tokens: set semantics
     mat.data[:] = 1
+    return mat, vocab.dictionary, run_l, run_r + len(docs_l), first
+
+
+def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
+    """Distinct-token overlap of aligned space-separated strings.
+
+    Returns per pair ``(common, n_left, n_right, first_left, first_right)``: distinct tokens
+    shared, distinct tokens on each side, and the vocabulary code of each side's first token
+    (-1 for an empty string; codes compare across sides). ``common`` is the row-wise size of
+    the elementwise product of the two sides' rows of ``_token_matrix``.
+    """
+    mat, _, rows_l, rows_r, first = _token_matrix(left, right)
     size = np.diff(mat.indptr)
-    rows_l, rows_r = run_l, run_r + len(docs_l)
     common = np.diff(mat[rows_l].multiply(mat[rows_r]).indptr)  # stored entries = shared tokens
     return common, size[rows_l], size[rows_r], first[rows_l], first[rows_r]
+
+
+def _lookup(values: pa.Array, table: tuple[pa.Array, np.ndarray]) -> np.ndarray:
+    """Count of each value in a ``(distinct values, counts)`` table; 0 for an unseen value."""
+    keys, counts = table
+    pos = pc.fill_null(pc.index_in(values, value_set=keys), -1).to_numpy()
+    return np.append(counts, 0)[pos]  # -1 picks the appended 0
+
+
+def _idf_overlap(left: pa.Array, right: pa.Array, df: tuple[pa.Array, np.ndarray],
+                 n_docs: int) -> tuple[np.ndarray, ...]:
+    """IDF-weighted token agreement of aligned space-separated strings, one float32 per pair.
+
+    Tokens weigh idf = ln((1 + N) / (1 + df)) + 1 (binary term weights, set semantics), with
+    df the number of the N pool records holding the token (``pool_stats``). Returns
+    ``(cosine, top, cover_left, cover_right)``: the cosine of the two idf vectors, the largest
+    shared idf over the largest possible one (0 when nothing is shared), and the share of each
+    side's idf mass found on the other side. All four are NaN when either string is empty.
+    """
+    mat, vocab, rows_l, rows_r, _ = _token_matrix(left, right)
+    idf = np.log((1.0 + n_docs) / (1.0 + _lookup(vocab, df))) + 1.0
+    doc = np.repeat(np.arange(mat.shape[0]), np.diff(mat.indptr))
+    weight = idf[mat.indices]
+    mass = np.bincount(doc, weights=weight, minlength=mat.shape[0])
+    norm2 = np.bincount(doc, weights=weight * weight, minlength=mat.shape[0])
+    shared = mat[rows_l].multiply(mat[rows_r])  # one row per pair holding its shared tokens
+    n = len(rows_l)
+    lengths = np.diff(shared.indptr)
+    pair = np.repeat(np.arange(n), lengths)
+    weight = idf[shared.indices]
+    s_mass = np.bincount(pair, weights=weight, minlength=n)
+    s_norm2 = np.bincount(pair, weights=weight * weight, minlength=n)
+    s_top = np.zeros(n)
+    hit = lengths > 0
+    if hit.any():  # rows are contiguous in CSR order, so reduceat on the hit rows' starts
+        s_top[hit] = np.maximum.reduceat(weight, shared.indptr[:-1][hit])
+    valid = (mass[rows_l] > 0) & (mass[rows_r] > 0)
+    scores = (_ratio(s_norm2, np.sqrt(norm2[rows_l] * norm2[rows_r]), valid),
+              _ratio(s_top, np.full(n, np.log(1.0 + n_docs) + 1.0), valid),
+              _ratio(s_mass, mass[rows_l], valid), _ratio(s_mass, mass[rows_r], valid))
+    for score in scores:  # float rounding can push a full match a hair above 1
+        np.minimum(score, np.float32(1.0), out=score)
+    return scores
+
+
+# ---------------------------------------------------------- pool statistics ----
+_NO_TABLE = (pa.array([], pa.large_string()), np.zeros(0, dtype=np.int64))
+
+
+@dataclass(frozen=True)
+class CountryStats:
+    """Counts over the pool records of one country (07 §4: partition-wide, computed once).
+
+    ``n_docs`` is the number of pool records; ``tables`` maps (column, kind) to
+    ``(distinct values, counts)``: for kind "tokens", in how many records each token of the
+    column occurs; for kind "values", how many records hold each whole non-empty string.
+    """
+
+    n_docs: int
+    tables: dict[tuple[str, str], tuple[pa.Array, np.ndarray]] = field(default_factory=dict)
+
+    def table(self, column: str, kind: str) -> tuple[pa.Array, np.ndarray]:
+        """The (values, counts) table of ``column``/``kind``; empty when not computed."""
+        return self.tables.get((column, kind), _NO_TABLE)
+
+
+PoolStats = dict[str, CountryStats]  # country -> statistics of its pool records
+
+
+def _doc_freq(values: pa.ChunkedArray, block: int = 1_000_000) -> tuple[pa.Array, np.ndarray]:
+    """Distinct tokens of space-separated strings and in how many strings each occurs.
+
+    Works through ``block`` strings at a time (an address pool holds ~8 tokens per record),
+    counting each token once per string, then sums the blocks' counts per token in Arrow.
+    """
+    keys, counts = [], []
+    for start in range(0, len(values), block):
+        docs = values.slice(start, block).combine_chunks()
+        docs = docs.filter(pc.greater(pc.binary_length(docs), 0))
+        tokens = pc.split_pattern(docs, " ")
+        vocab = pc.dictionary_encode(pc.list_flatten(tokens))
+        v = max(len(vocab.dictionary), 1)
+        doc = np.repeat(np.arange(len(docs), dtype=np.int64),
+                        pc.list_value_length(tokens).to_numpy())
+        pairs = np.unique(doc * v + _np(vocab.indices))  # one entry per (string, token)
+        df = np.bincount(pairs % v, minlength=len(vocab.dictionary))
+        keep = (df > 0) & _np(pc.not_equal(vocab.dictionary, ""))  # "" from stray spaces
+        keys.append(vocab.dictionary.filter(pa.array(keep)))
+        counts.append(df[keep])
+    if not keys:
+        return _NO_TABLE
+    total = pa.table({"k": pa.concat_arrays(keys), "n": np.concatenate(counts)}).group_by(
+        "k").aggregate([("n", "sum")])
+    return total["k"].combine_chunks(), total["n_sum"].to_numpy()
+
+
+def _value_counts(values: pa.ChunkedArray) -> tuple[pa.Array, np.ndarray]:
+    """Distinct non-empty strings and how many records hold each."""
+    counted = pc.value_counts(values)
+    keys, counts = counted.field("values"), counted.field("counts").to_numpy()
+    keep = pc.greater(pc.binary_length(keys), 0)
+    return keys.filter(keep), counts[_np(keep)]
+
+
+def _by_country(left: pd.DataFrame, stats: PoolStats | None,
+                group: str) -> Iterator[tuple[np.ndarray, CountryStats]]:
+    """Row positions of the chunk per country, with that country's pool statistics.
+
+    A pair never crosses countries (blocking partitions by country), so the S1 side's
+    country is the pair's. A country missing from ``stats`` gets empty statistics.
+    """
+    if stats is None:
+        raise ValueError(f"group {group!r} needs pool statistics: call build_features, or "
+                         "pass stats=pool_stats(pooln)")
+    codes = pc.dictionary_encode(_arrow(left[C.COUNTRY]))
+    idx = _np(codes.indices)
+    for code, country in enumerate(codes.dictionary.to_pylist()):
+        rows = np.flatnonzero(idx == code)
+        if len(rows):
+            yield rows, stats.get(country, CountryStats(0))
 
 
 def _group_starts(ids: pa.Array | pa.ChunkedArray) -> np.ndarray:
@@ -513,6 +683,142 @@ def _frequency(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> 
     })
 
 
+def _idf(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
+         stats: PoolStats | None = None) -> pd.DataFrame:
+    """IDF-weighted token agreement for every pair (C2, TRACKER #16).
+
+    The blocking cosines (sim_*) exist only for the pairs their pass proposed; these exist
+    for every pair. A token weighs idf = ln((1 + N) / (1 + df)) + 1, df counted over the pool
+    records of the pair's country (``pool_stats``), so a shared rare token ("zenith", a
+    house number) counts far more than a shared "cafe" or "road".
+
+    idf_name_cos                        cosine of the name_core idf vectors
+    idf_name_top                        largest shared idf / largest possible idf; 0 if none
+    idf_name_cover_l, idf_name_cover_r  share of that side's idf mass found on the other
+    idf_addr_*                          the same on addr_norm
+    All are NaN when either string is empty.
+    """
+    n = len(pairs)
+    out = {c: np.full(n, np.nan, dtype=np.float32) for c in FEATURE_COLUMNS["idf"]}
+    fields = {column: (_arrow(left[column]), _arrow(right[column]))
+              for column in ("name_core", "addr_norm")}
+    for rows, country in _by_country(left, stats, "idf"):
+        at = pa.array(rows)
+        for column, prefix in (("name_core", "idf_name"), ("addr_norm", "idf_addr")):
+            col_l, col_r = fields[column]
+            scores = _idf_overlap(col_l.take(at), col_r.take(at),
+                                  country.table(column, "tokens"), country.n_docs)
+            for suffix, values in zip(("cos", "top", "cover_l", "cover_r"), scores,
+                                      strict=True):
+                out[f"{prefix}_{suffix}"][rows] = values
+    return _frame(pairs.index, out)
+
+
+def _token_freq(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
+                stats: PoolStats | None = None) -> pd.DataFrame:
+    """How many pool records of the country share this exact name or address (C5, #17).
+
+    A name that many pool records hold is weak evidence on its own: most of them are other
+    businesses (48% of reference names collide, 01 §2). Counts come from the pool only,
+    which is complete in every setting, unlike the in-degree (ctx_pool_indegree).
+
+    freq_name_l   pool records whose name_core equals the S1 name_core (0 when none)
+    freq_name_r   pool records whose name_core equals this pool record's, itself included
+    freq_addr_l, freq_addr_r   the same on addr_norm (shared buildings, malls)
+    NaN where that side's string is empty.
+    """
+    n = len(pairs)
+    out = {c: np.full(n, np.nan, dtype=np.float32) for c in FEATURE_COLUMNS["token_freq"]}
+    fields = {column: (_arrow(left[column]), _arrow(right[column]))
+              for column in ("name_core", "addr_norm")}
+    for rows, country in _by_country(left, stats, "token_freq"):
+        at = pa.array(rows)
+        for column, prefix in (("name_core", "freq_name"), ("addr_norm", "freq_addr")):
+            table = country.table(column, "values")
+            for side, values in zip(("l", "r"), fields[column], strict=True):
+                values = values.take(at)
+                out[f"{prefix}_{side}"][rows] = np.where(_empty(values), np.nan,
+                                                         _lookup(values, table))
+    return _frame(pairs.index, out)
+
+
+def _ctx_idf(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
+             stats: PoolStats | None = None) -> pd.DataFrame:
+    """Competition inside the S1 group on the idf cosines, which exist for every pair (C5).
+
+    The context group ranks on sim_name_char, NaN for pairs the name pass did not propose;
+    these ranks see every candidate of the group.
+
+    ctx_rank_idf_name, ctx_gap_idf_name  rank of idf_name_cos in the group (1 = best, ties
+                                         share the best rank, NaN last) and the group best
+                                         minus this value (NaN where this value is NaN)
+    ctx_rank_idf_addr, ctx_gap_idf_addr  the same on idf_addr_cos
+    ctx_n_same_name                      candidates of the group holding the S1's exact
+                                         non-empty name_core: the exact-name decoys it faces
+
+    ``pairs`` must hold whole S1 groups (iter_chunks guarantees it). The cosines come from
+    the chunk when build_features already computed the idf group, else from here.
+    """
+    n = len(pairs)
+    if n == 0:  # reduceat rejects empty input
+        return _frame(pairs.index, {c: np.zeros(0) for c in FEATURE_COLUMNS["ctx_idf"]})
+    starts = _group_starts(_arrow(pairs[C.S1_ID]))
+    group = np.repeat(np.arange(len(starts)), np.diff(np.append(starts, n)))
+    if _IDF_NAME in pairs.columns:
+        name = pairs[_IDF_NAME].to_numpy(dtype=np.float32)
+        addr = pairs[_IDF_ADDR].to_numpy(dtype=np.float32)
+    else:
+        idf = _idf(pairs, left, right, stats=stats)
+        name, addr = idf[_IDF_NAME].to_numpy(), idf[_IDF_ADDR].to_numpy()
+    rank_name, gap_name = _rank_and_gap(name, starts, group)
+    rank_addr, gap_addr = _rank_and_gap(addr, starts, group)
+    same = _eq(_arrow(left["name_core"]), _arrow(right["name_core"]))[0]
+    return _frame(pairs.index, {
+        "ctx_rank_idf_name": rank_name,
+        "ctx_gap_idf_name": gap_name,
+        "ctx_rank_idf_addr": rank_addr,
+        "ctx_gap_idf_addr": gap_addr,
+        "ctx_n_same_name": np.add.reduceat(same.astype(np.int64), starts)[group],
+    })
+
+
+def _address_extra(pairs: pd.DataFrame, left: pd.DataFrame,
+                   right: pd.DataFrame) -> pd.DataFrame:
+    """Address evidence the address and numeric groups leave out (plan groups C3, C4).
+
+    ad_contain_r        share of the pool address tokens found in the S1 address: the reverse
+                        of ad_contain, so components only the pool has (a suite, a landmark)
+                        show up
+    addr_empty_l        the S1 address is empty: name-only evidence (mirrors addr_empty_r)
+    num_contain_l       share of the S1 address numbers found among the pool's: a number one
+                        side drops keeps a pair plausible, a changed number does not
+    num_contain_r       share of the pool address numbers found among the S1's
+    postcode_prefix_eq  equal first 3 postcode characters: the same postal area even when a
+                        typo in the last digits or a neighbouring code breaks postcode_eq
+    addr_len_ratio      fewer / more distinct addr_norm tokens (a bare city against a full
+                        street address)
+    Tokens are counted once (sets, as in ad_contain). Each share and postcode_prefix_eq is NaN
+    when either side lacks the field (no address, no number, no postcode); the flag is 0/1.
+    """
+    addr_l, addr_r = _arrow(left["addr_norm"]), _arrow(right["addr_norm"])
+    common, n_l, n_r, _, _ = _token_sets(addr_l, addr_r)
+    both = (n_l > 0) & (n_r > 0)
+    num_common, num_l, num_r, _, _ = _token_sets(_arrow(left["addr_nums"]),
+                                                 _arrow(right["addr_nums"]))
+    nums_both = (num_l > 0) & (num_r > 0)
+    # a slice of a non-empty postcode is non-empty, so _eq's "both" is "both have a postcode"
+    prefix_eq, prefix_both = _eq(pc.utf8_slice_codeunits(_arrow(left["postcode"]), 0, 3),
+                                 pc.utf8_slice_codeunits(_arrow(right["postcode"]), 0, 3))
+    return _frame(pairs.index, {
+        "ad_contain_r": _ratio(common, n_r, both),
+        "addr_empty_l": _empty(addr_l),
+        "num_contain_l": _ratio(num_common, num_l, nums_both),
+        "num_contain_r": _ratio(num_common, num_r, nums_both),
+        "postcode_prefix_eq": _tristate(prefix_eq, prefix_both),
+        "addr_len_ratio": _ratio(np.minimum(n_l, n_r), np.maximum(n_l, n_r), both),
+    })
+
+
 REGISTRY: dict[str, FeatureGroup] = {
     "blocking": _blocking,
     "name_fuzzy": _name_fuzzy,
@@ -523,14 +829,49 @@ REGISTRY: dict[str, FeatureGroup] = {
     "context": _context,
     "meta": _meta,
     "pool_context": _pool_context,
-    "frequency": _frequency,
+    "frequency": _frequency,  # v101: needs pipeline.add_frequencies' FREQ_COLUMNS
+    "idf": _idf,  # STATS_GROUPS also take stats=, the partition's pool statistics
+    "token_freq": _token_freq,
+    "ctx_idf": _ctx_idf,  # computed after idf, whose cosines it ranks
+    "address_extra": _address_extra,
 }
 
-# pool_context is opt-in: training pairs come from sampled S1 entities (07 §5), so an
-# in-degree counted on them is biased low against val and test, where every S1 competes.
-# frequency is opt-in because it needs the FREQ_COLUMNS that pipeline.add_frequencies adds.
-DEFAULT_GROUPS: tuple[str, ...] = tuple(g for g in REGISTRY
-                                        if g not in ("pool_context", "frequency"))
+# The v001 feature set (47 features), kept fixed so logged versions stay reproducible; a
+# version adds groups explicitly (PipelineConfig.feature_groups). pool_context is opt-in:
+# training pairs come from sampled S1 entities (07 §5), so an in-degree counted on them is
+# biased low against val and test, where every S1 competes; frequency is opt-in because it
+# needs the FREQ_COLUMNS that pipeline.add_frequencies adds.
+DEFAULT_GROUPS: tuple[str, ...] = ("blocking", "name_fuzzy", "name_tokens", "legal", "numeric",
+                                   "address", "context", "meta")
+
+
+def pool_stats(pooln: pd.DataFrame, groups: Sequence[str] = tuple(REGISTRY)
+               ) -> PoolStats | None:
+    """Pool statistics the ``STATS_GROUPS`` among ``groups`` read; None when none of them does.
+
+    Counted per country, so a fold holding two countries gives every record the counts of
+    its own country, exactly like the per-country test partitions (``pipeline.run_test``).
+    Pass the whole pool of a partition or fold: build_features computes this once and hands
+    it to every chunk, and ``pipeline.score`` computes it once for all its chunks.
+    """
+    needs = sorted({need for g in groups for need in _STATS_NEEDS.get(g, ())})
+    if not needs:
+        return None
+    lacking = [c for c in dict.fromkeys([C.COUNTRY, *(col for col, _ in needs)])
+               if c not in pooln.columns]
+    if lacking:
+        raise ValueError(f"pooln lacks columns {lacking} for the pool statistics")
+    country = _column(pooln[C.COUNTRY])
+    stats: PoolStats = {}
+    for name in sorted(pc.unique(country).to_pylist()):
+        mask = pc.equal(country, name)
+        tables = {}
+        for column, kind in needs:
+            values = _column(pooln[column]).filter(mask)
+            tables[(column, kind)] = (_doc_freq(values) if kind == "tokens"
+                                      else _value_counts(values))
+        stats[name] = CountryStats(int(pc.sum(mask).as_py() or 0), tables)
+    return stats
 
 
 # ----------------------------------------------------------------- building ----
@@ -583,6 +924,8 @@ def _inputs(group: str, groups: tuple[str, ...]) -> tuple[str, ...]:
     """Normalised columns ``group`` reads when computed together with ``groups``."""
     if group == "context" and "address" in groups:
         return ()  # ad_token_set comes from the address group
+    if group == "ctx_idf" and "idf" in groups:
+        return ("name_core",)  # the cosines come from the idf group
     return _INPUTS.get(group, _ALL_INPUTS)
 
 
@@ -595,7 +938,8 @@ def _aligned(columns: dict[str, pa.ChunkedArray], n: int) -> pd.DataFrame:
 
 def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
                    groups: Sequence[str] = DEFAULT_GROUPS,
-                   chunk_rows: int = 2_000_000) -> pd.DataFrame:
+                   chunk_rows: int = 2_000_000,
+                   stats: PoolStats | None = None) -> pd.DataFrame:
     """Feature frame of the candidate ``pairs``: float32, index ``pairs.index``.
 
     ``pairs`` holds ``PAIR_COLUMNS``, grouped by ``source1_entity_id``; ``s1n`` and ``pooln``
@@ -603,8 +947,11 @@ def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
     runs in chunks of about ``chunk_rows`` pairs that never split an S1 group, and fills one
     preallocated float32 array (4 bytes x features x pairs: at test scale, call it per slice
     of ``iter_chunks`` and score each). The pool in-degree (``pool_context``) is counted over
-    all of ``pairs``, so pass a whole partition or fold when requesting it. Raises
-    ValueError for an unknown group, a missing column or a pair id absent from the records.
+    all of ``pairs``, so pass a whole partition or fold when requesting it. The
+    ``STATS_GROUPS`` read ``stats``, computed here from ``pooln`` when not given: a caller
+    featuring one partition slice by slice computes ``pool_stats(pooln)`` once and passes it.
+    Raises ValueError for an unknown group, a missing column or a pair id absent from the
+    records.
     """
     groups = tuple(groups)
     names = feature_names(groups)
@@ -620,12 +967,14 @@ def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
             raise ValueError(f"{label} lacks normalised columns {lacking}")
     out = np.empty((len(pairs), len(names)), dtype=np.float32)
     if len(pairs):
-        _fill(out, pairs, s1n, pooln, groups, chunk_rows)
+        if stats is None:
+            stats = pool_stats(pooln, groups)
+        _fill(out, pairs, s1n, pooln, groups, chunk_rows, stats)
     return pd.DataFrame(out, index=pairs.index, columns=names, copy=False)
 
 
 def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
-          groups: tuple[str, ...], chunk_rows: int) -> None:
+          groups: tuple[str, ...], chunk_rows: int, stats: PoolStats | None) -> None:
     """Compute ``groups`` chunk by chunk into ``out`` (one row per pair, feature_names order).
 
     Per chunk, each normalised column is aligned to the pairs once (an Arrow take), handed to
@@ -658,13 +1007,15 @@ def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.Dat
                     live_l[c], live_r[c] = s1_cols[c].take(at_l), pool_cols[c].take(at_r)
             left = _aligned({c: live_l[c] for c in inputs[g]}, len(chunk))
             right = _aligned({c: live_r[c] for c in inputs[g]}, len(chunk))
-            feats = REGISTRY[g](chunk, left, right)
+            extra = {"stats": stats} if g in STATS_GROUPS else {}
+            feats = REGISTRY[g](chunk, left, right, **extra)
             if list(feats.columns) != FEATURE_COLUMNS[g]:
                 raise RuntimeError(f"group {g!r} returned {list(feats.columns)}, "
                                    f"expected {FEATURE_COLUMNS[g]}")
             out[sl, where[g]] = feats.to_numpy(dtype=np.float32)
-            if g == "address" and "context" in groups:
-                chunk = chunk.assign(**{_AD_TOKEN_SET: feats[_AD_TOKEN_SET].to_numpy()})
+            consumer, handed = _CARRY.get(g, ("", ()))
+            if consumer in groups:  # a later group of this chunk reuses these columns
+                chunk = chunk.assign(**{c: feats[c].to_numpy() for c in handed})
             for c in inputs[g]:
                 if last[c] == i:  # no later group reads it
                     del live_l[c], live_r[c]

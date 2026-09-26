@@ -27,7 +27,7 @@ import xgboost as xgb
 
 from . import config as C
 from .data import isin
-from .features import build_features, feature_names, iter_chunks
+from .features import build_features, feature_names, iter_chunks, pool_stats
 from .mock import MockFold
 from .model import Matcher, MatcherParams, _tune_scores, xgb_params
 from .pipeline import (
@@ -78,10 +78,11 @@ def write_chunks(cfg: PipelineConfig, train: Fold, ids: pd.Index, token_map: dic
         s1n, pooln = _with_frequencies(cfg, s1n, pooln, s1_all)
         del s1_all
         pairs = prepare(s1n, pooln, cfg, _tag(f"{tag}_{country}", s1n, pooln, token_map))
+        stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None
         for k, sl in enumerate(iter_chunks(pairs, cfg.chunk_rows)):
             part = pairs.iloc[sl]
             X = build_features(part, s1n, pooln, groups=cfg.feature_groups,
-                               chunk_rows=cfg.chunk_rows)
+                               chunk_rows=cfg.chunk_rows, stats=stats)
             y = label_pairs(part, train.pairs)["label"].to_numpy(np.int8)
             stop = hash_unit(part[C.S1_ID], STOP_SEED)
             stem = work_dir / f"{country}_{k:04d}"

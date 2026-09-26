@@ -4,13 +4,14 @@ Who is doing what, per the team split in [docs/plan/03_TEAM_WORKING_STRATEGY.md]
 Update your own rows when a task changes state and commit the change with your work
 (`docs(tracker): ...`). Scores live in `experiments/experiments.csv`; uploads in
 [LEADERBOARD.md](LEADERBOARD.md). The version table below mirrors them for a quick read.
+Per-member detail: [M3 features](docs/trackers/M3_TRACKER.md).
 
 Status: `todo` · `doing` · `done` · `blocked` · `dropped`. Owners: M1 lead / integration, M2
 normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision + errors.
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 12:30 IST (day 2).
+Last updated: 2026-09-26 13:00 IST (day 2); M3's feature groups (PR #8) merged into main.
 
 ## Day 1 — Fri 25 Sep
 
@@ -86,6 +87,9 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 50 | Tight mock: false merges ×1.45 + offset, calibrated on uploads #2–#3; `fp_weight` tuning | M1 | INT / E2 | 11:15 | done | est_public reproduces both public scores |
 | 51 | v107: v104's two-stage + rule tuned on the tight mock (+ expected-F0.5 candidate); **upload #4** | M1 | E2 / E5 | 12:15 | done | est_public **0.9659** (mock 0.9745); expected-F0.5 decoding won; 5 min from caches. Upload pending |
 | 52 | France: département names (Nord, Gironde, Loire-Atlantique, Pas-de-Calais: 27 % of French address components) mapped to region codes, rules v3 | M1 | B | 12:15 | done | Committed during v105; v106 is the first version with it |
+| 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | – | done | `idf` (8) + `ctx_idf` (5) groups, idf per country over the pool (`pool_stats`); v040 KEEP, val 0.9844 → 0.9870 with #17 and #17a |
+| 17 | Context features: name frequency, pool-side competition | M3 | C5 | – | done | `frequency` group (4; renamed `token_freq` on merge to main, where `frequency` is v101's core-name rates): pool records of the country sharing the exact name / address; worth +0.0004 (v040 vs v041), all recall; in-degree stays opt-in (S1 sampling bias). Top loss in the v001 dry run: exact-name pool records with empty addresses score ~0.05 because the model cannot tell a rare name from a common one |
+| 17a | Extra address evidence: reverse containment, numbers, postcode prefix | M3 | C3–C4 | – | done | `address_extra` group (6); 5.6 % of v040's gain, `num_contain_l` #7 |
 
 ## Day 3 — Sun 27 Sep
 
@@ -104,3 +108,5 @@ explain the gap (test's same-name mix ≈ the mock's).
 |---|---|---|---|---|---|---|---|---|
 | v101 | M1 | C5 | v001 + core-name frequency features; LightGBM cap 4000 | 0.9858 | – | 0.9906 | 0.955 | submitted |
 | v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | – | 0.9906 | 0.954 | submitted |
+| v041 | M3 | C2 | v040 without frequency (ablation) | 0.9866 | – | 0.9906 | – | kept |
+| v040 | M3 | C2 | v001 + idf, frequency (now `token_freq`), ctx_idf, address_extra groups (70 features) | 0.9870 | – | 0.9906 | – | kept |

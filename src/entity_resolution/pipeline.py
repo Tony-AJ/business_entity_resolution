@@ -51,7 +51,7 @@ from .decision import (
     tune,
 )
 from .evaluate import blocking_report, entity_counts, entity_tight_from_counts, score_pairs
-from .features import DEFAULT_GROUPS, build_features, iter_chunks
+from .features import DEFAULT_GROUPS, build_features, iter_chunks, pool_stats
 from .mock import FP_WEIGHT, PUBLIC_OFFSET, MockFold
 from .model import Matcher, MatcherParams
 from .normalize import (
@@ -333,11 +333,16 @@ def _with_frequencies(cfg: PipelineConfig, s1n: pd.DataFrame, pooln: pd.DataFram
 # ---------------------------------------------------------------- scoring ----
 def score(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame, matcher: Matcher,
           cfg: PipelineConfig) -> pd.DataFrame:
-    """SCORED_COLUMNS for every candidate pair, featured and predicted chunk by chunk."""
+    """SCORED_COLUMNS for every candidate pair, featured and predicted chunk by chunk.
+
+    Pool statistics (idf, name frequency) are counted once over the whole ``pooln`` and
+    shared by every chunk, so they never depend on the chunking.
+    """
     prob = np.empty(len(pairs), dtype=np.float32)
+    stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None
     for sl in iter_chunks(pairs, cfg.chunk_rows):
         X = build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows)
+                           chunk_rows=cfg.chunk_rows, stats=stats)
         prob[sl] = matcher.predict_proba(X)
         del X
     scored = pairs[[C.S1_ID, C.ENTITY_ID]].copy()

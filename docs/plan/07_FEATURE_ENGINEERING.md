@@ -141,3 +141,37 @@ consecutive versions.
 Consumes `PAIR_COLUMNS` and the normalised columns listed in 05 §11. Produces the frame the
 model trains and predicts on; the model stores `feature_names` and refuses a mismatch, so
 adding a feature means a new model version. New dependency: `rapidfuzz==3.14.6` (MIT).
+
+## 10. V2 groups (opt-in, v040+)
+
+`DEFAULT_GROUPS` stays the v001 set (47 features: every §2 group except `pool_context`), so
+logged versions reproduce. A version adds groups through `PipelineConfig.feature_groups`;
+`feature_names` then appends their columns after the v001 ones.
+
+| Group (plan) | Feature | Definition | Missing |
+|---|---|---|---|
+| idf (C2, #16) | `idf_name_cos` | cosine of binary-tf idf vectors of the `name_core` tokens, for every pair (the `sim_*` cosines exist only for pairs their pass proposed) | NaN if either empty |
+| | `idf_name_top` | largest shared idf / largest possible idf (a shared rare token) | 0 if none shared |
+| | `idf_name_cover_l`, `idf_name_cover_r` | share of that side's idf mass found on the other side | NaN if either empty |
+| | `idf_addr_*` | the same four on `addr_norm` | NaN if either empty |
+| token_freq (C5, #17; `frequency` in v040, renamed on merge) | `freq_name_l`, `freq_name_r` | pool records of the country whose `name_core` equals the S1's / the pool record's (decoy risk) | NaN if that side empty |
+| | `freq_addr_l`, `freq_addr_r` | the same on `addr_norm` (shared buildings) | NaN if that side empty |
+| ctx_idf (C5) | `ctx_rank_idf_name`, `ctx_gap_idf_name` | rank and gap of `idf_name_cos` inside the S1 group (sees every candidate) | gap NaN where the cosine is |
+| | `ctx_rank_idf_addr`, `ctx_gap_idf_addr` | the same on `idf_addr_cos` | |
+| | `ctx_n_same_name` | candidates of the group with the S1's exact non-empty `name_core` | 0 |
+| address_extra (C3/C4) | `ad_contain_r` | share of the pool address tokens found in the S1 address | NaN if either empty |
+| | `addr_empty_l` | S1 address empty | 0/1 |
+| | `num_contain_l`, `num_contain_r` | share of one side's address numbers found on the other | NaN if either has none |
+| | `postcode_prefix_eq` | equal first 3 postcode characters | NaN if either empty |
+| | `addr_len_ratio` | fewer / more distinct address tokens | NaN if either empty |
+
+idf = ln((1 + N) / (1 + df)) + 1, with df the number of the N pool records of the pair's
+country holding the token. idf, token_freq and ctx_idf read these partition-wide counts
+(`STATS_GROUPS`): `pool_stats(pooln)` computes them once per country, `build_features`
+hands them to every chunk and `pipeline.score` computes them once for all its chunks, so
+no value depends on `chunk_rows`. Counting per country makes a mixed val fold give each
+record the values of its own country, as the per-country test partitions do. Only pool
+records are counted: the pool is complete in every setting, while S1 is sampled on the fit
+side (the bias that keeps `ctx_pool_indegree` opt-in). Cost on 600k synthetic pairs: idf
+0.33M pairs/s, token_freq 0.32M pairs/s, address_extra ~0.65M pairs/s, against 0.07M
+pairs/s for the v001 groups; `pool_stats` ~5 s per million pool records.
