@@ -18,7 +18,7 @@ changes and commit it with the work (`docs(tracker): ...`).
 
 Status: `done` · `doing` · `todo` · `blocked` · `skipped`.
 
-Last updated: 2026-09-26 21:00 IST (day 2).
+Last updated: 2026-09-26 22:02 IST (day 2).
 
 ## Snapshot
 
@@ -28,8 +28,8 @@ Last updated: 2026-09-26 21:00 IST (day 2).
   est_public **0.9679**, v043 (M3's groups in stage 1) **0.9678**, against **0.9659** for the
   same pipeline without them (the logged v107, reproduced exactly on this machine). Both KEEP.
   v043's stage 1 alone scores plain val **0.9876**, the best single-stage model so far.
-- **Done:** 58 of 64 tasks. Every feature of M3's plan is built and measured (v040–v044); v042's test files are written and checked. Open: 5 (push and PR, status posts, day-3 PR window and freeze, M1's upload decision); 1 skipped with its reason (the C1–C5 ablation ladder).
-- **Next:** push `feat/m3-stage2-features` and open its PR when the user says so; M1 runs the organisers' validator on `submissions/v042/` and decides the upload.
+- **Done:** 60 of 65 tasks. Every feature of M3's plan is built and measured (v040–v044); v042's test files are written and checked; M2's branch is on main (PR #10). Open: 4 (status posts, day-3 PR window and freeze, M1's upload decision); 1 skipped with its reason (the C1–C5 ablation ladder).
+- **Next:** merge PR #9 into main (reviewed, 333 tests, no conflicts left); M1 runs the organisers' validator on `submissions/v042/` and decides the upload.
 
 ## 1. Module deliverables (03 §3, 02 §5)
 
@@ -124,9 +124,10 @@ logged numbers exactly, so the deltas are the features' effect.
 | I-06 | TRACKER.md rows 16, 17, 17a–17e and the version table | done | `29fdd6a`, `2124541` |
 | I-07 | 13:00 / 21:00 IST status posts (13 §6); lines below | todo | |
 | I-08 | Remove the finished agent worktree and merged branches | done | worktree and 4 merged local branches removed |
-| I-09 | Push `feat/m3-stage2-features` and open its PR (14 §4 checklist) | todo | waits for the user's go-ahead (CLAUDE.md: push only when asked) |
+| I-09 | Push `feat/m3-stage2-features` and open its PR (14 §4 checklist) | done | PR #9; main merged in twice (`97a1c01`, then `e379bb8` with PR #10's phonetic group); code review: no findings; waits for the merge into main |
 | I-10 | Environment: `xgboost==3.1.1` (main's pin) installed in this venv; `nvidia-nccl-cu12` is Linux-only and not needed on Windows | done | GPU training checked on the RTX 2050 |
 | I-11 | `make` on Windows: the targets called `.venv/bin/...`; `VENV_BIN` picks `.venv/Scripts` when it exists, `make nb` takes `NB_KERNEL` | done | `20486a4`: `make lint test` runs in this clone |
+| I-12 | M2's `newfeatureblocking` onto main (user request): conflicts resolved, `pool_chunk` made opt-in, `exact_pass` NA keys, two perf commits (TF-IDF copy, phonetic 2.7x), review fix (address phonetic features on `addr_non_latin`) | done | PR #10, merged into main as `e961444`; 326 tests |
 
 ## 7. Day 3 (27 Sep)
 
