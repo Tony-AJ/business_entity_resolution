@@ -5,13 +5,17 @@ from entity_resolution import config as C
 from entity_resolution.normalize import (
     DEFAULT,
     EXTRA_COLUMNS,
+    NOFILL,
     NORM_COLUMNS,
     NormaliseConfig,
+    add_nofill,
     apply_token_map,
     basic_norm,
+    fit_fillers,
     fit_token_map,
     normalise_names,
     normalise_records,
+    sorted_words,
 )
 
 FLAGS = ["non_latin", "domain_form", "addr_non_latin"]
@@ -403,3 +407,52 @@ def test_v5_own_country_leaves_name_core():
     off = normalise_records(_src(*rows), NormaliseConfig(own_country=False))
     assert off["name_core"].iloc[0] == "maeva france societe"
     assert normalise_names(_src(*rows)[C.NAME])["name_core"].iloc[3] == "tata motors india"
+
+
+# ----------------------------------------------------------- learned fillers ----
+def _filler_case() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """(truth pairs, s1n, pooln) for fit_fillers: six Latin pairs and one script pair.
+
+    "center" is added to three true matches and never held by an S1 name; "holdings" is added
+    once but held once too (S1-2 keeps it: a word of the business, not a filler); the alias
+    marker "dba" and the alias "kramerica" are added once each; S1-5's pool name is identical;
+    the Devanagari pool name of S1-6 adds a word but is left to the token map.
+    """
+    s1 = _src(*[(f"S1-{i}", n, "", "US") for i, n in enumerate(
+        ["Acme", "Globex", "Initech Holdings", "Hooli", "Vandelay", "Soylent", "Umbrella"])])
+    pool = _src(*[(f"S2-{i}", n, "", "US") for i, n in enumerate(
+        ["Acme Center", "Globex Center", "Initech Holdings Center", "Hooli Holdings",
+         "Vandelay dba Kramerica", "Soylent", "अम्ब्रेला सेंटर"])])
+    truth = pd.DataFrame({C.S1_ID: s1[C.ENTITY_ID], C.ENTITY_ID: pool[C.ENTITY_ID]})
+    return truth.astype("str"), normalise_records(s1), normalise_records(pool)
+
+
+def test_fit_fillers_learns_words_added_to_true_matches():
+    """Added far more often than held -> filler; a word S1 names hold too is not; script
+    rows are ignored; both thresholds cut as documented."""
+    truth, s1n, pooln = _filler_case()
+    assert fit_fillers(truth, s1n, pooln) == ["center", "dba", "kramerica"]
+    assert fit_fillers(truth, s1n, pooln, min_share=0.3) == ["center"]  # added >= 1.8 of 6
+    assert fit_fillers(truth, s1n, pooln, min_ratio=3.0) == ["center"]  # 3 >= 3 * (0 + 1)
+    assert fit_fillers(truth, s1n, pooln, min_ratio=3.5) == []
+    assert fit_fillers(truth.iloc[:0], s1n, pooln) == []
+    assert fit_fillers(truth.iloc[[5]], s1n, pooln) == []                # identical names
+
+
+def test_add_nofill_strips_fillers_and_keeps_filler_only_names():
+    """name_core_nofill drops filler tokens in place; a name of fillers only stays whole."""
+    norm = _names("Acme Center", "Center Acme Services", "Services Center", "", "Globex Inc")
+    before = norm.copy()
+    out = add_nofill(norm, ["center", "services"])
+    assert out[NOFILL].tolist() == ["acme", "acme", "services center", "", "globex"]
+    pd.testing.assert_frame_equal(out.drop(columns=NOFILL), before)   # nothing else changes
+    pd.testing.assert_frame_equal(norm, before)                        # input untouched
+    assert add_nofill(norm, [])[NOFILL].tolist() == norm["name_core"].tolist()
+    assert NOFILL not in normalise_records(_src(*MIXED)).columns       # opt-in only
+
+
+def test_sorted_words_is_the_name_sorted_form():
+    """Distinct words, sorted: the same key normalisation gives name_core in name_sorted."""
+    norm = _names("Beta Alpha Beta", "", "Zeta")
+    assert sorted_words(norm["name_core"]).tolist() == norm["name_sorted"].tolist()
+    assert sorted_words(pd.Series(["b a b", "", "c"])).tolist() == ["a b", "", "c"]
