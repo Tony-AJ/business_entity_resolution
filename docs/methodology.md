@@ -152,6 +152,7 @@ decoding is implemented as an alternative (adopted: TBD).
 | v040 | v001 + M3's four groups (70 features, single stage) | 0.9870 | – | 0.9906 / – | – |
 | v042 | v104 two-stage + M3's groups in stage 2 | – | 0.9762 | – / 0.9644 | TBD |
 | v043 | stage 1 = v101 + M3's groups; two-stage | 0.9876 (stage 1) | 0.9762 | 0.9906 / 0.9643 | – |
+| v044 | v042 + interaction and missing-number flags in stage 2 | – | 0.9765 | – / 0.9644 | – |
 | final | TBD | TBD | TBD | TBD | TBD |
 
 v101 cut validation false merges by 29 % but gained only 0.001 public, so mock F0.5 decides

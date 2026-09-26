@@ -117,4 +117,4 @@ explain the gap (test's same-name mix ≈ the mock's).
 | v040 | M3 | C2 | v001 + idf, frequency (now `token_freq`), ctx_idf, address_extra groups (70 features) | 0.9870 | – | 0.9906 | – | kept |
 | v042 | M3 | C2 | v104 two-stage + M3's groups in stage 2 (kept pairs); v107 rule tuning | – | 0.9762 | – | – | kept (est_public 0.9679) |
 | v043 | M3 | C5 | stage 1 = v101 + M3's groups; v104 two-stage; v107 rule tuning | 0.9876 (stage 1) | 0.9762 | 0.9906 | – | kept (est_public 0.9678) |
-| v044 | M3 | C5 | v042 + interactions and missing_flags in stage 2; zero-gain pruning arm | – | – | – | – | prepared, not run |
+| v044 | M3 | C5 | v042 + interactions and missing_flags in stage 2; zero-gain pruning arm | – | 0.9765 | – | – | investigate (est_public 0.9681, +0.0002) |
