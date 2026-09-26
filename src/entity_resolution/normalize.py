@@ -413,22 +413,21 @@ def normalise_records(df: pd.DataFrame, cfg: NormaliseConfig = DEFAULT) -> pd.Da
 
 
 # ------------------------------------------------------- learned token map ----
-def fit_token_map(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
-                  min_count: int = 3, min_share: float = 0.5) -> dict[str, str]:
-    """Transliterated name token -> Latin token, learned from true pairs (05 §6, B4).
+def _align_tokens(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                  non_latin_col: str, text_col: str, min_count: int, min_share: float
+                  ) -> dict[str, str]:
+    """Shared statistics behind ``fit_token_map`` and ``fit_address_token_map`` (05 §6, B4).
 
-    For every true pair whose pool name was written in a non-Latin script and has as many
-    ``name_norm`` tokens as its Source 1 partner, tokens are aligned by position
-    (``शक्ति श्याम ट्रेडिंग`` -> ``sakti syam treding`` against ``shakti shyam trading``).
-    A pool token is kept when it met the same Latin token at least ``min_count`` times and
-    in at least ``min_share`` of its aligned occurrences. Fit on the train fold's pairs only.
+    For every true pair whose pool ``text_col`` was written in a non-Latin script (flagged by
+    ``non_latin_col``) and has as many whitespace tokens as its Source 1 partner's, tokens are
+    aligned by position. A pool token is kept when it met the same Latin token at least
+    ``min_count`` times and in at least ``min_share`` of its aligned occurrences.
     """
-    right = pooln.loc[pooln["non_latin"].to_numpy(), [C.ENTITY_ID, "name_norm"]]
+    right = pooln.loc[pooln[non_latin_col].to_numpy(), [C.ENTITY_ID, text_col]]
     p = truth_pairs[[C.S1_ID, C.ENTITY_ID]].merge(right, on=C.ENTITY_ID)
-    left = s1n[[C.ENTITY_ID, "name_norm"]].rename(columns={C.ENTITY_ID: C.S1_ID,
-                                                          "name_norm": "l"})
+    left = s1n[[C.ENTITY_ID, text_col]].rename(columns={C.ENTITY_ID: C.S1_ID, text_col: "l"})
     p = p.merge(left, on=C.S1_ID)
-    lt, rt = p["l"].str.split(), p["name_norm"].str.split()
+    lt, rt = p["l"].str.split(), p[text_col].str.split()
     same = (lt.str.len() == rt.str.len()).to_numpy()
     if not same.any():
         return {}
@@ -441,6 +440,33 @@ def fit_token_map(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFr
     share = best.to_numpy() / total.reindex(r).to_numpy()
     keep = (best.to_numpy() >= min_count) & (share >= min_share)
     return dict(zip(r[keep], best.index.get_level_values(1)[keep], strict=True))
+
+
+def fit_token_map(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                  min_count: int = 3, min_share: float = 0.5) -> dict[str, str]:
+    """Transliterated name token -> Latin token, learned from true pairs (05 §6, B4).
+
+    For every true pair whose pool name was written in a non-Latin script and has as many
+    ``name_norm`` tokens as its Source 1 partner, tokens are aligned by position
+    (``शक्ति श्याम ट्रेडिंग`` -> ``sakti syam treding`` against ``shakti shyam trading``).
+    A pool token is kept when it met the same Latin token at least ``min_count`` times and
+    in at least ``min_share`` of its aligned occurrences. Fit on the train fold's pairs only.
+    """
+    return _align_tokens(truth_pairs, s1n, pooln, "non_latin", "name_norm", min_count, min_share)
+
+
+def fit_address_token_map(truth_pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
+                          min_count: int = 3, min_share: float = 0.5) -> dict[str, str]:
+    """Transliterated address token -> Latin token, learned from true pairs (05 §6, B4).
+
+    Same alignment as ``fit_token_map`` but over ``addr_norm`` tokens of pool addresses
+    written in a non-Latin script: it catches city and street names that ``anyascii``
+    transliterates inconsistently and the static ``ADDRESS_TOKENS`` map does not list
+    (region names are already resolved by ``REGION_ABBREV`` before this runs, so they rarely
+    show up here). Fit on the train fold's pairs only.
+    """
+    return _align_tokens(truth_pairs, s1n, pooln, "addr_non_latin", "addr_norm", min_count,
+                         min_share)
 
 
 def apply_token_map(norm: pd.DataFrame, token_map: Mapping[str, str],
@@ -528,3 +554,27 @@ def add_nofill(norm: pd.DataFrame, fillers: Collection[str]) -> pd.DataFrame:
 def sorted_words(names: pd.Series) -> pd.Series:
     """Sorted distinct words of each name, space-joined (the ``name_sorted`` form)."""
     return names.str.split().map(lambda t: " ".join(sorted(set(t)))).astype("str")
+
+
+def apply_address_token_map(norm: pd.DataFrame, token_map: Mapping[str, str]) -> pd.DataFrame:
+    """Recompute the address columns of the non-Latin rows of ``norm`` with ``token_map``.
+
+    Starts from the cached ``addr_norm`` (already transliterated and region/street mapped),
+    so the raw addresses are not needed. The token map only rewrites word tokens (city and
+    street names), so ``addr_nums``, ``postcode`` and ``region`` (digit- and alias-table
+    based) are unaffected; only ``addr_norm``, ``addr_last``, ``addr_tokens`` and ``name_addr``
+    can change. Latin rows are untouched, which keeps this cheap (~9 % of pool rows).
+    """
+    rows = np.flatnonzero(norm["addr_non_latin"].to_numpy())
+    if len(rows) == 0 or not token_map:
+        return norm
+    out = norm.copy()
+    sub = pa.array(norm["addr_norm"].iloc[rows].tolist(), type=pa.string())
+    mapped = _series(map_tokens(sub, _dict_fn(token_map)), norm.index[rows])
+    out.loc[out.index[rows], "addr_norm"] = mapped.to_numpy()
+    words = mapped.str.replace(r"\b\d+\b", " ", regex=True).str.split()
+    out.loc[out.index[rows], "addr_last"] = words.map(lambda w: " ".join(w[-2:])).to_numpy()
+    out.loc[out.index[rows], "addr_tokens"] = mapped.str.count(r"\S+").to_numpy().astype("int16")
+    name_addr = (out["name_core"].iloc[rows] + " " + mapped).str.strip()
+    out.loc[out.index[rows], "name_addr"] = name_addr.to_numpy()
+    return out

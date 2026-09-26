@@ -31,16 +31,19 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
+import jellyfish
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import scipy.sparse as sp
+from metaphone import doublemetaphone
 from rapidfuzz import distance, fuzz, process
 
 from . import config as C
 from .blocking import PAIR_COLUMNS, PASS_BITS, SIM_COLUMNS
 from .evidence import TokenEvidence
+from .normalize import map_tokens
 
 FeatureGroup = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame]
 
@@ -77,6 +80,9 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     # learned log-odds of the words only one side's core name holds (evidence.py)
     "tok_evidence": [f"te_{side}_{stat}" for side in ("pool", "s1")
                      for stat in ("sum", "min", "max", "decoy", "filler", "unknown")],
+    "phonetic": ["phonetic_exact_match", "phonetic_jaccard", "phonetic_token_overlap_ratio",
+                "addr_phonetic_exact_match", "addr_phonetic_jaccard",
+                "addr_phonetic_token_overlap_ratio"],
 }
 # Per-record columns the frequency group reads; pipeline.add_frequencies adds them to the
 # normalised frames from the whole fold (never from a training sample).
@@ -93,6 +99,7 @@ NAN_FEATURES = frozenset({
     "ad_contain_r", "num_contain_l", "num_contain_r", "postcode_prefix_eq", "addr_len_ratio",
     "nofill_ratio", "nofill_token_set", "nofill_jaccard",
     "te_pool_min", "te_pool_max", "te_s1_min", "te_s1_max",
+    *FEATURE_COLUMNS["phonetic"],
 })
 
 # Normalised columns each group reads: build_features aligns only these to the pairs.
@@ -113,6 +120,7 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "address_extra": ("addr_norm", "addr_nums", "postcode"),
     "nofill": ("name_core", "name_core_nofill"),  # the column pipeline.load_normalised adds
     "tok_evidence": ("name_core",),
+    "phonetic": ("name_core", "addr_norm", "non_latin"),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
@@ -121,7 +129,7 @@ _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 # groups before the name-side ones, so fewer aligned string columns are alive at the same time.
 _COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "address_extra", "context", "idf",
                   "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "nofill",
-                  "tok_evidence", "meta", "pool_context", "frequency")
+                  "tok_evidence", "phonetic", "meta", "pool_context", "frequency")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
@@ -920,6 +928,93 @@ def _tok_evidence(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, 
     return _frame(pairs.index, out)
 
 
+def _phonetic_soundex_token(token: str) -> str:
+    """Soundex of ``token``, empty for a token with no letters (house numbers, postcodes).
+
+    Soundex keys mostly off the first letter and rough consonant shape, so it catches
+    same-first-letter misspellings ("Smith"/"Smyth") but not a changed first letter.
+    """
+    return jellyfish.soundex(token) if any(c.isalpha() for c in token) else ""
+
+
+def _phonetic_metaphone_token(token: str) -> str:
+    """Double Metaphone primary code of ``token`` (its secondary if the primary is empty).
+
+    Metaphone models how the token sounds rather than its spelling, so it catches
+    transliteration variants Soundex misses when the first letter changes ("Kumar"/"Cumar":
+    same Metaphone ``KMR``, different Soundex ``K560``/``C560``).
+    """
+    if not any(c.isalpha() for c in token):
+        return ""
+    primary, secondary = doublemetaphone(token)
+    return primary or secondary
+
+
+def _phonetic_docs(arr: pa.Array) -> tuple[pa.Array, pa.Array]:
+    """(Soundex, Double Metaphone) documents of ``arr``, one call per distinct token.
+
+    ``map_tokens`` dictionary-encodes the token vocabulary once and calls each phonetic
+    function only on the distinct tokens, so cost scales with vocabulary size, not row count.
+    """
+    return map_tokens(arr, _phonetic_soundex_token), map_tokens(arr, _phonetic_metaphone_token)
+
+
+def _phonetic_column(left: pd.DataFrame, right: pd.DataFrame, column: str,
+                     non_latin: np.ndarray) -> dict[str, np.ndarray]:
+    """Phonetic features of one text ``column`` (07 phonetic §, plan group C).
+
+    *_exact_match             the Soundex documents match exactly AND the Metaphone documents
+                              match exactly (equal token count and, position for position,
+                              agreement under both systems)
+    *_jaccard                 Jaccard of the two sides' phonetic codes, Soundex and Metaphone
+                              codes pooled together (a token can contribute a Soundex match, a
+                              Metaphone match, or both; either counts as evidence)
+    *_token_overlap_ratio     share of the S1 side's phonetic codes also on the pool side
+                              (asymmetric, like ``ad_contain``)
+
+    NaN wherever either name has no Latin-script letters (``non_latin``): Soundex and
+    Metaphone are English-orthography heuristics, so codes from a transliterated name are
+    noise, not signal, and must read as "not applicable" rather than "no match" (05 §5 already
+    flags the record; a plain non-Latin-character check on ``column`` would find nothing here,
+    since ``normalize.py`` already transliterates it to ASCII before this point). The same flag
+    gates the address columns: source records transliterate name and address together.
+    """
+    sx_l, dm_l = _phonetic_docs(_arrow(left[column]))
+    sx_r, dm_r = _phonetic_docs(_arrow(right[column]))
+    eq_s, both_s = _eq(sx_l, sx_r)
+    eq_d, both_d = _eq(dm_l, dm_r)
+    common_s, n_l_s, n_r_s, _, _ = _token_sets(sx_l, sx_r)
+    common_d, n_l_d, n_r_d, _, _ = _token_sets(dm_l, dm_r)
+    common, n_l, n_r = common_s + common_d, n_l_s + n_l_d, n_r_s + n_r_d
+    valid_set = (n_l > 0) & (n_r > 0) & ~non_latin
+    return {
+        "exact_match": _tristate(eq_s & eq_d, both_s & both_d & ~non_latin),
+        "jaccard": _ratio(common, n_l + n_r - common, valid_set),
+        "token_overlap_ratio": _ratio(common, n_l, valid_set),
+    }
+
+
+def _phonetic(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """Phonetic-similarity features on ``name_core`` and ``addr_norm`` (plan group C).
+
+    Catches phonetic misspellings and transliteration variants that string-edit-distance
+    features miss (a swapped first letter, "Katherine"/"Catherine", scores low on Levenshtein
+    but identically on Metaphone). See ``_phonetic_column`` for the three features and the
+    non-Latin NaN policy; ``addr_phonetic_*`` is the same computation on ``addr_norm``.
+    """
+    non_latin = left["non_latin"].to_numpy(dtype=bool) | right["non_latin"].to_numpy(dtype=bool)
+    name = _phonetic_column(left, right, "name_core", non_latin)
+    addr = _phonetic_column(left, right, "addr_norm", non_latin)
+    return _frame(pairs.index, {
+        "phonetic_exact_match": name["exact_match"],
+        "phonetic_jaccard": name["jaccard"],
+        "phonetic_token_overlap_ratio": name["token_overlap_ratio"],
+        "addr_phonetic_exact_match": addr["exact_match"],
+        "addr_phonetic_jaccard": addr["jaccard"],
+        "addr_phonetic_token_overlap_ratio": addr["token_overlap_ratio"],
+    })
+
+
 REGISTRY: dict[str, FeatureGroup] = {
     "blocking": _blocking,
     "name_fuzzy": _name_fuzzy,
@@ -937,6 +1032,7 @@ REGISTRY: dict[str, FeatureGroup] = {
     "address_extra": _address_extra,
     "nofill": _nofill,  # needs name_core_nofill: a version that learns fillers loads it
     "tok_evidence": _tok_evidence,  # EVIDENCE_GROUPS: needs build_features(evidence=)
+    "phonetic": _phonetic,  # Soundex / Double Metaphone codes (jellyfish, metaphone)
 }
 
 # The v001 feature set (47 features), kept fixed so logged versions stay reproducible; a
@@ -945,7 +1041,8 @@ REGISTRY: dict[str, FeatureGroup] = {
 # biased low against val and test, where every S1 competes; frequency is opt-in because it
 # needs the FREQ_COLUMNS that pipeline.add_frequencies adds, nofill because it needs the
 # name_core_nofill column (NormaliseConfig.learn_fillers), tok_evidence because it needs the
-# learned token evidence (PipelineConfig.evidence).
+# learned token evidence (PipelineConfig.evidence), phonetic because it is a new group
+# (jellyfish / metaphone) awaiting a shortlist decision (project rule 3).
 DEFAULT_GROUPS: tuple[str, ...] = ("blocking", "name_fuzzy", "name_tokens", "legal", "numeric",
                                    "address", "context", "meta")
 
