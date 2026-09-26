@@ -43,8 +43,11 @@ id fingerprints. The model and grid are not in it: they are what ``evaluate_para
 The git commit is recorded in ``manifest.json`` for the record.
 
 Memory: one side is in memory at a time and tune/val/harder features are streamed to Parquet
-per chunk (peak about the pipeline's own ``score``); ``evaluate_params`` reads fit/stop into
-one float32 matrix each and streams tune/val/harder in ``batch_rows`` batches.
+per chunk (peak about the pipeline's own ``score``). ``evaluate_params`` reads stop into one
+float32 matrix, hands the fit matrix to ``Matcher.fit`` alone (freed once LightGBM has binned
+it), streams tune/val/harder in ``batch_rows`` batches keeping only ids and probabilities,
+and reads through Arrow's system allocator without pre-buffering: the default mimalloc pool
+kept GBs of freed decode buffers after streaming a side.
 """
 from __future__ import annotations
 
@@ -52,6 +55,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +93,8 @@ LABEL = "label"
 PASS = "pass"
 META_COLUMNS = [C.S1_ID, C.ENTITY_ID, C.COUNTRY, PASS, LABEL]
 RANK1_COLUMN = "ctx_rank_name"  # 08 §5: reliability of the pairs the decision layer sees first
+BATCH_ROWS = 250_000            # rows per feature batch read: ~70 MB at 70 features
+READ_BUFFER = 1 << 20           # streamed column-chunk reads instead of whole row groups
 # modules whose code decides the snapshot's rows and values: their content is in the key
 DATA_MODULES = ("config", "data", "split", "normalize", "token_maps", "blocking", "features",
                 "trainset", "evaluate", "pipeline")
@@ -362,6 +368,27 @@ def build_snapshot(cfg: P.PipelineConfig, train: Fold, val: Fold, out_dir: Path 
 
 
 # ------------------------------------------------------------------- load ----
+@contextmanager
+def _system_pool() -> Iterator[None]:
+    """Arrow allocations through the system allocator inside the block.
+
+    Arrow's default pool (mimalloc here) kept the freed decode buffers of every batch, so
+    streaming one side grew the RSS by GBs; the system allocator hands them back, and numpy
+    reuses what it keeps. Values are the same with any pool.
+    """
+    previous = pa.default_memory_pool()
+    pa.set_memory_pool(pa.system_memory_pool())
+    try:
+        yield
+    finally:
+        pa.set_memory_pool(previous)
+
+
+def _read_table(path: Path, columns: Sequence[str]) -> pa.Table:
+    """Some columns of a side file, read column chunk by column chunk (no pre-buffering)."""
+    return pq.read_table(path, columns=list(columns), pre_buffer=False, buffer_size=READ_BUFFER)
+
+
 @dataclass
 class Snapshot:
     """A built snapshot: its folder, manifest, the sides in use and the feature columns in use.
@@ -392,7 +419,7 @@ class Snapshot:
 
     def meta(self, side: str, columns: Sequence[str] = META_COLUMNS) -> pd.DataFrame:
         """Pair ids, S1 country, pass bits and label of every row of ``side``, in row order."""
-        return pq.read_table(self._file(side), columns=list(columns)).to_pandas()
+        return _read_table(self._file(side), columns).to_pandas()
 
     def labels(self, side: str) -> np.ndarray:
         """0/1 labels of ``side`` (int8, row order)."""
@@ -400,15 +427,15 @@ class Snapshot:
 
     def column(self, side: str, name: str) -> np.ndarray:
         """One numeric column of ``side`` (a feature, ``label`` or ``pass``) as numpy."""
-        return pq.read_table(self._file(side), columns=[name]).column(0).to_numpy()
+        return _read_table(self._file(side), [name]).column(0).to_numpy()
 
-    def iter_features(self, side: str, batch_rows: int = 1_000_000,
+    def iter_features(self, side: str, batch_rows: int = BATCH_ROWS,
                       columns: Sequence[str] | None = None
                       ) -> Iterator[tuple[slice, pd.DataFrame]]:
         """``(row slice, float32 feature frame)`` batches of ``side``, in row order."""
         cols = list(self.columns if columns is None else columns)
         at = 0
-        with pq.ParquetFile(self._file(side)) as pf:
+        with pq.ParquetFile(self._file(side), pre_buffer=False, buffer_size=READ_BUFFER) as pf:
             for batch in pf.iter_batches(batch_size=batch_rows, columns=cols):
                 m = batch.num_rows
                 block = np.empty((m, len(cols)), dtype=np.float32)
@@ -419,13 +446,14 @@ class Snapshot:
                 at += m
 
     def features(self, side: str, columns: Sequence[str] | None = None,
-                 batch_rows: int = 1_000_000) -> pd.DataFrame:
+                 batch_rows: int = BATCH_ROWS) -> pd.DataFrame:
         """The whole float32 feature frame of ``side`` (RangeIndex), filled batch by batch into
         one preallocated matrix, so the peak is the matrix plus one batch."""
         cols = list(self.columns if columns is None else columns)
         out = np.empty((self.rows(side), len(cols)), dtype=np.float32)
-        for sl, X in self.iter_features(side, batch_rows, cols):
-            out[sl] = X.to_numpy()
+        with _system_pool():
+            for sl, X in self.iter_features(side, batch_rows, cols):
+                out[sl] = X.to_numpy()
         return pd.DataFrame(out, columns=cols, copy=False)
 
     def s1(self, side: str) -> pd.DataFrame:
@@ -508,11 +536,15 @@ def load_snapshot(path: Path, sides: Sequence[str] | None = None,
 # --------------------------------------------------------------- evaluate ----
 def _score_side(snap: Snapshot, side: str, model: Matcher | SeedEnsemble,
                 batch_rows: int) -> tuple[pd.DataFrame, np.ndarray]:
-    """``(scored, labels)`` of ``side``: SCORED_COLUMNS in the pipeline's pair order."""
-    meta = snap.meta(side, [C.S1_ID, C.ENTITY_ID, LABEL])
-    prob = np.empty(len(meta), dtype=np.float32)
+    """``(scored, labels)`` of ``side``: SCORED_COLUMNS in the pipeline's pair order.
+
+    Features stream through the model ``batch_rows`` at a time and only the float32
+    probability stays; the ids are read afterwards, so they never sit beside read buffers.
+    """
+    prob = np.empty(snap.rows(side), dtype=np.float32)
     for sl, X in snap.iter_features(side, batch_rows):
         prob[sl] = model.predict_proba(X)
+    meta = snap.meta(side, [C.S1_ID, C.ENTITY_ID, LABEL])
     scored = pd.DataFrame({C.S1_ID: meta[C.S1_ID], C.ENTITY_ID: meta[C.ENTITY_ID],
                            "prob": prob})
     return scored, meta[LABEL].to_numpy(np.int8)
@@ -547,7 +579,7 @@ def _by_country(matches: pd.DataFrame, fold: Fold) -> dict[str, float]:
 def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
                     weight_fn: WeightFn | None = None, grid: Grid | None = None,
                     calibration: bool = True, seeds: Sequence[int] | None = None,
-                    harder: bool = True, batch_rows: int = 1_000_000,
+                    harder: bool = True, batch_rows: int = BATCH_ROWS,
                     artifacts: dict | None = None
                     ) -> tuple[dict, Matcher | SeedEnsemble, DecisionRule]:
     """Train on fit/stop, tune the rule on tune, score val (and harder) with it frozen.
@@ -568,28 +600,52 @@ def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
     ``calibration``, ``ece_tune``, ``brier_tune``, ``ece_tune_rank1``, ``ece_val``,
     ``brier_val``. A dict passed as ``artifacts`` receives ``tune_table``, ``reliability``,
     ``importance``, ``val_scored``, ``val_matches`` and ``slices`` (``slice_report``).
+
+    Memory (v040 size, 70 features): one side at a time; the fit matrix lives only until
+    LightGBM has binned it (re-read per seed); ``batch_rows`` bounds the read buffers and
+    does not change any result.
     """
-    params = MatcherParams() if params is None else params
-    grid = DEFAULT_GRID if grid is None else grid
+    with _system_pool():
+        return _evaluate(snap, MatcherParams() if params is None else params, weight_fn,
+                         DEFAULT_GRID if grid is None else grid, calibration, seeds, harder,
+                         batch_rows, artifacts)
+
+
+def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None, grid: Grid,
+              calibration: bool, seeds: Sequence[int] | None, harder: bool, batch_rows: int,
+              artifacts: dict | None) -> tuple[dict, Matcher | SeedEnsemble, DecisionRule]:
+    """``evaluate_params`` with its defaults resolved (run inside ``_system_pool``)."""
     timings: dict[str, float] = {}
     P.mem_guard("evaluate start")
 
     t0 = time.perf_counter()
-    X_fit, y_fit = snap.features("fit", batch_rows=batch_rows), snap.labels("fit")
+    n_fit, y_fit = snap.rows("fit"), snap.labels("fit")
     X_stop, y_stop = snap.features("stop", batch_rows=batch_rows), snap.labels("stop")
-    weight = None
+    weight, first = None, []
     if weight_fn is not None:
+        X_fit = snap.features("fit", batch_rows=batch_rows)
         weight = np.asarray(weight_fn(snap.meta("fit"), X_fit), dtype=np.float64)
-        if weight.shape != (len(X_fit),):
-            raise ValueError(f"weight_fn returned shape {weight.shape}, expected "
-                             f"({len(X_fit)},)")
-    timings["load_seconds"] = round(time.perf_counter() - t0, 2)
+        first.append(X_fit)   # handed to the first fit instead of being read again
+        del X_fit
+        if weight.shape != (n_fit,):
+            raise ValueError(f"weight_fn returned shape {weight.shape}, expected ({n_fit},)")
+    load_seconds = time.perf_counter() - t0
     P.mem_guard("evaluate load")
 
+    def load_fit() -> pd.DataFrame:
+        """The fit features for one ``Matcher.fit``, which then holds the only reference."""
+        nonlocal load_seconds
+        t = time.perf_counter()
+        X = first.pop() if first else snap.features("fit", batch_rows=batch_rows)
+        load_seconds += time.perf_counter() - t
+        return X
+
     t0 = time.perf_counter()
-    model = fit_matcher(params, X_fit, y_fit, X_stop, y_stop, weight, seeds)
-    timings["fit_seconds"] = round(time.perf_counter() - t0, 2)
-    del X_fit, y_fit, X_stop, y_stop, weight
+    loaded = load_seconds
+    model = fit_matcher(params, load_fit, y_fit, X_stop, y_stop, weight, seeds)
+    timings["load_seconds"] = round(load_seconds, 2)
+    timings["fit_seconds"] = round(time.perf_counter() - t0 - (load_seconds - loaded), 2)
+    del y_fit, X_stop, y_stop, weight
     P.mem_guard("evaluate fit")
 
     t0 = time.perf_counter()
@@ -623,7 +679,9 @@ def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
         ece, brier, rel = reliability(scored_val["prob"].to_numpy(), y_val)
         calib.update(ece_val=ece, brier_val=brier)
         rel_tables.append(rel.assign(side="val", subset="all"))
-    del y_val
+    if artifacts is not None:
+        artifacts["val_scored"] = scored_val
+    del y_val, scored_val   # not kept through the harder side unless asked for
     blocking = snap.blocking("val") or {}
     errors = error_counts(matches, val)
     metrics: dict = {
@@ -664,8 +722,7 @@ def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
                    **calib, **timings, score_seconds=round(score_seconds, 2),
                    decide_seconds=round(decide_seconds, 2), peak_rss_gb=P.peak_rss_gb())
     if artifacts is not None:
-        artifacts.update(tune_table=table, importance=importance, val_scored=scored_val,
-                         val_matches=matches,
+        artifacts.update(tune_table=table, importance=importance, val_matches=matches,
                          reliability=(pd.concat(rel_tables, ignore_index=True)
                                       if rel_tables else pd.DataFrame()))
         if (snap.path / "val_s1n.parquet").exists() and len(val.s1):
