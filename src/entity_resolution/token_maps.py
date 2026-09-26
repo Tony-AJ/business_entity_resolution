@@ -20,6 +20,7 @@ LEGAL_FORMS = {
     "pa": "pa", "pbc": "pbc", "opc": "opc", "gmbh": "gmbh",
     "sa": "sa", "sas": "sas", "sasu": "sas", "sarl": "sarl", "eurl": "sarl", "sci": "sci",
     "snc": "snc", "ei": "ei", "eirl": "ei", "selarl": "selarl", "scp": "scp",
+    "compagnie": "co",  # v4: the French pool swaps "Compagnie" and "Cie" (376 pairs)
 }
 # anyascii output of Indic-script legal words (प्राइवेट लिमिटेड -> "praivet limited",
 # प्रा. लि. -> "pra li", एलएलपी -> "elelpi"), applied to transliterated names only so a

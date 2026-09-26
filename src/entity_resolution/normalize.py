@@ -9,6 +9,10 @@ domain forms (``gl0ba``, ``allh0spitalityproducts.com``); honorific prefixes (``
 ``Smt``); street-type abbreviations (``St``/``Street``/``Saint``, ``R.``/``Rue``); state
 names, codes and native-script forms; old/new city names.
 
+Rules v4 (French forms measured on the test pool; they change no US or India record):
+the pool's ``N°`` / ``Nº`` number marker leaves addresses before folding, and ``Compagnie``
+is a legal form like ``Cie``.
+
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
 the only Python loops are ``anyascii`` on rows that still hold non-ASCII characters and
@@ -34,10 +38,14 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
                 "region", "addr_last", "addr_tokens", "name_addr"]
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
-RULES_VERSION = 3
+# 4: French number marker and "compagnie" (US and India output byte-identical to 3).
+RULES_VERSION = 4
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
 NON_LATIN_RE = r"[\x{0370}-\x{1DBF}\x{2C00}-\x{2DFF}\x{3000}-\x{D7FF}]"
+# The French number marker "N° 32" / "Nº 32" (v4): written by the pool only (6.5% of French
+# pool addresses, never in S1, US or India), so it is dropped before it becomes an "n" token.
+NUMBER_MARKER_RE = r"(?i)\bn\s*[°º]"
 
 from .token_maps import (  # noqa: E402  (re-exported: tests and features import them from here)
     ADDRESS_TOKENS,
@@ -129,17 +137,21 @@ def _join_initials_py(text: str) -> str:
 _INITIALS = re.compile(r"\b[a-z](?: [a-z])+\b")
 
 
-def fold(s: pd.Series, transliterate: bool = True) -> tuple[pa.Array, np.ndarray]:
+def fold(s: pd.Series, transliterate: bool = True,
+         number_marker: bool = False) -> tuple[pa.Array, np.ndarray]:
     """Lowercase ASCII text plus the non-Latin-script flag (rules R0-R1).
 
     Rows holding any non-ASCII character go through ``anyascii`` on the raw text, which
     both transliterates Indic scripts (``प्राइवेट`` -> ``praivet``) and strips accents
     (``Léarning`` -> ``Learning``). Stripping combining marks first would delete the
     Indic vowel signs, so it is only the fallback when transliteration is switched off.
+    ``number_marker`` (addresses, v4) drops the whole ``N°`` / ``Nº`` marker first.
     """
     arr = _arrow(s)
     non_latin = pc.match_substring_regex(arr, NON_LATIN_RE).to_numpy(zero_copy_only=False)
-    arr = pc.replace_substring_regex(arr, "[°º]", " ")  # "N° 180" is a number marker
+    if number_marker:  # "N° 32 R Pierre" -> " 32 R Pierre", as S1 writes it
+        arr = pc.replace_substring_regex(arr, NUMBER_MARKER_RE, " ")
+    arr = pc.replace_substring_regex(arr, "[°º]", " ")  # any other ° or º separates tokens
     if transliterate:
         rest = pc.match_substring_regex(arr, r"[^\x00-\x7F]").to_numpy(zero_copy_only=False)
         if rest.any():
@@ -257,7 +269,7 @@ def normalise_addresses(addr: pd.Series, cfg: NormaliseConfig = DEFAULT) -> pd.D
     (``25233b`` -> ``25233 b``), leading zeros go, and street-type tokens are canonicalised.
     """
     regions = dict(cfg.region_map) if cfg.region_map is not None else REGION_ABBREV
-    arr, non_latin = fold(addr, cfg.transliterate)
+    arr, non_latin = fold(addr, cfg.transliterate, number_marker=True)
     arr = pc.replace_substring_regex(arr, r"<null>|\bn/a\b", " ")
     # --- region per comma component
     comps = pc.split_pattern(arr, ",")

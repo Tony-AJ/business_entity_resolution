@@ -317,3 +317,24 @@ def test_french_departements_map_to_their_region() -> None:
                                          "1 Quai, Nantes, Loire-Atlantique",
                                          "2 Rue, Calais, Pas-de-Calais"]))
     assert out["region"].tolist() == ["hdf", "hdf", "naq", "pdl", "hdf"]
+
+
+# ------------------------------------------------------------------- rules v4 ----
+def test_v4_number_marker_leaves_addresses():
+    """The pool's "N° 32" / "Nº 32" / "n°32" read like S1's "32": no stray "n" token."""
+    out = _addrs("N° 32 R DES LAURIERS, PORNIC", "Nº 32 R. des Lauriers, Pornic",
+                 "n°32 rue des lauriers, pornic", "32 Rue des Lauriers, Pornic")
+    assert out["addr_norm"].tolist() == ["32 rue des lauriers pornic"] * 4
+    assert out["addr_nums"].tolist() == ["32"] * 4
+    # only the marker goes: "No 32" and a lone degree sign are unchanged, names untouched
+    other = _addrs("No 32 Rue X", "Temp 5° Rue X")
+    assert other["addr_norm"].tolist() == ["no 32 rue x", "temp 5 rue x"]
+    assert _names("N° 1 Pizza")["name_norm"].iloc[0] == "n 1 pizza"
+
+
+def test_v4_compagnie_is_a_legal_form_like_cie():
+    """ "Compagnie" and "Cie", swapped by the French pool, both leave name_core as "co"."""
+    out = _names("Bordeaux France Compagnie", "Bordeaux France Cie", "Meta & Compagnie SA")
+    assert out["name_core"].tolist() == ["bordeaux france", "bordeaux france", "meta"]
+    assert out["legal_form"].tolist() == ["co", "co", "co sa"]
+    assert out["name_norm"].iloc[0] == "bordeaux france compagnie"
