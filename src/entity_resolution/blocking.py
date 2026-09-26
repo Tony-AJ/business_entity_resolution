@@ -117,13 +117,19 @@ def exact_pass(s1n: pd.DataFrame, pooln: pd.DataFrame, key: str, max_group: int)
     Pool key groups larger than ``max_group`` are skipped (a name shared by hundreds of
     records says nothing; the top-k passes still see those records).
     """
-    pool_key = pooln[key]
-    counts = pool_key.value_counts()
-    ok = counts.index[(counts <= max_group).to_numpy() & (counts.index != "")]
-    pool = pd.DataFrame({"k": pool_key, "pool_idx": np.arange(len(pooln), dtype=np.int32)})
-    pool = pool[pool["k"].isin(ok)]
-    left = pd.DataFrame({"k": s1n[key], "s1_idx": np.arange(len(s1n), dtype=np.int32)})
-    left = left[left["k"] != ""]
+    # keys become integer codes shared by both sides, so the join never carries strings (at
+    # test density a partition holds tens of millions of exact pairs)
+    codes, uniques = pd.factorize(pd.concat([s1n[key], pooln[key]], ignore_index=True),
+                                  use_na_sentinel=False)
+    s1_code, pool_code = codes[:len(s1n)], codes[len(s1n):]
+    size = np.bincount(pool_code, minlength=len(uniques))
+    ok = size <= max_group
+    blank = np.flatnonzero(np.asarray(uniques) == "")
+    ok[blank] = False
+    pool = pd.DataFrame({"k": pool_code, "pool_idx": np.arange(len(pooln), dtype=np.int32)})
+    pool = pool[ok[pool_code]]
+    left = pd.DataFrame({"k": s1_code, "s1_idx": np.arange(len(s1n), dtype=np.int32)})
+    left = left[ok[s1_code] & (size[s1_code] > 0)]
     out = left.merge(pool, on="k", how="inner")[["s1_idx", "pool_idx"]].astype(np.int32)
     return out.sort_values(["s1_idx", "pool_idx"], kind="stable").reset_index(drop=True)
 
