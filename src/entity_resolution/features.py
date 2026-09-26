@@ -14,6 +14,11 @@ pool record of each pair, row for row. Conventions (07 §1):
 * no country feature (the country set is open) and no randomness: two runs are identical;
 * chunks never split a Source 1 group, so no feature depends on ``chunk_rows``.
 
+Some groups (``STATS_GROUPS``) read counts over the whole pool of a partition, which no
+chunk sees: ``pool_stats(pooln)`` computes them once, per country, and ``build_features``
+hands them to every chunk. Only pool records are counted: the pool is complete in every
+setting, while Source 1 is sampled on the fit side (07 §5).
+
 Speed is the main constraint (~25M test pairs): no Python loop touches individual pairs.
 Strings stay in Arrow and go through its C++ kernels; rapidfuzz scores aligned pairs in C++
 threads (``process.cpdist``); token-set overlaps are row-wise products of binary sparse
@@ -23,6 +28,7 @@ runs of equal strings are converted to Python and tokenised only once.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -87,6 +93,15 @@ _COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "context", "name_fu
 # group ranks candidates on the address group's ad_token_set).
 _INDEGREE = "ctx_pool_indegree"
 _AD_TOKEN_SET = "ad_token_set"
+_CARRY: dict[str, tuple[str, tuple[str, ...]]] = {  # group -> (consumer group, columns)
+    "address": ("context", (_AD_TOKEN_SET,)),
+}
+
+# Pool statistics each group reads, as (normalised column, kind): "tokens" counts in how many
+# pool records each token occurs (document frequency), "values" how many records hold each
+# whole string.
+_STATS_NEEDS: dict[str, tuple[tuple[str, str], ...]] = {}
+STATS_GROUPS = frozenset(_STATS_NEEDS)
 
 # (scorer, divisor mapping its range to [0, 1]). All are symmetric and score equal strings at
 # their maximum, which _fuzzy relies on to skip identical pairs.
@@ -255,6 +270,90 @@ def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
     size = np.diff(mat.indptr)
     common = np.diff(mat[rows_l].multiply(mat[rows_r]).indptr)  # stored entries = shared tokens
     return common, size[rows_l], size[rows_r], first[rows_l], first[rows_r]
+
+
+def _lookup(values: pa.Array, table: tuple[pa.Array, np.ndarray]) -> np.ndarray:
+    """Count of each value in a ``(distinct values, counts)`` table; 0 for an unseen value."""
+    keys, counts = table
+    pos = pc.fill_null(pc.index_in(values, value_set=keys), -1).to_numpy()
+    return np.append(counts, 0)[pos]  # -1 picks the appended 0
+
+
+# ---------------------------------------------------------- pool statistics ----
+_NO_TABLE = (pa.array([], pa.large_string()), np.zeros(0, dtype=np.int64))
+
+
+@dataclass(frozen=True)
+class CountryStats:
+    """Counts over the pool records of one country (07 §4: partition-wide, computed once).
+
+    ``n_docs`` is the number of pool records; ``tables`` maps (column, kind) to
+    ``(distinct values, counts)``: for kind "tokens", in how many records each token of the
+    column occurs; for kind "values", how many records hold each whole non-empty string.
+    """
+
+    n_docs: int
+    tables: dict[tuple[str, str], tuple[pa.Array, np.ndarray]] = field(default_factory=dict)
+
+    def table(self, column: str, kind: str) -> tuple[pa.Array, np.ndarray]:
+        """The (values, counts) table of ``column``/``kind``; empty when not computed."""
+        return self.tables.get((column, kind), _NO_TABLE)
+
+
+PoolStats = dict[str, CountryStats]  # country -> statistics of its pool records
+
+
+def _doc_freq(values: pa.ChunkedArray, block: int = 1_000_000) -> tuple[pa.Array, np.ndarray]:
+    """Distinct tokens of space-separated strings and in how many strings each occurs.
+
+    Works through ``block`` strings at a time (an address pool holds ~8 tokens per record),
+    counting each token once per string, then sums the blocks' counts per token in Arrow.
+    """
+    keys, counts = [], []
+    for start in range(0, len(values), block):
+        docs = values.slice(start, block).combine_chunks()
+        docs = docs.filter(pc.greater(pc.binary_length(docs), 0))
+        tokens = pc.split_pattern(docs, " ")
+        vocab = pc.dictionary_encode(pc.list_flatten(tokens))
+        v = max(len(vocab.dictionary), 1)
+        doc = np.repeat(np.arange(len(docs), dtype=np.int64),
+                        pc.list_value_length(tokens).to_numpy())
+        pairs = np.unique(doc * v + _np(vocab.indices))  # one entry per (string, token)
+        df = np.bincount(pairs % v, minlength=len(vocab.dictionary))
+        keep = (df > 0) & _np(pc.not_equal(vocab.dictionary, ""))  # "" from stray spaces
+        keys.append(vocab.dictionary.filter(pa.array(keep)))
+        counts.append(df[keep])
+    if not keys:
+        return _NO_TABLE
+    total = pa.table({"k": pa.concat_arrays(keys), "n": np.concatenate(counts)}).group_by(
+        "k").aggregate([("n", "sum")])
+    return total["k"].combine_chunks(), total["n_sum"].to_numpy()
+
+
+def _value_counts(values: pa.ChunkedArray) -> tuple[pa.Array, np.ndarray]:
+    """Distinct non-empty strings and how many records hold each."""
+    counted = pc.value_counts(values)
+    keys, counts = counted.field("values"), counted.field("counts").to_numpy()
+    keep = pc.greater(pc.binary_length(keys), 0)
+    return keys.filter(keep), counts[_np(keep)]
+
+
+def _by_country(left: pd.DataFrame, stats: PoolStats | None,
+                group: str) -> Iterator[tuple[np.ndarray, CountryStats]]:
+    """Row positions of the chunk per country, with that country's pool statistics.
+
+    A pair never crosses countries (blocking partitions by country), so the S1 side's
+    country is the pair's. A country missing from ``stats`` gets empty statistics.
+    """
+    if stats is None:
+        raise ValueError(f"group {group!r} needs pool statistics: call build_features, or "
+                         "pass stats=pool_stats(pooln)")
+    codes = pc.dictionary_encode(_arrow(left[C.COUNTRY]))
+    idx = _np(codes.indices)
+    for code, country in enumerate(codes.dictionary.to_pylist()):
+        rows = np.flatnonzero(idx == code)
+        if len(rows):
+            yield rows, stats.get(country, CountryStats(0))
 
 
 def _group_starts(ids: pa.Array | pa.ChunkedArray) -> np.ndarray:
@@ -512,6 +611,35 @@ REGISTRY: dict[str, FeatureGroup] = {
 DEFAULT_GROUPS: tuple[str, ...] = tuple(g for g in REGISTRY if g != "pool_context")
 
 
+def pool_stats(pooln: pd.DataFrame, groups: Sequence[str] = tuple(REGISTRY)
+               ) -> PoolStats | None:
+    """Pool statistics the ``STATS_GROUPS`` among ``groups`` read; None when none of them does.
+
+    Counted per country, so a fold holding two countries gives every record the counts of
+    its own country, exactly like the per-country test partitions (``pipeline.run_test``).
+    Pass the whole pool of a partition or fold: build_features computes this once and hands
+    it to every chunk, and ``pipeline.score`` computes it once for all its chunks.
+    """
+    needs = sorted({need for g in groups for need in _STATS_NEEDS.get(g, ())})
+    if not needs:
+        return None
+    lacking = [c for c in dict.fromkeys([C.COUNTRY, *(col for col, _ in needs)])
+               if c not in pooln.columns]
+    if lacking:
+        raise ValueError(f"pooln lacks columns {lacking} for the pool statistics")
+    country = _column(pooln[C.COUNTRY])
+    stats: PoolStats = {}
+    for name in sorted(pc.unique(country).to_pylist()):
+        mask = pc.equal(country, name)
+        tables = {}
+        for column, kind in needs:
+            values = _column(pooln[column]).filter(mask)
+            tables[(column, kind)] = (_doc_freq(values) if kind == "tokens"
+                                      else _value_counts(values))
+        stats[name] = CountryStats(int(pc.sum(mask).as_py() or 0), tables)
+    return stats
+
+
 # ----------------------------------------------------------------- building ----
 def feature_names(groups: Sequence[str] = DEFAULT_GROUPS) -> list[str]:
     """Feature columns of ``groups``, in order: the column contract the model stores (08)."""
@@ -574,7 +702,8 @@ def _aligned(columns: dict[str, pa.ChunkedArray], n: int) -> pd.DataFrame:
 
 def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
                    groups: Sequence[str] = DEFAULT_GROUPS,
-                   chunk_rows: int = 2_000_000) -> pd.DataFrame:
+                   chunk_rows: int = 2_000_000,
+                   stats: PoolStats | None = None) -> pd.DataFrame:
     """Feature frame of the candidate ``pairs``: float32, index ``pairs.index``.
 
     ``pairs`` holds ``PAIR_COLUMNS``, grouped by ``source1_entity_id``; ``s1n`` and ``pooln``
@@ -582,8 +711,11 @@ def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
     runs in chunks of about ``chunk_rows`` pairs that never split an S1 group, and fills one
     preallocated float32 array (4 bytes x features x pairs: at test scale, call it per slice
     of ``iter_chunks`` and score each). The pool in-degree (``pool_context``) is counted over
-    all of ``pairs``, so pass a whole partition or fold when requesting it. Raises
-    ValueError for an unknown group, a missing column or a pair id absent from the records.
+    all of ``pairs``, so pass a whole partition or fold when requesting it. The
+    ``STATS_GROUPS`` read ``stats``, computed here from ``pooln`` when not given: a caller
+    featuring one partition slice by slice computes ``pool_stats(pooln)`` once and passes it.
+    Raises ValueError for an unknown group, a missing column or a pair id absent from the
+    records.
     """
     groups = tuple(groups)
     names = feature_names(groups)
@@ -599,12 +731,14 @@ def build_features(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
             raise ValueError(f"{label} lacks normalised columns {lacking}")
     out = np.empty((len(pairs), len(names)), dtype=np.float32)
     if len(pairs):
-        _fill(out, pairs, s1n, pooln, groups, chunk_rows)
+        if stats is None:
+            stats = pool_stats(pooln, groups)
+        _fill(out, pairs, s1n, pooln, groups, chunk_rows, stats)
     return pd.DataFrame(out, index=pairs.index, columns=names, copy=False)
 
 
 def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame,
-          groups: tuple[str, ...], chunk_rows: int) -> None:
+          groups: tuple[str, ...], chunk_rows: int, stats: PoolStats | None) -> None:
     """Compute ``groups`` chunk by chunk into ``out`` (one row per pair, feature_names order).
 
     Per chunk, each normalised column is aligned to the pairs once (an Arrow take), handed to
@@ -637,13 +771,15 @@ def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.Dat
                     live_l[c], live_r[c] = s1_cols[c].take(at_l), pool_cols[c].take(at_r)
             left = _aligned({c: live_l[c] for c in inputs[g]}, len(chunk))
             right = _aligned({c: live_r[c] for c in inputs[g]}, len(chunk))
-            feats = REGISTRY[g](chunk, left, right)
+            extra = {"stats": stats} if g in STATS_GROUPS else {}
+            feats = REGISTRY[g](chunk, left, right, **extra)
             if list(feats.columns) != FEATURE_COLUMNS[g]:
                 raise RuntimeError(f"group {g!r} returned {list(feats.columns)}, "
                                    f"expected {FEATURE_COLUMNS[g]}")
             out[sl, where[g]] = feats.to_numpy(dtype=np.float32)
-            if g == "address" and "context" in groups:
-                chunk = chunk.assign(**{_AD_TOKEN_SET: feats[_AD_TOKEN_SET].to_numpy()})
+            consumer, handed = _CARRY.get(g, ("", ()))
+            if consumer in groups:  # a later group of this chunk reuses these columns
+                chunk = chunk.assign(**{c: feats[c].to_numpy() for c in handed})
             for c in inputs[g]:
                 if last[c] == i:  # no later group reads it
                     del live_l[c], live_r[c]
