@@ -22,13 +22,9 @@ from entity_resolution.model import (
 )
 
 FAST = {"n_estimators": 60, "num_threads": 2}
-<<<<<<< HEAD
 FAST_SEED = MatcherParams().seed  # the seed every FAST matcher uses unless told otherwise
-SAVED_FILES = {"lgbm": {"model.txt"}, "logreg": {"model.joblib"}, "heuristic": set()}
-=======
 SAVED_FILES = {"lgbm": {"model.txt"}, "xgb": {"model.ubj"}, "logreg": {"model.joblib"},
                "heuristic": set()}
->>>>>>> 1a7df625a7c62bfd08198fab4092beef7ed30ce6
 
 
 def make_pairs(n: int, seed: int) -> tuple[pd.DataFrame, pd.Series]:
@@ -266,7 +262,6 @@ def test_unfitted_and_unknown_backend_raise(data):
         MatcherParams(backend="xgboost")
 
 
-<<<<<<< HEAD
 def test_reliability_separates_calibrated_from_overconfident():
     rng = np.random.default_rng(0)
     p = rng.random(100_000)
@@ -334,7 +329,8 @@ def test_seed_ensemble_rejects_bad_members(data):
     narrow = Matcher(MatcherParams(backend="heuristic")).fit(X.drop(columns="is_s3"), y)
     with pytest.raises(ValueError, match="different columns"):
         SeedEnsemble([fitted(data, "heuristic"), narrow])
-=======
+
+
 def _cuda_available() -> bool:
     """True when XGBoost can train on a CUDA device here."""
     import xgboost as xgb
@@ -356,4 +352,3 @@ def test_xgb_cuda_matches_cpu(data, tmp_path):
     assert np.corrcoef(gpu.predict_proba(Xv), cpu.predict_proba(Xv))[0, 1] > 0.95
     again = Matcher.load(gpu.save(tmp_path / "m"))
     assert np.allclose(again.predict_proba(Xv), gpu.predict_proba(Xv), atol=1e-6)
->>>>>>> 1a7df625a7c62bfd08198fab4092beef7ed30ce6
