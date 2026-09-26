@@ -7,3 +7,4 @@ v103,2026-09-26,E2,v101 matcher; rule tuned on the mock fold's tune entities,0.9
 v104,2026-09-26,C5,two-stage: v101 stage 1 + top-16 filter; stage 2 (XGBoost GPU) with competition + anchor features trained on the mock fit entities,,0.9744,0.9644,,2f84bc8,cands 4.6/S1 (was 34.5); singletons 0.9868,M1,v103,KEEP
 v105,2026-09-26,A5,"blocking budgets at mock density (sampled val entities): word top-k, cap, exact groups, P4",,,0.9780,,aa9bd9a,B0 recall 0.9677; adopted B6 B4 + sim-first cap: 0.9780 at 65.5/S1,M1,v101,KEEP
 v107,2026-09-26,E2,v104 two-stage; rule re-tuned for the tight mock (false merges x1.45),,0.9745,,,86da932,est_public 0.9659 (v104 plain rule 0.9654); f_tight 0.9731,M1,v104,DROP
+v109,2026-09-26,A1,name + address-number exact key on top of B6 (sampled mock val entities),,,0.9829,,a241e40,"B6 recall 0.9780; adopted B6 + name+number, cap 120: 0.9829 at 69.3/S1",M1,v105,KEEP
