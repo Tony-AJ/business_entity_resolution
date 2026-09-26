@@ -20,6 +20,7 @@ LEGAL_FORMS = {
     "pa": "pa", "pbc": "pbc", "opc": "opc", "gmbh": "gmbh",
     "sa": "sa", "sas": "sas", "sasu": "sas", "sarl": "sarl", "eurl": "sarl", "sci": "sci",
     "snc": "snc", "ei": "ei", "eirl": "ei", "selarl": "selarl", "scp": "scp",
+    "compagnie": "co",  # v4: the French pool swaps "Compagnie" and "Cie" (376 pairs)
 }
 # anyascii output of Indic-script legal words (प्राइवेट लिमिटेड -> "praivet limited",
 # प्रा. लि. -> "pra li", एलएलपी -> "elelpi"), applied to transliterated names only so a
@@ -34,6 +35,10 @@ TRANSLIT_LEGAL = {
 HONORIFIC_RE = r"^(?:(?:mr|mrs|ms|dr|smt|shri|sri|messrs|the)\s+)+"
 # Leet digits folded to letters inside tokens that also hold letters ("f0rman", "5tar").
 LEET = str.maketrans("0134578", "oleastb")
+# Name tokens -> canonical form (v5), applied to name_norm: the pool writes "&" as a standalone
+# "+" in every country (never in S1 names, 300-500 per 100k pool names) and "Frères" as "Frs"
+# (France). The French "et" is a regex in normalize, so a leading "ET" acronym stays.
+NAME_TOKENS = {"+": "and", "frs": "freres"}
 
 # Address tokens -> canonical short form. Both spellings of a pair map to the same token
 # (the direction does not matter). The generator writes "Saint" for "St" (Government
@@ -47,7 +52,9 @@ ADDRESS_TOKENS = {
     **dict.fromkeys(["court", "ct", "crt"], "ct"),
     **dict.fromkeys(["circle", "cir", "circ"], "cir"),
     **dict.fromkeys(["highway", "hwy", "hiway"], "hwy"), **dict.fromkeys(["place", "pl"], "pl"),
-    **dict.fromkeys(["suite", "ste"], "ste"), **dict.fromkeys(["apartment", "apt"], "apt"),
+    **dict.fromkeys(["suite", "ste"], "ste"),
+    # v5: the French "Appartement" and the pool's "Appt" / "App" are the apartment "Apt"
+    **dict.fromkeys(["apartment", "apt", "appartement", "appt", "app"], "apt"),
     **dict.fromkeys(["floor", "fl", "flr"], "fl"),
     **dict.fromkeys(["building", "bldg", "bld"], "bldg"),
     **dict.fromkeys(["north", "n"], "n"), **dict.fromkeys(["south", "s"], "s"),
@@ -74,6 +81,9 @@ ADDRESS_TOKENS = {
     **dict.fromkeys(["impasse", "imp"], "imp"), **dict.fromkeys(["allee", "all"], "allee"),
     **dict.fromkeys(["esplanade", "espl"], "espl"), **dict.fromkeys(["faubourg", "fbg"], "fbg"),
     **dict.fromkeys(["residence", "res"], "res"), **dict.fromkeys(["quai", "q"], "quai"),
+    # v5, French pool abbreviations: "12 bis" is written "12B" ("12 b" once digits and letters
+    # split), "Crs" is "Cours", "Psg" / "Pass" are "Passage"
+    "bis": "b", "crs": "cours", **dict.fromkeys(["passage", "psg", "pass"], "passage"),
     # ordinal words (digits lose their suffix earlier: 8th -> 8)
     "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5", "sixth": "6",
     "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10", "eleventh": "11",
