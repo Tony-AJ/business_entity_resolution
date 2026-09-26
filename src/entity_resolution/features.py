@@ -208,14 +208,15 @@ def _fuzzy(left: pa.Array, right: pa.Array, scorers: Sequence[Scorer]) -> list[n
     return outs
 
 
-def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
-    """Distinct-token overlap of aligned space-separated strings.
+def _token_matrix(left: pa.Array, right: pa.Array
+                  ) -> tuple[sp.csr_array, pa.Array, np.ndarray, np.ndarray, np.ndarray]:
+    """Binary string x token matrix of aligned space-separated strings (set semantics).
 
-    Returns per pair ``(common, n_left, n_right, first_left, first_right)``: distinct tokens
-    shared, distinct tokens on each side, and the vocabulary code of each side's first token
-    (-1 for an empty string; codes compare across sides). Every run of equal strings becomes
-    one row of a binary CSR matrix over a vocabulary shared by both sides; ``common`` is the
-    row-wise size of the elementwise product of the two sides' rows.
+    Every run of equal left strings (the S1 record repeats once per candidate) and every
+    right string becomes one CSR row over a vocabulary shared by both sides. Returns
+    ``(matrix, vocabulary, left_row, right_row, first)``: the matrix, its token strings, the
+    row of each pair's left and right string, and the vocabulary code of each row's first
+    token (-1 for an empty string; codes compare across sides).
     """
     docs_l, run_l = _runs(left, repeats=True)
     docs_r, run_r = _runs(right, repeats=False)
@@ -239,8 +240,19 @@ def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
                        shape=(len(docs), max(len(vocab.dictionary), 1)))
     mat.sum_duplicates()  # sorts each row and merges repeated tokens: set semantics
     mat.data[:] = 1
+    return mat, vocab.dictionary, run_l, run_r + len(docs_l), first
+
+
+def _token_sets(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, ...]:
+    """Distinct-token overlap of aligned space-separated strings.
+
+    Returns per pair ``(common, n_left, n_right, first_left, first_right)``: distinct tokens
+    shared, distinct tokens on each side, and the vocabulary code of each side's first token
+    (-1 for an empty string; codes compare across sides). ``common`` is the row-wise size of
+    the elementwise product of the two sides' rows of ``_token_matrix``.
+    """
+    mat, _, rows_l, rows_r, first = _token_matrix(left, right)
     size = np.diff(mat.indptr)
-    rows_l, rows_r = run_l, run_r + len(docs_l)
     common = np.diff(mat[rows_l].multiply(mat[rows_r]).indptr)  # stored entries = shared tokens
     return common, size[rows_l], size[rows_r], first[rows_l], first[rows_r]
 
