@@ -1,0 +1,142 @@
+{
+  "version": "v103",
+  "date": "2026-09-26",
+  "group": "E2",
+  "change": "v101 matcher; rule tuned on the mock fold's tune entities",
+  "local_f05": "0.9833",
+  "mock_f05": "0.9704",
+  "cand_recall": "0.9906",
+  "public_f05": "",
+  "commit": "6de139a",
+  "notes": "mock with v101 rule 0.9677; mock cand recall 0.9655",
+  "owner": "M1",
+  "parent": "v101",
+  "decision": "KEEP",
+  "metrics": {
+    "hypothesis": "a rule tuned at test density (mock tune entities) beats the val-tuned rule on the mock; mock F0.5 reproduces v101's public score",
+    "rule": {
+      "tau_abs": 0.725,
+      "tau_rel": 0.7,
+      "tau_single": 0.775,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "parent_rule": {
+      "tau_abs": 0.42,
+      "tau_rel": 0.0,
+      "tau_single": 0.52,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "mock_info": [
+      {
+        "country": "India",
+        "s1_train": 883188,
+        "pool_train": 4133346,
+        "keep_frac": 1.0,
+        "s1_kept": 883188,
+        "pool_kept": 4133346,
+        "s1_present": 709678,
+        "pool_per_s1": 5.824,
+        "test_pool_per_s1": 5.824,
+        "present_val": 176522,
+        "present_tune": 176208,
+        "present_fit": 356948
+      },
+      {
+        "country": "US",
+        "s1_train": 1323633,
+        "pool_train": 6186873,
+        "keep_frac": 0.617,
+        "s1_kept": 815850,
+        "pool_kept": 3816702,
+        "s1_present": 663049,
+        "pool_per_s1": 5.756,
+        "test_pool_per_s1": 5.756,
+        "present_val": 163562,
+        "present_tune": 163325,
+        "present_fit": 336162
+      }
+    ],
+    "mock_unowned_share": 0.40201719536787706,
+    "mock_blocking": {
+      "tune": {
+        "pair_recall": 0.9651792412548333,
+        "entity_recall": 0.9963915355466496,
+        "ceiling_f_beta": 0.987798586612411,
+        "candidates_mean": 34.48349055909146,
+        "candidates_p95": 44.0,
+        "candidates_max": 60.0,
+        "candidate_pairs": 11708283.0,
+        "reduction_ratio": 0.9999956624802065
+      },
+      "val": {
+        "pair_recall": 0.9654926225606854,
+        "entity_recall": 0.996485707609627,
+        "ceiling_f_beta": 0.9879416282780668,
+        "candidates_mean": 34.49830336034627,
+        "candidates_p95": 44.0,
+        "candidates_max": 60.0,
+        "candidate_pairs": 11732321.0,
+        "reduction_ratio": 0.9999956606169723
+      }
+    },
+    "calibration": {
+      "v101|v101 rule": {
+        "f_beta": 0.9677041928947857,
+        "f_beta_singletons": 0.9516981527029149,
+        "f_beta_matched": 0.9686571001991753,
+        "pair_precision": 0.9849184257841114,
+        "pair_recall": 0.9428239953763514,
+        "val_f05": 0.9858,
+        "public": 0.955,
+        "mock_India": 0.9609672019395132,
+        "mock_US": 0.9749749961217369,
+        "mock_minus_public": 0.012704192894785749
+      },
+      "v101|mock rule": {
+        "f_beta": 0.9704407176849666,
+        "f_beta_singletons": 0.9783871474174473,
+        "f_beta_matched": 0.9699676330965783,
+        "pair_precision": 0.9938605706143427,
+        "pair_recall": 0.929550554157884,
+        "val_f05": NaN,
+        "public": NaN,
+        "mock_India": 0.9650795214002377,
+        "mock_US": 0.9762267137633525,
+        "mock_minus_public": NaN
+      }
+    },
+    "mock_f_beta": 0.9704407176849666,
+    "mock_f_beta_parent_rule": 0.9677041928947857,
+    "f_beta": 0.9832764864399469,
+    "f_beta_singletons": 0.9939231891103549,
+    "f_beta_matched": 0.9826457319950392,
+    "pair_precision": 0.9986395837854319,
+    "pair_recall": 0.9519374029531059,
+    "cand_recall": 0.9905702495136199,
+    "cands_mean": 32.970534720947676,
+    "tune_f_beta": 0.9707571528029341,
+    "errors_mock": {
+      "v101 rule": {
+        "false_merge": 15942,
+        "missed": 64357,
+        "false_singleton": 2914,
+        "singleton_merge": 1044
+      },
+      "mock rule": {
+        "false_merge": 6311,
+        "missed": 79354,
+        "false_singleton": 3534,
+        "singleton_merge": 445
+      }
+    },
+    "load_seconds": 80.5,
+    "blocking_seconds": 50.62,
+    "score_seconds": 806.78,
+    "decide_seconds": 20.560000000000002,
+    "tune_seconds": 8.07,
+    "peak_rss_gb": 6.9,
+    "decision": "KEEP"
+  }
+}
