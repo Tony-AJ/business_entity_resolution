@@ -11,7 +11,10 @@ jobs:
   partition: rank and best rival on the S1 side and on the pool side;
 * **anchor features** (``stacking.anchor_features``) over the kept pairs: each candidate
   compared with its entity's best other candidate (true records of one business resemble
-  each other, a same-name decoy does not).
+  each other, a same-name decoy does not);
+* **extra feature groups** (``TwoStageConfig.extra_groups``, optional) over the kept pairs:
+  pair features the stage-1 matcher never read, e.g. M3's idf, token_freq, ctx_idf and
+  address_extra groups, computed for the ~5 kept pairs per S1 instead of every candidate.
 
 Stage 2 is a LightGBM on the pair features plus the competition features, trained on the kept
 pairs of the mock fold's ``fit`` entities (``mock.py``), so it learns at the test's decoy
@@ -42,7 +45,14 @@ from .decision import (
     rule_to_json,
 )
 from .evaluate import blocking_report
-from .features import _ALL_INPUTS, FREQ_COLUMNS, build_features, iter_chunks, pool_stats
+from .features import (
+    _ALL_INPUTS,
+    FREQ_COLUMNS,
+    build_features,
+    feature_names,
+    iter_chunks,
+    pool_stats,
+)
 from .mock import MockFold
 from .model import Matcher, MatcherParams
 from .pipeline import (
@@ -87,11 +97,19 @@ class TwoStageConfig:
     # the tune entities still sees out-of-fold probabilities
     train_roles: tuple[str, ...] = ("fit",)
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
+    # feature groups (features.REGISTRY) built on the kept pairs only and appended to the
+    # stage-2 frame; the stage-1 matcher never reads them. A stage-1 cache holds one
+    # combination: give each extra_groups value its own cache directory
+    extra_groups: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Cross-fitting needs two parts: with one, fit entities would be scored in-sample."""
+        """Cross-fitting needs two parts: with one, fit entities would be scored in-sample.
+
+        Unknown or repeated extra groups are refused here, before any pass runs.
+        """
         if self.folds < 2:
             raise ValueError(f"folds must be >= 2 (out-of-fold scores), got {self.folds}")
+        feature_names(self.extra_groups)
 
     def record(self) -> dict:
         """JSON-ready dict (metrics.json, artifacts)."""
@@ -129,8 +147,12 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     """Stage 1 over every candidate pair of one partition: filter, then competition features.
 
     Features are built chunk by chunk (chunks never split an S1 group, so the per-entity cap
-    is exact); only the kept rows are held. Competition features use every pair.
+    is exact); only the kept rows are held. Competition features use every pair; the
+    ``extra_groups`` see only the kept pairs, with pool statistics of the whole partition.
     """
+    both = sorted(set(tcfg.extra_groups) & set(cfg.feature_groups))
+    if both:
+        raise ValueError(f"extra_groups {both} are stage-1 groups already")
     p1 = np.empty(len(pairs), dtype=np.float32)
     keep = np.zeros(len(pairs), dtype=bool)
     parts = []
@@ -155,6 +177,10 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     if tcfg.rivals:
         own = X["ad_token_set"].to_numpy() if "ad_token_set" in X.columns else None
         extra.append(rival_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep, s1n, pooln, own))
+    if tcfg.extra_groups:  # kept pairs stay grouped by S1: the filter keeps their order
+        extra.append(build_features(
+            pairs[keep].reset_index(drop=True), s1n, pooln, groups=tcfg.extra_groups,
+            chunk_rows=cfg.chunk_rows, stats=pool_stats(pooln, tcfg.extra_groups)))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 
@@ -347,7 +373,8 @@ class TwoStage:
         """Read back what ``save`` wrote; ``cfg`` is the stage-1 pipeline configuration."""
         tc = json.loads((out / "two_stage.json").read_text())
         tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"]),
-                                 "train_roles": tuple(tc.get("train_roles", ("fit",)))})
+                                 "train_roles": tuple(tc.get("train_roles", ("fit",))),
+                                 "extra_groups": tuple(tc.get("extra_groups", ()))})
         rule = rule_from_json(json.loads((out / "rule.json").read_text()))
         models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
         info_path = out / "fit_info.json"
