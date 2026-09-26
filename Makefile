@@ -1,6 +1,8 @@
 # Dev entry points. First time in a clone: make setup hooks
 PYTHON ?= python3.12
-PY := .venv/bin/python
+# Windows venvs keep their executables in Scripts/, POSIX ones in bin/
+VENV_BIN := $(if $(wildcard .venv/Scripts/python.exe),.venv/Scripts,.venv/bin)
+PY := $(VENV_BIN)/python
 DATASET = $(shell $(PY) -c 'from entity_resolution.config import DATASET; print(DATASET)')
 OFFICIAL_VALIDATOR := dataset/student_resource/utils/validate_submission.py
 
@@ -18,16 +20,17 @@ cache:  ## parse every TSV once into <dataset>/.cache/*.parquet (later loads tak
 	$(PY) -m entity_resolution.data
 
 lint:
-	.venv/bin/ruff check src tests
+	$(VENV_BIN)/ruff check src tests
 
 test:
-	.venv/bin/pytest
+	$(VENV_BIN)/pytest
 
 experiment:  ## experiments/vNNN_<slug>/ from the template, NNN = V or next free: make experiment NAME=x V=12
 	$(PY) -m entity_resolution.tracking new $(NAME) $(if $(V),--number $(V))
 
 nb:  ## run a notebook headless, outputs saved in place: make nb NB=experiments/v001_x/v001_x.ipynb
-	.venv/bin/jupyter nbconvert --to notebook --execute --inplace $(NB)
+	$(VENV_BIN)/jupyter nbconvert --to notebook --execute --inplace \
+		$(if $(NB_KERNEL),--ExecutePreprocessor.kernel_name=$(NB_KERNEL)) $(NB)
 
 public:  ## record a leaderboard score in experiments.csv: make public V=v004 SCORE=0.8312
 	$(PY) -m entity_resolution.tracking public $(V) $(SCORE)
