@@ -18,18 +18,15 @@ changes and commit it with the work (`docs(tracker): ...`).
 
 Status: `done` · `doing` · `todo` · `blocked` · `skipped`.
 
-Last updated: 2026-09-26 22:02 IST (day 2).
+Last updated: 2026-09-27 03:46 IST (day 3).
 
 ## Snapshot
 
 - **Decision number since day 2:** est_public on the test-shaped mock (TRACKER "Mock-test
   protocol", "Tight mock"); plain val is a secondary check.
-- **Best M3 versions: v042 and v043, a tie.** v042 (M3's groups in stage 2 of v104's two-stage)
-  est_public **0.9679**, v043 (M3's groups in stage 1) **0.9678**, against **0.9659** for the
-  same pipeline without them (the logged v107, reproduced exactly on this machine). Both KEEP.
-  v043's stage 1 alone scores plain val **0.9876**, the best single-stage model so far.
-- **Done:** 60 of 65 tasks. Every feature of M3's plan is built and measured (v040–v044); v042's test files are written and checked; M2's branch is on main (PR #10). Open: 4 (status posts, day-3 PR window and freeze, M1's upload decision); 1 skipped with its reason (the C1–C5 ablation ladder).
-- **Next:** merge PR #9 into main (reviewed, 333 tests, no conflicts left); M1 runs the organisers' validator on `submissions/v042/` and decides the upload.
+- **Best version: v122** (M3's full run of v110's recipe with every later switch): est_public **0.9747** against v110's **0.9731** (the team's best benchmark before it), mock F0.5 0.9831; test files ready in `submissions/v122/`. Among M3's feature versions, v042 (0.9679) and v043 (0.9678) tie; v044 added 0.0002.
+- **Done:** 62 of 69 tasks. Every feature of M3's plan is built and measured (v040–v044); v122 ran the whole stack on the mock and wrote test files. Open: 5 todo, 1 doing; 1 skipped with its reason (the C1–C5 ablation ladder).
+- **Next:** M1 runs the organisers' validator on `submissions/v122/` and decides the upload; the stage-2 ablation (E-11) says which of v122's stage-2 changes to keep.
 
 ## 1. Module deliverables (03 §3, 02 §5)
 
@@ -78,6 +75,9 @@ Built by M1 in the day-1 walking skeleton, on M3's module; M3 owns and extends t
 | E-06 | v042 test inference: both TSVs, our checker; files in `submissions/v042/` | | | | | | done: 1,732,544 rows each, our checker PASS; France 6.10 candidates per S1, matched share 0.947 (India 0.937, US 0.941); 57 min, peak RSS 3.3 GB (TRACKER 17e) |
 | E-07 | Upload of v042 | | | | | M1's decision (LEADERBOARD.md is M1's); run the organisers' validator first, it is not on this machine | todo (M1) |
 | E-08 | v044 | v042 + interactions + missing_flags in stage 2; arm E without the zero-gain columns | – | 0.9765 | 0.9681 (+0.0002) | INVESTIGATE | done, `1124ec7`: the new flags take 0.08 % of stage 2's gain, pruning is neutral; v042 stays M3's version |
+| E-09 | v122 | v110's recipe + every switch merged after it: rules v5, learned fillers (nofill pass + group), token evidence (stage 1), 2 stage-1 bags, stage-2 extras (interactions, missing_flags, phonetic), stage 2 on fit + tune, 127 leaves, 3 seeds; resumable script `run_v122.py` | – | 0.9831 | **0.9747** (+0.0015 vs v110) | KEEP | done, `482f76b`: stage 1 alone 0.9699 (v110 0.9681), false merges −11 %, misses −7 %; seed averaging adds nothing |
+| E-10 | v122 test inference: both TSVs in `submissions/v122/` and `output/` | | | | | | done: 1,732,544 rows each, our checker PASS; France 6.17 candidates per S1, matched share 0.950 (India 0.941, US 0.942); test pass 2.3 h, whole run 5.3 h |
+| E-11 | v122 stage-2 ablation (`ablate_stage2.py`: fit vs fit + tune, 63 vs 127 leaves, extras) on the cached stage-1 outputs | | | | | | doing |
 
 Every comparison is same-machine: v001 (0.98436, harder 0.98383), v101 (rule 0.42/0/0.52, 1,666
 rounds) and v107 (est_public 0.96588, mock F0.5 0.97451) were re-run here and reproduced their
@@ -136,13 +136,15 @@ logged numbers exactly, so the deltas are the features' effect.
 | Z-01 | Last feature PR windows 10:30 and 14:30 IST (14 §7) | todo: I-09's PR |
 | Z-02 | Features part of the final documentation: M3's groups in `docs/methodology.md` §4, v040 / v042 / v043 in its results table | done, `f22c3a9` |
 | Z-03 | Freeze 18:00 IST: only fixes after it | todo |
+| Z-04 | Upload of v122 (M1's decision: organisers' validator on `submissions/v122/` first) | todo (M1) |
 
 ## Status posts (13 §6 format)
 
 ```
 M3  v042  C2  v104 two-stage + M3 groups in stage 2   mock 0.9762 (+0.0017)  est_public 0.9679 (+0.0020)  KEEP  parent v107
 M3  v043  C5  stage 1 = v101 + M3 groups, two-stage   mock 0.9762 (+0.0017)  est_public 0.9678 (+0.0019)  KEEP  parent v107
-next: v042 test files for M1's upload decision; PR of feat/m3-stage2-features
+M3  v122  INT  v110 + every later switch (full run)  mock 0.9831 (+0.0014)  est_public 0.9747 (+0.0015)  KEEP  parent v110
+next: M1 validates submissions/v122/ and decides the upload; stage-2 ablation of v122
 ```
 
 ## Commits on `feat/m3-stage2-features`
