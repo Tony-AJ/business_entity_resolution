@@ -1,0 +1,212 @@
+{
+  "version": "v044",
+  "date": "2026-09-26",
+  "group": "C5",
+  "change": "v042 + interactions and missing_flags groups in stage 2 (kept pairs); v107 rule tuning; pruning arm",
+  "local_f05": "",
+  "mock_f05": "0.9765",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "20486a4",
+  "notes": "est_public 0.9681 (same-machine v042 config 0.9679); without zero-gain columns 0.9680",
+  "owner": "M3",
+  "parent": "v042",
+  "decision": "INVESTIGATE",
+  "metrics": {
+    "hypothesis": "interaction and missing-number flags in v042's stage 2 raise est_public by >= 0.001; leaving the zero-gain columns out of stage 2 costs nothing",
+    "stage1": "v101",
+    "two_stage": {
+      "floor": 0.01,
+      "max_cands": 16,
+      "folds": 2,
+      "seed": 6161,
+      "n_stop_s1": 50000,
+      "anchors": true,
+      "cohesion": false,
+      "rivals": false,
+      "train_roles": [
+        "fit"
+      ],
+      "model": {
+        "backend": "xgb",
+        "num_leaves": 63,
+        "learning_rate": 0.05,
+        "n_estimators": 4000,
+        "early_stopping": 100,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 1,
+        "min_data_in_leaf": 200,
+        "lambda_l2": 1.0,
+        "max_bin": 255,
+        "scale_pos_weight": 1.0,
+        "seed": 42,
+        "num_threads": 12,
+        "device": "cuda",
+        "min_child_weight": 1.0
+      },
+      "extra_groups": [
+        "idf",
+        "token_freq",
+        "ctx_idf",
+        "address_extra",
+        "interactions",
+        "missing_flags"
+      ],
+      "drop_columns": []
+    },
+    "extra_groups": [
+      "idf",
+      "token_freq",
+      "ctx_idf",
+      "address_extra",
+      "interactions",
+      "missing_flags"
+    ],
+    "zero_gain_columns": [
+      "sim_addr_char",
+      "addr_empty_r",
+      "addr_empty_l",
+      "postcode_prefix_eq"
+    ],
+    "rule": {
+      "gamma": 1.5,
+      "miss": 0.2,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "rule_kind": "ExpectedRule",
+    "f_beta": 0.9764739936588771,
+    "f_tight": 0.9753007886828494,
+    "est_public": 0.9681007886828494,
+    "f_beta_singletons": 0.9861321890208802,
+    "f_beta_matched": 0.9758990004189908,
+    "pair_precision": 0.9972128172485712,
+    "pair_recall": 0.9387392058203576,
+    "mock_India": 0.9724341402468581,
+    "mock_US": 0.9808339489296392,
+    "arms": {
+      "A: v104 columns": {
+        "f_beta": 0.974510893391814,
+        "f_tight": 0.9730784726663902,
+        "est_public": 0.9658784726663903,
+        "f_beta_singletons": 0.9836726149981684,
+        "f_beta_matched": 0.9739654573354986,
+        "pair_precision": 0.9964789083528017,
+        "pair_recall": 0.9342345481743387,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.05,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 70,
+        "seconds": 412.8
+      },
+      "B: + M3 groups (v042)": {
+        "f_beta": 0.9762304710649456,
+        "f_tight": 0.9750819568512777,
+        "est_public": 0.9678819568512778,
+        "f_beta_singletons": 0.9865508399183631,
+        "f_beta_matched": 0.9756160558350369,
+        "pair_precision": 0.9972593307453753,
+        "pair_recall": 0.938015060855375,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.0,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 93,
+        "seconds": 526.2
+      },
+      "D: + interactions + missing_flags": {
+        "f_beta": 0.9764739936588771,
+        "f_tight": 0.9753007886828494,
+        "est_public": 0.9681007886828494,
+        "f_beta_singletons": 0.9861321890208802,
+        "f_beta_matched": 0.9758990004189908,
+        "pair_precision": 0.9972128172485712,
+        "pair_recall": 0.9387392058203576,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.2,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 98,
+        "seconds": 894.0
+      },
+      "E: D without zero-gain columns": {
+        "f_beta": 0.976365880298963,
+        "f_tight": 0.9752348851327018,
+        "est_public": 0.9680348851327019,
+        "f_beta_singletons": 0.9867601653671045,
+        "f_beta_matched": 0.9757470645240051,
+        "pair_precision": 0.997284324699365,
+        "pair_recall": 0.9382445434147005,
+        "rule": {
+          "gamma": 1.5,
+          "miss": 0.0,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "rule_kind": "ExpectedRule",
+        "n_columns": 94,
+        "seconds": 548.9
+      }
+    },
+    "parent_logged": {
+      "f_beta": 0.9762304710649456,
+      "f_tight": 0.9750819568512777,
+      "est_public": 0.9678819568512778,
+      "f_beta_singletons": 0.9865508399183631,
+      "f_beta_matched": 0.9756160558350369,
+      "pair_precision": 0.9972593307453753,
+      "pair_recall": 0.938015060855375
+    },
+    "new_importance": {
+      "name_strong_addr_weak": 4.105677830909757e-06,
+      "addr_strong_name_weak": 3.73289489722986e-05,
+      "both_strong": 7.937996771917674e-05,
+      "nums_empty_l": 0.00012053571133696379,
+      "nums_empty_r": 0.0005956318667701579
+    },
+    "errors_mock": {
+      "B: + M3 groups (v042)": {
+        "false_merge": 2744,
+        "missed": 69866,
+        "false_singleton": 3063,
+        "singleton_merge": 289
+      },
+      "D: + interactions + missing_flags": {
+        "false_merge": 2788,
+        "missed": 69070,
+        "false_singleton": 3007,
+        "singleton_merge": 299
+      },
+      "E: D without zero-gain columns": {
+        "false_merge": 2721,
+        "missed": 69611,
+        "false_singleton": 3048,
+        "singleton_merge": 285
+      }
+    },
+    "transitions": {
+      "fixed: false merge dropped": 193,
+      "fixed: miss now predicted": 1527,
+      "broken: new false merge": 247,
+      "broken: true pair lost": 675
+    },
+    "load_seconds": 111.1,
+    "stage1_India_seconds": 1290.48,
+    "stage1_US_seconds": 823.94,
+    "stage1_seconds": 2115.22,
+    "arms_seconds": 2381.9,
+    "peak_rss_gb": 5.0,
+    "decision": "INVESTIGATE"
+  }
+}
