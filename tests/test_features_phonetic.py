@@ -25,13 +25,13 @@ def _records(*rows: dict) -> pd.DataFrame:
     """Minimal normalised frame: only the columns the phonetic group reads."""
     df = pd.DataFrame(list(rows))
     return df.astype({C.ENTITY_ID: "str", "non_latin": bool, "name_core": "str",
-                      "addr_norm": "str"})
+                      "addr_norm": "str", "addr_non_latin": bool})
 
 
 def _rec(entity_id: str, name_core: str = "", addr_norm: str = "",
-        non_latin: bool = False) -> dict:
+        non_latin: bool = False, addr_non_latin: bool = False) -> dict:
     return {C.ENTITY_ID: entity_id, "non_latin": non_latin, "name_core": name_core,
-            "addr_norm": addr_norm}
+            "addr_norm": addr_norm, "addr_non_latin": addr_non_latin}
 
 
 def _pairs(*rows: tuple) -> pd.DataFrame:
@@ -136,7 +136,8 @@ def test_phonetic_features_nan_on_non_latin():
     never fire. The two names below are unrelated strings that would otherwise score 0, not
     NaN - the non_latin flag must override that.
     """
-    s1n = _records(_rec("S1-1", "shakti traders", "5 rajendra nagar", non_latin=True))
+    s1n = _records(_rec("S1-1", "shakti traders", "5 rajendra nagar", non_latin=True,
+                        addr_non_latin=True))
     pooln = _records(_rec("S2-1", "xyz unrelated", "9 unrelated road", non_latin=False))
     row = _row(_pairs(("S1-1", "S2-1", 0, NAN, NAN, NAN)), s1n, pooln, 0)
     assert row[PHONETIC].isna().all()
@@ -177,3 +178,21 @@ def test_phonetic_docs_code_distinct_strings_like_every_row():
     assert sx.to_pylist() == map_tokens(arr, _phonetic_soundex_token.__wrapped__).to_pylist()
     assert dm.to_pylist() == map_tokens(arr, _phonetic_metaphone_token.__wrapped__).to_pylist()
     assert sx[0].as_py() == sx[4].as_py() == "K560 T635"
+
+
+def test_phonetic_name_and_address_have_their_own_script_flags():
+    """A non-Latin name blanks only the name features and a non-Latin address only the
+    address ones: a record's name and address often differ in script."""
+    s1n = _records(_rec("S1-1", "smith bakery", "12 park road"),
+                   _rec("S1-2", "smith bakery", "12 park road"))
+    pooln = _records(_rec("S2-1", "smyth bakery", "12 park road", non_latin=True),
+                     _rec("S2-2", "smyth bakery", "12 park road", addr_non_latin=True))
+    pairs = _pairs(("S1-1", "S2-1", 0, NAN, NAN, NAN), ("S1-2", "S2-2", 0, NAN, NAN, NAN))
+    out = build_features(pairs, s1n, pooln, groups=("phonetic",))
+    name_cols, addr_cols = PHONETIC[:3], PHONETIC[3:]
+    assert out.loc[0, name_cols].isna().all()
+    assert out.loc[0, addr_cols].tolist() == pytest.approx(
+        list(_expected("12 park road", "12 park road")))
+    assert out.loc[1, name_cols].tolist() == pytest.approx(
+        list(_expected("smith bakery", "smyth bakery")))
+    assert out.loc[1, addr_cols].isna().all()

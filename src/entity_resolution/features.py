@@ -121,7 +121,7 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "address_extra": ("addr_norm", "addr_nums", "postcode"),
     "nofill": ("name_core", "name_core_nofill"),  # the column pipeline.load_normalised adds
     "tok_evidence": ("name_core",),
-    "phonetic": ("name_core", "addr_norm", "non_latin"),
+    "phonetic": ("name_core", "addr_norm", "non_latin", "addr_non_latin"),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
@@ -968,7 +968,7 @@ def _phonetic_docs(arr: pa.Array) -> tuple[pa.Array, pa.Array]:
 
 
 def _phonetic_column(left: pd.DataFrame, right: pd.DataFrame, column: str,
-                     non_latin: np.ndarray) -> dict[str, np.ndarray]:
+                     flag: str) -> dict[str, np.ndarray]:
     """Phonetic features of one text ``column`` (07 phonetic §, plan group C).
 
     *_exact_match             the Soundex documents match exactly AND the Metaphone documents
@@ -980,13 +980,13 @@ def _phonetic_column(left: pd.DataFrame, right: pd.DataFrame, column: str,
     *_token_overlap_ratio     share of the S1 side's phonetic codes also on the pool side
                               (asymmetric, like ``ad_contain``)
 
-    NaN wherever either name has no Latin-script letters (``non_latin``): Soundex and
-    Metaphone are English-orthography heuristics, so codes from a transliterated name are
-    noise, not signal, and must read as "not applicable" rather than "no match" (05 §5 already
-    flags the record; a plain non-Latin-character check on ``column`` would find nothing here,
-    since ``normalize.py`` already transliterates it to ASCII before this point). The same flag
-    gates the address columns: source records transliterate name and address together.
+    NaN wherever either side's ``column`` was written in a non-Latin script (the boolean
+    ``flag`` column): Soundex and Metaphone are English-orthography heuristics, so codes from
+    transliterated text are noise, not signal, and must read as "not applicable" rather than
+    "no match" (05 §5 flags the record; a plain non-Latin-character check on ``column`` would
+    find nothing here, since ``normalize.py`` already transliterates it to ASCII).
     """
+    non_latin = left[flag].to_numpy(dtype=bool) | right[flag].to_numpy(dtype=bool)
     sx_l, dm_l = _phonetic_docs(_arrow(left[column]))
     sx_r, dm_r = _phonetic_docs(_arrow(right[column]))
     eq_s, both_s = _eq(sx_l, sx_r)
@@ -1009,10 +1009,11 @@ def _phonetic(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> p
     features miss (a swapped first letter, "Katherine"/"Catherine", scores low on Levenshtein
     but identically on Metaphone). See ``_phonetic_column`` for the three features and the
     non-Latin NaN policy; ``addr_phonetic_*`` is the same computation on ``addr_norm``.
+    Each column has its own script flag: a record's name and address often differ in script
+    (train Source 3: 408k non-Latin addresses with a Latin name, 211k the other way round).
     """
-    non_latin = left["non_latin"].to_numpy(dtype=bool) | right["non_latin"].to_numpy(dtype=bool)
-    name = _phonetic_column(left, right, "name_core", non_latin)
-    addr = _phonetic_column(left, right, "addr_norm", non_latin)
+    name = _phonetic_column(left, right, "name_core", "non_latin")
+    addr = _phonetic_column(left, right, "addr_norm", "addr_non_latin")
     return _frame(pairs.index, {
         "phonetic_exact_match": name["exact_match"],
         "phonetic_jaccard": name["jaccard"],
