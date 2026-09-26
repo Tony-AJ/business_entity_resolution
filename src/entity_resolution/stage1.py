@@ -105,8 +105,9 @@ class _Chunks(xgb.DataIter):
     """Disk chunks of ``write_chunks``, rows of the training or the held-out slice."""
 
     def __init__(self, stems: list[str], names: list[str], stop_frac: float,
-                 held_out: bool) -> None:
+                 held_out: bool, keep_frac: float = 1.0) -> None:
         self._stems, self._names, self._frac, self._held = stems, names, stop_frac, held_out
+        self._keep = keep_frac          # share of the training entities used (by id hash)
         self._i = 0
         super().__init__()
 
@@ -116,7 +117,10 @@ class _Chunks(xgb.DataIter):
             stem = self._stems[self._i]
             self._i += 1
             h = np.load(f"{stem}_h.npy")
-            rows = (h < self._frac) if self._held else (h >= self._frac)
+            if self._held:
+                rows = h < self._frac
+            else:                       # training slice, thinned by entity hash if asked
+                rows = (h >= self._frac) & ((h - self._frac) < self._keep * (1 - self._frac))
             if not rows.any():
                 continue
             X = np.load(f"{stem}_X.npy", mmap_mode="r")[rows]
@@ -130,17 +134,21 @@ class _Chunks(xgb.DataIter):
         self._i = 0
 
 
-def fit_stage1(manifest: dict, params: MatcherParams, stop_frac: float = 0.05) -> Matcher:
+def fit_stage1(manifest: dict, params: MatcherParams, stop_frac: float = 0.05,
+               max_rows: int = 18_000_000) -> Matcher:
     """XGBoost on the chunks of ``manifest``; early stopping on the held-out id slice.
 
-    ``params`` should say ``backend="xgb"``; ``device="cuda"`` trains on the GPU. Returns a
-    ``Matcher`` (feature names = the manifest's) usable as any fitted matcher.
+    ``params`` should say ``backend="xgb"``; ``device="cuda"`` trains on the GPU. At most
+    ``max_rows`` training rows are used (whole entities, by id hash): the binned matrix of
+    ~18M x 53 features is what a 4 GB card holds. Returns a ``Matcher`` (feature names =
+    the manifest's) usable as any fitted matcher.
     """
     if params.backend != "xgb":
         raise ValueError("fit_stage1 trains the xgb backend only")
     t0 = time.perf_counter()
     names = manifest["features"]
-    train = xgb.QuantileDMatrix(_Chunks(manifest["chunks"], names, stop_frac, False),
+    keep = min(1.0, max_rows / max(manifest["rows"] * (1 - stop_frac), 1))
+    train = xgb.QuantileDMatrix(_Chunks(manifest["chunks"], names, stop_frac, False, keep),
                                 max_bin=params.max_bin)
     held = xgb.QuantileDMatrix(_Chunks(manifest["chunks"], names, stop_frac, True),
                                max_bin=params.max_bin, ref=train)
@@ -156,7 +164,8 @@ def fit_stage1(manifest: dict, params: MatcherParams, stop_frac: float = 0.05) -
     m.fit_info_ = {"rows": int(train.num_row()), "positive_rate":
                    manifest["positives"] / max(manifest["rows"], 1),
                    "best_iteration": m.best_iteration_, "tune_logloss": logloss,
-                   "tune_auc": auc, "fit_seconds": round(time.perf_counter() - t0, 2)}
+                   "tune_auc": auc, "fit_seconds": round(time.perf_counter() - t0, 2),
+                   "entity_share_used": keep}
     return m
 
 

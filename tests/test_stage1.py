@@ -54,3 +54,20 @@ def test_write_chunks_and_absent_ids(dataset_dir: Path, tmp_path: Path) -> None:
         X = np.load(f"{stem}_X.npy")
         assert X.shape[1] == len(manifest["features"]) and X.dtype == np.float32
         assert len(np.load(f"{stem}_y.npy")) == len(X) == len(np.load(f"{stem}_h.npy"))
+
+
+def test_fit_stage1_caps_training_rows(tmp_path: Path) -> None:
+    """max_rows thins the training entities by hash; the held-out slice is untouched."""
+    rng = np.random.default_rng(1)
+    X = rng.random((6000, 3), dtype=np.float32)
+    y = (X[:, 0] > 0.5).astype(np.int8)
+    stem = tmp_path / "c_0"
+    np.save(f"{stem}_X.npy", X)
+    np.save(f"{stem}_y.npy", y)
+    np.save(f"{stem}_h.npy", rng.random(6000).astype(np.float32))
+    manifest = {"chunks": [str(stem)], "rows": 6000, "positives": int(y.sum()),
+                "features": ["a", "b", "c"], "entities": 6000}
+    m = fit_stage1(manifest, MatcherParams(backend="xgb", device="cpu", n_estimators=20,
+                                           early_stopping=5, num_threads=2),
+                   stop_frac=0.1, max_rows=2700)
+    assert 2400 < m.fit_info_["rows"] < 3000 and m.fit_info_["entity_share_used"] == 0.5
