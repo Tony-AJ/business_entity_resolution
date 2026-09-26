@@ -20,7 +20,7 @@ import itertools
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import pandas as pd
@@ -445,3 +445,21 @@ def tune_expected(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.D
                                         "pair_precision", "pair_recall", "match_rate"])
     best = table.sort_values(["f_beta", "gamma"], ascending=[False, False], kind="stable").iloc[0]
     return ExpectedRule(float(best["gamma"]), float(best["miss"]), max_matches, True), table
+
+
+def apply_rule(scored: pd.DataFrame, rule: DecisionRule | ExpectedRule) -> pd.DataFrame:
+    """``decide`` for a threshold rule, ``decide_expected`` for an expected-F0.5 rule."""
+    return decide_expected(scored, rule) if isinstance(rule, ExpectedRule) else decide(scored,
+                                                                                         rule)
+
+
+def rule_to_json(rule: DecisionRule | ExpectedRule) -> dict:
+    """A rule as a JSON-ready dict with its ``kind``, read back by ``rule_from_json``."""
+    kind = "expected" if isinstance(rule, ExpectedRule) else "threshold"
+    return {"kind": kind, **asdict(rule)}
+
+
+def rule_from_json(d: dict) -> DecisionRule | ExpectedRule:
+    """The rule written by ``rule_to_json`` (a dict without ``kind`` is a threshold rule)."""
+    d = {k: v for k, v in d.items() if k not in ("kind", "tune_f_beta")}
+    return ExpectedRule(**d) if "gamma" in d else DecisionRule(**d)

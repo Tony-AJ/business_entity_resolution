@@ -29,7 +29,15 @@ import pandas as pd
 
 from . import config as C
 from .data import isin, load_source
-from .decision import SCORED_COLUMNS, DecisionRule, decide, one_to_one_filter
+from .decision import (
+    SCORED_COLUMNS,
+    DecisionRule,
+    ExpectedRule,
+    apply_rule,
+    one_to_one_filter,
+    rule_from_json,
+    rule_to_json,
+)
 from .evaluate import blocking_report
 from .features import build_features, iter_chunks
 from .mock import MockFold
@@ -208,7 +216,7 @@ class TwoStage:
 
     stage1: Fitted
     models: list[Matcher]
-    rule: DecisionRule
+    rule: DecisionRule | ExpectedRule
     tcfg: TwoStageConfig
     tune_table: pd.DataFrame
     info: dict = field(default_factory=dict)
@@ -220,7 +228,7 @@ class TwoStage:
             m.save(out / f"stage2_{k}")
         (out / "two_stage.json").write_text(json.dumps(self.tcfg.record(), indent=2) + "\n")
         (out / "rule.json").write_text(json.dumps(
-            {**asdict(self.rule), "tune_f_beta": float(self.tune_table["f_beta"].max())},
+            {**rule_to_json(self.rule), "tune_f_beta": float(self.tune_table["f_beta"].max())},
             indent=2) + "\n")
         self.tune_table.to_csv(out / "tune_table.csv", index=False)
         (out / "fit_info.json").write_text(json.dumps(self.info, indent=2, default=float) + "\n")
@@ -231,11 +239,10 @@ class TwoStage:
         """Read back what ``save`` wrote; ``cfg`` is the stage-1 pipeline configuration."""
         tc = json.loads((out / "two_stage.json").read_text())
         tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"])})
-        rule = json.loads((out / "rule.json").read_text())
-        rule.pop("tune_f_beta", None)
+        rule = rule_from_json(json.loads((out / "rule.json").read_text()))
         models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
         info_path = out / "fit_info.json"
-        return cls(Fitted.load(out / "stage1", cfg), models, DecisionRule(**rule), tcfg,
+        return cls(Fitted.load(out / "stage1", cfg), models, rule, tcfg,
                    pd.read_csv(out / "tune_table.csv"),
                    json.loads(info_path.read_text()) if info_path.exists() else {})
 
@@ -262,7 +269,7 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
         o = stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
         del poolc, pairs
         scored = o.pairs.assign(prob=predict_stage2(ts.models, o.X))[SCORED_COLUMNS]
-        matches.append(sort_matches(decide(scored, ts.rule), scored))
+        matches.append(sort_matches(apply_rule(scored, ts.rule), scored))
         summary.append(scored.groupby(C.S1_ID, sort=False)["prob"].agg(p_max="max",
                                                                       n_cands="size"))
         cands.append(o.pairs)

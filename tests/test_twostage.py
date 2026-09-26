@@ -116,3 +116,28 @@ def test_two_stage_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
     matching, candidates, *_ = run_test_two_stage(cfg, again, out_dir=tmp_path / "output")
     s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_rule_json_round_trip_and_dispatch() -> None:
+    """Both rule kinds survive JSON and apply_rule picks the matching decoder."""
+    from entity_resolution.decision import (
+        DecisionRule,
+        ExpectedRule,
+        apply_rule,
+        decide,
+        decide_expected,
+        rule_from_json,
+        rule_to_json,
+    )
+    scored = pd.DataFrame({C.S1_ID: ["S1-a", "S1-a", "S1-b"],
+                           C.ENTITY_ID: ["S2-1", "S2-2", "S2-3"],
+                           "prob": np.float32([0.9, 0.35, 0.4])})
+    for rule in (DecisionRule(0.3, 0.0, 0.5, 11, True), ExpectedRule(1.2, 0.1, 5, True)):
+        again = rule_from_json(rule_to_json(rule))
+        assert again == rule
+        ref = decide_expected(scored, rule) if isinstance(rule, ExpectedRule) else decide(
+            scored, rule)
+        pd.testing.assert_frame_equal(apply_rule(scored, rule), ref)
+    assert rule_from_json({"tau_abs": 0.4, "tau_rel": 0.0, "tau_single": 0.5,
+                           "max_matches": 11, "one_to_one": True, "tune_f_beta": 0.9}) == \
+        DecisionRule(0.4, 0.0, 0.5, 11, True)            # rule.json written before kinds
