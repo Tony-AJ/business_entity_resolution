@@ -83,8 +83,13 @@ def test_predict_proba_range_dtype_length(data, backend):
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_chunked_predict_equals_full(data, backend):
     matcher, Xt = fitted(data, backend), data[2]
-    assert np.array_equal(matcher.predict_proba(Xt, chunk_rows=7),
-                          matcher.predict_proba(Xt, chunk_rows=10**9))
+    chunked = matcher.predict_proba(Xt, chunk_rows=7)
+    full = matcher.predict_proba(Xt, chunk_rows=10**9)
+    if backend == "logreg":
+        # float32 BLAS picks its kernel by matrix size, so the last bit can differ by chunk
+        np.testing.assert_allclose(chunked, full, rtol=0, atol=1e-6)
+    else:
+        assert np.array_equal(chunked, full)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
