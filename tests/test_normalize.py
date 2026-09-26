@@ -380,3 +380,26 @@ def test_v5_french_address_tokens():
                                          + ["88 cours de la martinique bordeaux"] * 2
                                          + ["4 passage birly bordeaux"] * 3
                                          + ["9 rue valles apt 11 nantes"] * 3)
+
+
+def test_v5_own_country_leaves_name_core():
+    """S1's "(France)" / "(India)" and the pool's bare "France" leave name_core. Only the
+    record's own country counts, "US" is too short to remove anything ("Toys R Us"), and
+    name_norm keeps the word. Source 1 never writes a bare "France" (0 of 259,452 names), so
+    "Air France" in France losing it is the measured behaviour, not an accident."""
+    rows = [("S1-1", "Maeva (France) Societe", "", "France"),
+            ("S2-2", "Maeva Societe", "", "France"),
+            ("S2-3", "MAEVA FRANCE SOCIETE", "", "France"),
+            ("S1-4", "Tata Motors (India) Ltd", "", "India"),
+            ("S1-5", "Maeva (France) Societe", "", "India"),
+            ("S1-6", "Toys R Us", "", "US"),
+            ("S1-7", "Air France", "", "France")]
+    out = normalise_records(_src(*rows))
+    assert out["name_core"].tolist() == ["maeva societe"] * 3 + [
+        "tata motors", "maeva france societe", "toys r us", "air"]
+    assert out["name_norm"].iloc[0] == "maeva france societe"
+    assert out["name_squash"].iloc[0] == "maevasociete"
+    # switched off, or without the country values, the word stays in name_core
+    off = normalise_records(_src(*rows), NormaliseConfig(own_country=False))
+    assert off["name_core"].iloc[0] == "maeva france societe"
+    assert normalise_names(_src(*rows)[C.NAME])["name_core"].iloc[3] == "tata motors india"

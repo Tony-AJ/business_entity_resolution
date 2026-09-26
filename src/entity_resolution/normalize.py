@@ -17,13 +17,15 @@ Rules v5 (they change US and India records too; measured on train true pairs): t
 ``&`` written ``et`` (France) or as a standalone ``+`` (every country) reads as ``and``,
 ``Frs`` as ``Freres``, and legal forms written in leet (``5ARL``, ``C0rp``) are legal forms;
 the French pool's address abbreviations ``12B`` (``12 bis``), ``Crs``, ``Psg`` / ``Pass`` and
-``Appt`` / ``App`` read like the full forms.
+``Appt`` / ``App`` read like the full forms; and the record's own country name, which Source 1
+writes into names (``(France)``, ``(India)``) and the pool drops, leaves ``name_core``.
 
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
 the only Python loops are ``anyascii`` on rows that still hold non-ASCII characters and
 the per-distinct-token maps. Country never selects a code path: the maps simply hold
-tokens from every country, France included.
+tokens from every country, France included, and the one use of a record's country value is
+dropping that very word from its own ``name_core`` (v5), whatever the country.
 """
 from __future__ import annotations
 
@@ -46,7 +48,8 @@ EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (0
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
 # 4: French number marker and "compagnie" (US and India output byte-identical to 3).
 # 5: "et" / "+" -> "and", "frs" -> "freres", leet legal forms, French address tokens (bis,
-#    crs, psg / pass, appt / app / appartement); US and India records change too.
+#    crs, psg / pass, appt / app / appartement), own country name out of name_core; US and
+#    India records change too.
 RULES_VERSION = 5
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
@@ -73,6 +76,7 @@ class NormaliseConfig:
     transliterate: bool = True      # anyascii on non-ASCII rows (R0)
     strip_legal: bool = True        # legal forms out of name_core (R5)
     expand_abbrev: bool = True      # address token map (R7)
+    own_country: bool = True        # the record's own country name out of name_core (v5)
     region_map: Mapping[str, str] | None = None  # None -> static REGION_ABBREV
     chunk_rows: int = 1_000_000     # rows normalised at a time (bounds peak memory)
     # learned transliterated-token -> Latin-token map for non-Latin names (fit_token_map);
@@ -209,18 +213,40 @@ def _name_tokens(arr: pa.Array) -> pa.Array:
     return map_tokens(arr, _dict_fn(NAME_TOKENS))  # "+" -> "and", "frs" -> "freres"
 
 
+def _drop_own_country(core: pa.Array, country: pd.Series) -> pa.Array:
+    """Remove each record's own country name from its name_core tokens (v5).
+
+    Source 1 writes the country into names (``Maeva (France) Societe``, ``Tata Motors
+    (India) Ltd``) and the pool drops it or writes it bare, so it only blurs the name keys.
+    Open set: the word is the row's own ``country`` value folded like a name, and only a
+    single word of at least four letters counts, so ``US`` never removes ``us``.
+    """
+    keys = _punct(fold(country)[0])
+    for value in pc.unique(keys).to_pylist():
+        if len(value) < 4 or not value.isalpha():  # "us", "" or a multi-word value
+            continue
+        rows = pc.equal(keys, value)
+        kept = map_tokens(core.filter(rows), lambda t, v=value: "" if t == v else t)
+        core = pc.replace_with_mask(core, rows, kept)
+    return core
+
+
 # ------------------------------------------------------------------- names ----
 def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
-                    token_map: Mapping[str, str] | None = None) -> pd.DataFrame:
+                    token_map: Mapping[str, str] | None = None,
+                    country: pd.Series | None = None) -> pd.DataFrame:
     """Name columns of 02 §4.1 (R0-R6) plus ``domain_form``.
 
     name_norm    folded, punctuation-free name, dotted initials joined
-    name_core    name_norm without legal forms and leading honorifics, leet folded
+    name_core    name_norm without legal forms, leading honorifics and the record's own
+                 country name (v5), leet folded
     legal_form   canonical legal forms in order of appearance ("pvt ltd")
     name_first / name_sorted / name_squash   blocking keys (first token, sorted distinct
                  tokens, letters and digits only)
 
     ``token_map`` (learned by ``fit_token_map``) rewrites tokens of non-Latin rows.
+    ``country`` (each record's country value, aligned by position) enables the own-country
+    rule; without it the rule is off.
     """
     arr, non_latin = fold(names, cfg.transliterate)
     raw_domain = pc.match_substring_regex(
@@ -233,14 +259,15 @@ def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
     # ("orthopedichealthcom"); short words keep it ("intercom", "telecom")
     norm = pc.replace_substring_regex(norm, r"^([a-z0-9]{7,})com$", r"\1")
     norm = _name_tokens(norm)  # v5: "et" / "+" -> "and", "frs" -> "freres"
-    out = _name_columns(norm, non_latin, cfg, token_map)
+    out = _name_columns(norm, non_latin, cfg, token_map, country)
     out.insert(1, "domain_form", raw_domain.to_numpy(zero_copy_only=False))
     out.index = names.index
     return out
 
 
 def _name_columns(norm: pa.Array, non_latin: np.ndarray, cfg: NormaliseConfig,
-                  token_map: Mapping[str, str] | None) -> pd.DataFrame:
+                  token_map: Mapping[str, str] | None,
+                  country: pd.Series | None = None) -> pd.DataFrame:
     """Everything derived from ``name_norm``: the learned map, legal forms, keys (R5-R6)."""
     if token_map:  # learned transliteration fixes, on the rows written in a non-Latin script
         norm = _by_script(norm, non_latin, lambda a, m: map_tokens(a, _dict_fn(m)), {}, token_map)
@@ -254,6 +281,8 @@ def _name_columns(norm: pa.Array, non_latin: np.ndarray, cfg: NormaliseConfig,
     else:
         core = map_tokens(norm, _leet)
         legal = pa.array([""] * len(norm), type=pa.string())
+    if country is not None and cfg.own_country:  # v5: "(France)" / "(India)" leave the core
+        core = _drop_own_country(core, country)
     core = _collapse(pc.replace_substring_regex(core, HONORIFIC_RE, ""))
     # "Dover & Co" loses "co" and keeps a dangling "and": drop it at either end
     core = _collapse(pc.replace_substring_regex(core, r"^(?:and )+|(?: and)+$|^and$", ""))
@@ -358,7 +387,7 @@ def normalise_records(df: pd.DataFrame, cfg: NormaliseConfig = DEFAULT) -> pd.Da
     parts = []
     for start in range(0, max(len(df), 1), cfg.chunk_rows):
         part = df.iloc[start:start + cfg.chunk_rows]
-        names = normalise_names(part[C.NAME], cfg)
+        names = normalise_names(part[C.NAME], cfg, country=part[C.COUNTRY])
         addrs = normalise_addresses(part[C.ADDRESS], cfg)
         out = pd.concat([part[[C.ENTITY_ID, C.COUNTRY]].astype("str"), names, addrs], axis=1)
         name_addr = (out["name_core"] + " " + out["addr_norm"]).str.strip()
@@ -410,7 +439,8 @@ def apply_token_map(norm: pd.DataFrame, token_map: Mapping[str, str],
         return norm
     out = norm.copy()
     sub = pa.array(norm["name_norm"].iloc[rows].tolist(), type=pa.string())
-    fixed = _name_columns(sub, np.ones(len(rows), dtype=bool), cfg, token_map)
+    country = norm[C.COUNTRY].iloc[rows] if C.COUNTRY in norm else None  # own-country rule
+    fixed = _name_columns(sub, np.ones(len(rows), dtype=bool), cfg, token_map, country)
     for col in ["name_norm", "name_core", "legal_form", "name_first", "name_sorted",
                 "name_squash"]:
         out.loc[out.index[rows], col] = fixed[col].to_numpy()
