@@ -76,6 +76,7 @@ def _records(*records: dict) -> pd.DataFrame:
     for i, col in enumerate(FREQ_COLUMNS):  # rates pipeline.add_frequencies adds in real runs
         df[col] = np.arange(len(df), dtype=np.float32) * (i + 1)
     df["name_core_nofill"] = df["name_core"]  # load_normalised adds it; no filler learned here
+    df["addr_non_latin"] = df["non_latin"]  # normalise_records adds it; one script per fixture
     return df
 
 

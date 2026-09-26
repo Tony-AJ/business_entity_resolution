@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sparse_dot_topn import sp_matmul_topn
+from sparse_dot_topn import sp_matmul_topn, zip_sp_matmul_topn
 
 from . import config as C
 from .normalize import NOFILL, sorted_words
@@ -106,6 +106,11 @@ class BlockingConfig:
     # at 200 for 1.0 / 1.6 per S1
     nofill_max_group: int | None = None
     s1_chunk: int = 50_000
+    # top-k passes transpose and query the pool in pieces of this many rows and zip the pieces'
+    # top-k results (zip_sp_matmul_topn, 02 §7): the transposition then copies one piece at a
+    # time, not the whole pool (India test: 4.72M rows). None = one piece, as the cached runs
+    # did; a set value may break ties at the k-th similarity differently, so it changes the key
+    pool_chunk: int | None = None
     n_threads: int = 12
     vocab_sample: int = 500_000
     seed: int = C.SEED
@@ -123,6 +128,8 @@ class BlockingConfig:
             d.pop("name_num_max_group")
         if d.get("nofill_max_group") is None:
             d.pop("nofill_max_group")
+        if d.get("pool_chunk") is None:
+            d.pop("pool_chunk")
         blob = json.dumps(d, sort_keys=True, default=str).encode()
         return hashlib.sha1(blob).hexdigest()[:8]
 
@@ -144,8 +151,9 @@ def exact_pass(s1n: pd.DataFrame, pooln: pd.DataFrame, key: str, max_group: int)
     s1_code, pool_code = codes[:len(s1n)], codes[len(s1n):]
     size = np.bincount(pool_code, minlength=len(uniques))
     ok = size <= max_group
-    blank = np.flatnonzero(np.asarray(uniques) == "")
-    ok[blank] = False
+    # "" and a missing key (outside the all-str schema, but a None == None join would be a
+    # false merge) are never keys
+    ok[pd.isna(uniques) | pd.Index(uniques).isin([""])] = False
     pool = pd.DataFrame({"k": pool_code, "pool_idx": np.arange(len(pooln), dtype=np.int32)})
     pool = pool[ok[pool_code]]
     left = pd.DataFrame({"k": s1_code, "s1_idx": np.arange(len(s1n), dtype=np.int32)})
@@ -210,7 +218,8 @@ class TopK:
     """A fitted TF-IDF space for one pass over one partition: pool matrix ready to query."""
 
     def __init__(self, spec: TopKSpec, s1_text: pd.Series, pool_text: pd.Series,
-                 vocab_sample: int, seed: int, n_threads: int) -> None:
+                 vocab_sample: int, seed: int, n_threads: int,
+                 pool_chunk: int | None = None) -> None:
         """Fit the vocabulary on a sample of S1 ∪ pool and transform the whole pool once."""
         self.spec, self.n_threads = spec, n_threads
         both = pd.concat([s1_text, pool_text], ignore_index=True)
@@ -234,7 +243,11 @@ class TopK:
         except ValueError:  # empty vocabulary (tiny or empty partition)
             self.ok = False
             return
-        self.pool_t = self._transform(pool_text).T.tocsr()  # V x n_pool, transposed once
+        # V x n_pool, transposed once; with pool_chunk, in V x pool_chunk pieces, so only one
+        # piece's rows and its transposed copy are alive at the same time
+        step = pool_chunk or max(len(pool_text), 1)
+        self.pool_ts = [self._transform(pool_text.iloc[p0:p0 + step]).T.tocsr()
+                        for p0 in range(0, len(pool_text), step)]
 
     def _transform(self, text: pd.Series) -> sp.csr_matrix:
         """TF-IDF rows for ``text`` in 500k-row slices (bounded transient memory)."""
@@ -242,17 +255,23 @@ class TopK:
                  for i in range(0, len(text), 500_000)]
         if not parts:
             return sp.csr_matrix((0, len(self.vec.vocabulary_)), dtype=np.float32)
-        return sp.vstack(parts, format="csr").astype(np.float32)
+        # the vectoriser already yields float32, so no second copy of the stacked matrix: a third
+        # less transient memory (1M synthetic names: peak 282 -> 191 MB for a 94 MB matrix)
+        return sp.vstack(parts, format="csr").astype(np.float32, copy=False)
 
     def query(self, s1_text: pd.Series) -> pd.DataFrame:
         """Top-k pool neighbours of each text above ``min_sim``: s1_idx (local), pool_idx, sim."""
-        if not self.ok or len(s1_text) == 0 or self.pool_t.shape[1] == 0:
+        if not self.ok or len(s1_text) == 0 or not self.pool_ts:
             return pd.DataFrame({"s1_idx": np.zeros(0, np.int32),
                                  "pool_idx": np.zeros(0, np.int32),
                                  "sim": np.zeros(0, np.float32)})
         a = self._transform(s1_text)
-        res = sp_matmul_topn(a, self.pool_t, top_n=self.spec.top_k,
-                             threshold=self.spec.min_sim, sort=True, n_threads=self.n_threads)
+        # one top-k per pool piece; zip keeps the best top_k over the pieces, with pool_idx
+        # offset by each piece's position (sorted pieces are what zip expects)
+        parts = [sp_matmul_topn(a, pt, top_n=self.spec.top_k, threshold=self.spec.min_sim,
+                                sort=True, n_threads=self.n_threads) for pt in self.pool_ts]
+        res = parts[0] if len(parts) == 1 else zip_sp_matmul_topn(top_n=self.spec.top_k,
+                                                                   C_mats=parts)
         coo = res.tocoo()
         return pd.DataFrame({"s1_idx": coo.row.astype(np.int32),
                              "pool_idx": coo.col.astype(np.int32),
@@ -332,7 +351,7 @@ def block_partition(s1n: pd.DataFrame, pooln: pd.DataFrame,
             rows = np.flatnonzero(pooln["addr_tokens"].to_numpy() <= spec.pool_max_addr_tokens)
         pool_rows[name] = rows
         spaces[name] = TopK(spec, s1n[spec.column], pooln[spec.column].iloc[rows],
-                            cfg.vocab_sample, cfg.seed, cfg.n_threads)
+                            cfg.vocab_sample, cfg.seed, cfg.n_threads, cfg.pool_chunk)
     out = []
     ex_s1 = {k: v["s1_idx"].to_numpy() for k, v in exact.items()}  # sorted by s1_idx
     for a0 in range(0, len(s1n), cfg.s1_chunk):

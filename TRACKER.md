@@ -134,7 +134,7 @@ each) no longer fits, so the strategy changes:
 | 70 | v120 night build: every switch on, test inference, package | M1 | INT | 22:30 | doing | Started 17:58 (commit 9e1aff7): mock est_public ~20:45, test files ~22:30 |
 | 71 | Day-3 uploads: night build first, then ablations from its caches | M1 | INT | Day 3 | todo | 5 uploads |
 | 72 | M3: stage-2 extra feature groups (`feat/m3-stage2-features`) | M3 | C5 | 17:50 | done | Merged at the gate (v042: M3 groups in stage 2, est_public 0.9679 vs 0.9659) |
-| 73 | M2: phonetic Soundex + Metaphone features, entity blocking (`newblocking`, `newfeatureblocking`) | M2 | A / C | Day 3 | todo | Not rebased onto current main by 17:50 (phonetic branch from day 1): goes into a later build |
+| 73 | M2: phonetic Soundex + Metaphone features, entity blocking (`newblocking`, `newfeatureblocking`) | M2 | A / C | Day 3 | doing | `newfeatureblocking` merged with current main on `feat/newfeatureblocking-merge` (PR to main): `phonetic` group (opt-in, jellyfish MIT + metaphone BSD), B4 learned address token map (`fit_address_token_map` / `apply_address_token_map`, not yet in `pipeline.fit`), opt-in pool chunking of the top-k passes (`BlockingConfig.pool_chunk`), v010 blocking sweep (top_k 35: pair recall 0.9915 at 39 candidates per S1) |
 | 74 | Learned filler words (`center`, `services`, alias markers, `id`/`www` tails, OCR forms `lnc` `6roup` `lndia`): filler-free core name, exact pass, `nofill` group (`feat/filler-tokens`) | M1 (agent) | B4 / A1 / C | 17:15 | done | Opt-in; +1.2 % (US) / +2.6 % (India) of true pairs become name-equal; `holdings`, `group`, `groupe`, `participations` are NOT fillers: the pool adds them to decoys (0 of 32,489 US "S1 name + holdings" records match) |
 | 75 | Learned token evidence: per-word log-odds of pool-only and S1-only words (filler vs decoy marker), stage-2 group | M1 (agent) | C / E | 19:30 | doing | Targets false merges of the "S1 name + decoy word" kind that token-set similarity scores as matches |
 
@@ -155,6 +155,7 @@ each) no longer fits, so the strategy changes:
 |---|---|---|---|---|---|---|---|---|
 | v101 | M1 | C5 | v001 + core-name frequency features; LightGBM cap 4000 | 0.9858 | – | 0.9906 | 0.955 | submitted |
 | v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | – | 0.9906 | 0.954 | submitted |
+| v010 | M2 | A2 | blocking top_k 25->35 (name_addr_word pass) | – | – | 0.9915 | – | logged |
 | v041 | M3 | C2 | v040 without frequency (ablation) | 0.9866 | – | 0.9906 | – | kept |
 | v040 | M3 | C2 | v001 + idf, frequency (now `token_freq`), ctx_idf, address_extra groups (70 features) | 0.9870 | – | 0.9906 | – | kept |
 | v042 | M3 | C2 | v104 two-stage + M3's groups in stage 2 (kept pairs); v107 rule tuning | – | 0.9762 | – | – | kept (est_public 0.9679) |
