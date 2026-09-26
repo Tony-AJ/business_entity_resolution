@@ -93,7 +93,7 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 17b | M3's groups in the two-stage matcher: `TwoStageConfig.extra_groups` (stage 2, on the kept pairs) + tests; stage-1 cache refuses another config | M3 | C2–C5 | – | done | `638e774`, `024b47c`; 266 tests pass |
 | 17c | v042: v104 two-stage + M3's groups in stage 2 on the mock (3 arms, v107 rule tuning) | M3 | C2 | – | done | **est_public 0.9679** (+0.0020 over the same-machine v107 reproduction 0.9659), mock F0.5 0.9762, false merges −22 %; without token_freq 0.9675 |
 | 17d | v043: stage 1 = v101 + M3's groups, then v104 two-stage + v107 rule | M3 | C5 | – | done | est_public 0.9678 (tie with v042), mock F0.5 0.9762, singletons 0.9902; stage 1 alone plain val **0.9876** (v101 0.9858); 4.37 candidates per S1 (4.59) |
-| 17e | Test inference of v042 (both TSVs + our checker) for M1's upload decision | M3 | INT | – | todo | stopped at the user's request after France (its stage-1 output and the test normalisation are cached, so a rerun resumes); the organisers' validator is not on this machine |
+| 17e | Test inference of v042 (both TSVs + our checker) for M1's upload decision | M3 | INT | – | done | `submissions/v042/`: 1,732,544 rows each, our checker PASS (ids checked); France 6.10 candidates per S1, matched share 0.947 (India 0.937, US 0.941); run 57 min, peak RSS 3.3 GB. The organisers' validator is not on this machine: M1 runs it before uploading |
 | 17f | M3's last planned features: `interactions` (07 §3), `missing_flags` (07 §1), zero-gain pruning of stage 2 (`drop_columns`, 08 §8), faster token_freq look-ups; v044 notebook prepared | M3 | C4–C5 | – | done | `1378380`, `8933bdc`, `b19f54d`, `f6492e5`; 273 tests pass; v044 runs on the user's instruction |
 
 ## Day 3 — Sun 27 Sep
