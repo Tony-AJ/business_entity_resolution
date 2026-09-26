@@ -1,0 +1,21 @@
+{
+  "version": "v106",
+  "date": "2026-09-26",
+  "group": "D4",
+  "change": "two-stage with a GPU stage 1 (XGBoost, 360k entities), blocking B6 (not run to the end)",
+  "local_f05": "",
+  "mock_f05": "",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "db1807f",
+  "notes": "GPU out of memory in fit_stage1 at 18M training rows x 53 features; the row cap is now sized by feature count (2c1a443) and the design runs as v110",
+  "owner": "M1",
+  "parent": "v107",
+  "decision": "DROP",
+  "metrics": {
+    "status": "failed",
+    "superseded_by": "v110",
+    "error": "XGBoostError: out of memory (free 1.81 GB, requested 3.17 GB) building the QuantileDMatrix of 18M x 53",
+    "stage1_rows_written": 27784962
+  }
+}
