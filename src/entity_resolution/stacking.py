@@ -11,10 +11,14 @@ features plus that context.
     p1                 stage-1 probability of the pair
     s1_rank            rank of p1 among the S1 entity's candidates (1 = best)
     s1_best_other      best p1 among the entity's OTHER candidates (0 without any)
+    s1_gap             p1 - s1_best_other (> 0 only for the entity's best candidate)
     s1_p1_sum          sum of p1 over the entity's candidates (expected match count)
     s1_n_likely        entity candidates with p1 >= LIKELY
     pool_rank          rank of p1 among the S1 entities that have this pool record
     pool_best_other    best p1 of this pool record with OTHER S1 entities (0 without any)
+    pool_gap           p1 - pool_best_other (> 0 only for the record's best entity)
+    pool_p1_sum        sum of p1 over the S1 entities holding this record (a record has at
+                       most one true owner, so a sum well above 1 means ambiguity)
     pool_n_likely      S1 entities with p1 >= LIKELY for this pool record
     pool_degree        S1 entities that have this pool record as a candidate
 
@@ -29,8 +33,9 @@ import pandas as pd
 from . import config as C
 
 LIKELY = 0.5
-STACK_COLUMNS = ["p1", "s1_rank", "s1_best_other", "s1_p1_sum", "s1_n_likely",
-                 "pool_rank", "pool_best_other", "pool_n_likely", "pool_degree"]
+STACK_COLUMNS = ["p1", "s1_rank", "s1_best_other", "s1_gap", "s1_p1_sum", "s1_n_likely",
+                 "pool_rank", "pool_best_other", "pool_gap", "pool_p1_sum", "pool_n_likely",
+                 "pool_degree"]
 
 
 def group_stats(codes: np.ndarray, p1: np.ndarray,
@@ -74,11 +79,13 @@ def competition_features(pairs: pd.DataFrame, p1: np.ndarray) -> pd.DataFrame:
     s1_sum = np.bincount(s1, weights=p, minlength=len(s1_ids)).astype(np.float32)
     s1_likely = np.bincount(s1, weights=likely, minlength=len(s1_ids)).astype(np.float32)
     pool_likely = np.bincount(pool, weights=likely, minlength=len(pool_ids)).astype(np.float32)
+    pool_sum = np.bincount(pool, weights=p, minlength=len(pool_ids)).astype(np.float32)
     degree = np.bincount(pool, minlength=len(pool_ids)).astype(np.float32)
     cols = {
         "p1": p, "s1_rank": s1_rank, "s1_best_other": s1_best_other,
-        "s1_p1_sum": s1_sum[s1], "s1_n_likely": s1_likely[s1],
+        "s1_gap": p - s1_best_other, "s1_p1_sum": s1_sum[s1], "s1_n_likely": s1_likely[s1],
         "pool_rank": pool_rank, "pool_best_other": pool_best_other,
+        "pool_gap": p - pool_best_other, "pool_p1_sum": pool_sum[pool],
         "pool_n_likely": pool_likely[pool], "pool_degree": degree[pool],
     }
     return pd.DataFrame({k: np.asarray(v, dtype=np.float32) for k, v in cols.items()},

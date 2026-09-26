@@ -44,6 +44,9 @@ def test_competition_features_by_hand() -> None:
     assert f["s1_n_likely"].tolist() == [2, 2, 2, 1, 1, 1]
     assert f["pool_n_likely"].tolist() == [3, 0, 1, 3, 0, 3]
     assert f["s1_p1_sum"].iloc[0] == pytest.approx(1.7)
+    assert f["s1_gap"].tolist() == pytest.approx([0.3, -0.7, -0.3, 0.85, -0.85, 0.9])
+    assert f["pool_gap"].tolist() == pytest.approx([-0.05, 0.2, 0.6, 0.05, 0.1, -0.05])
+    assert f["pool_p1_sum"].tolist() == pytest.approx([2.75, 0.2, 0.6, 2.75, 0.1, 2.75])
     with pytest.raises(ValueError, match="p1 has"):
         competition_features(pairs, p1[:3])
 
