@@ -7,8 +7,10 @@ from entity_resolution.normalize import (
     EXTRA_COLUMNS,
     NORM_COLUMNS,
     NormaliseConfig,
+    apply_address_token_map,
     apply_token_map,
     basic_norm,
+    fit_address_token_map,
     fit_token_map,
     normalise_names,
     normalise_records,
@@ -304,3 +306,65 @@ def test_apply_token_map_changes_only_non_latin_rows():
     direct = normalise_names(pool[C.NAME], token_map=token_map)
     pd.testing.assert_frame_equal(out[NAME_COLS], direct[NAME_COLS])
     pd.testing.assert_frame_equal(apply_token_map(pooln, {}), pooln)
+
+
+# ---------------------------------------------------- learned address token map ----
+SHAKTI_NAGAR = "शक्ति नगर पुणे"     # anyascii "skti ngr pune"
+RAM_NAGAR = "राम नगर पुणे"          # anyascii "ram ngr pune"
+SHYAM_NAGAR = "श्याम नगर पुणे"       # anyascii "syam ngr pune"
+LAKSHMI_NAGAR = "लक्ष्मी नगर पुणे"    # anyascii "lksmi ngr pune"
+SURAJ_NAGAR = "सूरज नगर पुणे"       # anyascii "surj ngr pune"
+GANDHI_BAZAAR = "गांधी बाजार पुणे"   # anyascii "gamdhi bajar pune"
+
+
+def _addr_token_map_case() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """(truth pairs, s1n, pooln, raw pool) for fit_address_token_map.
+
+    "ngr" (anyascii of "नगर", nagar) meets "nagar" 5 times and "col" once (a S1 address
+    that names the same place a colony); "gamdhi" / "bajar" meet their Latin form once each,
+    a coincidence. The last two pool rows are already in Latin, so identical addresses on
+    both sides never enter the alignment.
+    """
+    s1 = _src(*[(f"S1-{i}", "Acme", a, "India") for i, a in enumerate([
+        "Shakti Nagar Pune", "Ram Nagar Pune", "Shyam Nagar Pune", "Lakshmi Nagar Pune",
+        "Suraj Nagar Pune", "Gandhi Bazaar Pune", "Shakti Colony Pune",
+        "5 Sunrise Road Pune", "5 Sunrise Road Pune"])])
+    pool = _src(*[(f"S{2 if i < 7 else 3}-{i}", "Acme", a, "India") for i, a in enumerate([
+        SHAKTI_NAGAR, RAM_NAGAR, SHYAM_NAGAR, LAKSHMI_NAGAR, SURAJ_NAGAR, GANDHI_BAZAAR,
+        SHAKTI_NAGAR, "5 Sunrise Road Pune", "5 Sunrise Road Pune"])])
+    truth = pd.DataFrame({C.S1_ID: s1[C.ENTITY_ID], C.ENTITY_ID: pool[C.ENTITY_ID]})
+    return truth.astype("str"), normalise_records(s1), normalise_records(pool), pool
+
+
+def test_fit_address_token_map_learns_alignment():
+    """Alignments seen >= min_count times with >= min_share are learned, coincidences not."""
+    truth, s1n, pooln, _ = _addr_token_map_case()
+    assert fit_address_token_map(truth, s1n, pooln) == {"ngr": "nagar"}
+    assert fit_address_token_map(truth, s1n, pooln, min_count=6) == {}
+    assert fit_address_token_map(truth, s1n, pooln, min_share=0.9) == {}
+    assert fit_address_token_map(truth.iloc[:0], s1n, pooln) == {}
+
+
+def test_apply_address_token_map_changes_only_non_latin_rows():
+    """Script rows get the mapped address text; Latin rows and name columns stay."""
+    truth, s1n, pooln, _ = _addr_token_map_case()
+    token_map = fit_address_token_map(truth, s1n, pooln)
+    before = pooln.copy()
+    out = apply_address_token_map(pooln, token_map)
+    pd.testing.assert_frame_equal(pooln, before)  # input untouched
+    assert list(out.columns) == list(pooln.columns) and out.dtypes.equals(pooln.dtypes)
+    script = pooln["addr_non_latin"].to_numpy()
+    assert script.tolist() == [True] * 7 + [False] * 2
+    pd.testing.assert_frame_equal(out[~script], pooln[~script])
+    fixed = out.iloc[[0, 1, 2, 3, 4, 6]]
+    assert fixed["addr_norm"].str.endswith("nagar pune").all()
+    assert fixed["addr_last"].eq("nagar pune").all()
+    assert fixed["addr_tokens"].eq(3).all()
+    assert out["addr_norm"].iloc[0] == "skti nagar pune"
+    assert out["name_addr"].iloc[0] == "acme skti nagar pune"
+    # "gamdhi bajar pune" holds no learned token: untouched despite being non-Latin
+    assert out["addr_norm"].iloc[5] == pooln["addr_norm"].iloc[5]
+    unchanged = [c for c in out.columns
+                if c not in ["addr_norm", "addr_last", "addr_tokens", "name_addr"]]
+    pd.testing.assert_frame_equal(out[unchanged], pooln[unchanged])
+    pd.testing.assert_frame_equal(apply_address_token_map(pooln, {}), pooln)
