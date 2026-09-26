@@ -14,8 +14,8 @@ the pool's ``N°`` / ``Nº`` number marker leaves addresses before folding, and 
 is a legal form like ``Cie``.
 
 Rules v5 (they change US and India records too; measured on train true pairs): the pool's
-``&`` written ``et`` (France) or as a standalone ``+`` (every country) reads as ``and``, and
-``Frs`` as ``Freres``.
+``&`` written ``et`` (France) or as a standalone ``+`` (every country) reads as ``and``,
+``Frs`` as ``Freres``, and legal forms written in leet (``5ARL``, ``C0rp``) are legal forms.
 
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
@@ -43,7 +43,7 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
 # 4: French number marker and "compagnie" (US and India output byte-identical to 3).
-# 5: "et" / "+" -> "and" and "frs" -> "freres" in names (US and India records change too).
+# 5: "et" / "+" -> "and", "frs" -> "freres", leet legal forms (US and India records change too).
 RULES_VERSION = 5
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
@@ -133,6 +133,13 @@ def _leet(token: str) -> str:
     if token.isalpha() or token.isdigit():
         return token
     return token.translate(LEET)
+
+
+def _legal_form(token: str, forms: Mapping[str, str]) -> str:
+    """Canonical legal form of a token, "" if none. The pool also writes legal forms in leet
+    (``5ARL``, ``C0rp``, ``1td``, ``l1c``), so the leet-folded token is looked up too (v5);
+    no Source 1 name of train or test holds such a token as a real word."""
+    return forms.get(token) or forms.get(_leet(token), "")
 
 
 def _join_initials_py(text: str) -> str:
@@ -238,9 +245,9 @@ def _name_columns(norm: pa.Array, non_latin: np.ndarray, cfg: NormaliseConfig,
     translit_legal = {**LEGAL_FORMS, **TRANSLIT_LEGAL}
     if cfg.strip_legal:
         core = _by_script(norm, non_latin, lambda a, m: map_tokens(
-            a, lambda t, m=m: "" if t in m else _leet(t)), latin_legal, translit_legal)
+            a, lambda t, m=m: "" if _legal_form(t, m) else _leet(t)), latin_legal, translit_legal)
         legal = _by_script(norm, non_latin, lambda a, m: map_tokens(
-            a, lambda t, m=m: m.get(t, "")), latin_legal, translit_legal)
+            a, lambda t, m=m: _legal_form(t, m)), latin_legal, translit_legal)
     else:
         core = map_tokens(norm, _leet)
         legal = pa.array([""] * len(norm), type=pa.string())

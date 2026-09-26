@@ -356,3 +356,14 @@ def test_v5_frs_reads_as_freres():
     out = _names("Jumelage & Frères SAS", "Jumelage & Frs SAS", "JUMELAGE ET FRS")
     assert out["name_core"].tolist() == ["jumelage and freres"] * 3
     assert out["name_squash"].tolist() == ["jumelageandfreres"] * 3
+
+
+def test_v5_leet_legal_forms():
+    """Legal forms the pool writes in leet leave name_core like the plain forms; any other
+    leet word is still only folded ("5tar" -> "star")."""
+    out = _names("Aide Fetes SARL", "Aide Fetes 5ARL", "Acme C0rp", "Acme l1c",
+                 "Sharma Traders Pvt 1td", "Lisette c0", "5tar flxe llc")
+    assert out["name_core"].tolist() == ["aide fetes", "aide fetes", "acme", "acme",
+                                         "sharma traders", "lisette", "star flxe"]
+    assert out["legal_form"].tolist() == ["sarl", "sarl", "corp", "llc", "pvt ltd", "co", "llc"]
+    assert out["name_norm"].iloc[1] == "aide fetes 5arl"  # the written form stays in name_norm
