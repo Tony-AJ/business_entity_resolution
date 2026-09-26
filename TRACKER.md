@@ -130,6 +130,8 @@ each) no longer fits, so the strategy changes:
 | 71 | Day-3 uploads: night build first, then ablations from its caches | M1 | INT | Day 3 | todo | 5 uploads |
 | 72 | M3: stage-2 extra feature groups (`feat/m3-stage2-features`) | M3 | C5 | 21:30 | doing | Opt-in; merged at the gate |
 | 73 | M2: phonetic Soundex + Metaphone features, entity blocking (`newblocking`, `newfeatureblocking`) | M2 | A / C | 21:30 | doing | Branches start from v001-era main: rebase or merge current main, keep opt-in |
+| 74 | Learned filler words (`center`, `services`, alias markers, `id`/`www` tails, OCR forms `lnc` `6roup` `lndia`): filler-free core name, exact pass, `nofill` group (`feat/filler-tokens`) | M1 (agent) | B4 / A1 / C | 17:15 | done | Opt-in; +1.2 % (US) / +2.6 % (India) of true pairs become name-equal; `holdings`, `group`, `groupe`, `participations` are NOT fillers: the pool adds them to decoys (0 of 32,489 US "S1 name + holdings" records match) |
+| 75 | Learned token evidence: per-word log-odds of pool-only and S1-only words (filler vs decoy marker), stage-2 group | M1 (agent) | C / E | 20:30 | doing | Targets false merges of the "S1 name + decoy word" kind that token-set similarity scores as matches |
 
 ## Day 3 — Sun 27 Sep
 
