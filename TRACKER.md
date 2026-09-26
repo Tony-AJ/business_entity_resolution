@@ -10,7 +10,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 10:55 IST (day 2).
+Last updated: 2026-09-26 11:25 IST (day 2).
 
 ## Day 1 — Fri 25 Sep
 
@@ -49,6 +49,13 @@ competes in the pool-side 1-to-1, as on test. The rule is tuned on the mock's tu
 scored on its val-side S1: **mock F0.5** is the decision number from here on; plain val stays
 as a secondary check. Target: mock F0.5 of v001 / v101 within ±0.005 of 0.954 / 0.955.
 
+**Tight mock (after upload #3).** v103 gained +0.006 public but +0.0027 on the mock: the test
+punishes false merges harder. Splitting each mock loss into false-merge (L_FP) and missed-match
+(L_FN) parts, public = 1 − L_FN − 1.45·L_FP − 0.0072 fits both uploads (`mock.FP_WEIGHT`,
+`PUBLIC_OFFSET`). From v107 on, rules are tuned on this tight score and versions compared by
+**est_public** (it reproduces 0.955 / 0.961 exactly). Reweighting by name commonness did not
+explain the gap (test's same-name mix ≈ the mock's).
+
 ## Day 2 — Sat 26 Sep
 
 | # | Task | Owner | Plan | ETA | Status | Notes |
@@ -58,7 +65,7 @@ as a secondary check. Target: mock F0.5 of v001 / v101 within ±0.005 of 0.954 /
 | 26 | Mock-test fold + global 1-to-1 scoring, tuning on mock tune S1, scoring on mock val S1; tests | M1 | INT / E2 | 11:30 | done | `mock.py`, `pipeline.run_mock` / `tune_mock` / `mock_scores`, `decision.one_to_one_filter`; mock = India 710k S1 / 4.13M pool (5.82), US 663k / 3.82M (5.76), 40.2 % of the pool unowned (test ~40 %) |
 | 27 | Mock blocking cache: ~1.37M S1 × ~8.0M pool, per country | M1 | A | 12:30 | done | India 24.7M pairs (34.9 per S1) in 14 min, US 22.6M (34.1 per S1) in 12 min; cached |
 | 28 | Calibrate: v101 on the mock test vs its public score | M1 | INT | 13:15 | done | v101: val 0.9858, **mock 0.9677**, public 0.955: the mock closes 60 % of the gap and is the KEEP/DROP number from here; offset mock − public ≈ +0.013 (India pool on test is 14 % denser than the mock's; France unseen) |
-| 29 | v103: v101 matcher + rule tuned on the mock tune S1; test inference; **upload #3** | M1 | E2 | 11:00 | done | Mock **0.9704** (+0.0027; singletons 0.952 → 0.978; rule τ 0.725 / rel 0.7 / single 0.775); plain val 0.9833. Finding: **candidate recall at mock density 0.9655** (val 0.9906): blocking loses 3.5 % of true pairs at test density → #47 moved up |
+| 29 | v103: v101 matcher + rule tuned on the mock tune S1; test inference; **upload #3** | M1 | E2 | 11:00 | done | **Public 0.961** (+0.006). | Mock **0.9704** (+0.0027; singletons 0.952 → 0.978; rule τ 0.725 / rel 0.7 / single 0.775); plain val 0.9833. Finding: **candidate recall at mock density 0.9655** (val 0.9906): blocking loses 3.5 % of true pairs at test density → #47 moved up |
 | 30 | v104: matcher trained on test-density candidates (fit sample vs the whole train-fold pool) | M1 | D3 / HN | 16:00 | todo | Was #20 (hard negatives): density brings the decoys |
 | 31 | Mock error report: false merges vs misses by category (same-name decoy, empty address, unowned record, France-like cases) | M1 | E | 16:30 | todo | Was #22; picks the next fixes |
 | 32 | France: French legal forms (SARL, SAS, SASU, EURL, SNC, SCI, SA) and street types (rue, av, bd, pl, imp, rte, chem, fbg, St/Ste) in the token maps; test-side sample check | M1 | B2 / B3 | 17:00 | todo | Was #15; 15 % of test S1, never seen in train |
@@ -72,7 +79,10 @@ as a secondary check. Target: mock F0.5 of v001 / v101 within ±0.005 of 0.954 /
 | 46 | Packaging: `scripts/package_submission.sh` + `make package` (doc 16 checklist) | M1 (agent) | INT | 11:00 | done | Flat zip (output/, code/, Documentation_template.md at the root); dry run passes the preflight |
 | 47 | v105: blocking budgets at mock density (word top-k 25→50, cap 60→100, exact groups 50→200, address char / word P4) | M1 | A2–A5 | 12:15 | todo | Runs right after v104 (before v102) |
 | 48 | v106: stage 1 retrained on the GPU (XGBoost, 600k entities absent from the mock) + the blocking v105 picks; two-stage on top; **upload** | M1 | D4 / A5 | 15:30 | todo | `stage1.py` done + tests; notebook ready |
-| 49 | v102 (user request): v101 + rule tuned on the dense tune pool, for an extra public data point | M1 | E2 | 12:45 | todo | Queued after v105 |
+| 49 | v102 (user request): v101 + rule tuned on the dense tune pool, for an extra public data point | M1 | E2 | 16:30 | todo | Queued after v106 |
+| 50 | Tight mock: false merges ×1.45 + offset, calibrated on uploads #2–#3; `fp_weight` tuning | M1 | INT / E2 | 11:15 | done | est_public reproduces both public scores |
+| 51 | v107: v104's two-stage + rule tuned on the tight mock (+ expected-F0.5 candidate); **upload** | M1 | E2 / E5 | 12:15 | todo | Runs right after v104 from its caches (~10 min) |
+| 52 | France: département names (Nord, Gironde, Loire-Atlantique, Pas-de-Calais: 27 % of French address components) mapped to region codes, rules v3 | M1 | B | 12:30 | todo | Applied after v107, before v106; only French test records change |
 
 ## Day 3 — Sun 27 Sep
 
