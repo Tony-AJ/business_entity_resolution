@@ -40,9 +40,10 @@ import pyarrow.parquet as pq
 from . import config as C
 from .blocking import BlockingConfig, block
 from .data import isin, load_source
-from .decision import SCORED_COLUMNS, DecisionRule, Grid, decide, tune
+from .decision import SCORED_COLUMNS, DecisionRule, Grid, decide, one_to_one_filter, tune
 from .evaluate import blocking_report, score_pairs
 from .features import DEFAULT_GROUPS, build_features, iter_chunks
+from .mock import MockFold
 from .model import Matcher, MatcherParams
 from .normalize import (
     RULES_VERSION,
@@ -480,6 +481,88 @@ def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = 
                **timings}
     mem_guard(f"run_fold {tag}")
     return metrics, pairs, scored, matches
+
+
+# ------------------------------------------------------------ mock test ----
+def mock_partition(cfg: PipelineConfig, mock: MockFold, country: str, token_map: dict,
+                   tag: str = "mock") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Normalised present S1, kept pool and candidate pairs of one mock country (cached).
+
+    Frequencies are counted over the country's whole mock fold, as ``run_test`` counts them
+    over the whole test country.
+    """
+    s1 = mock.fold.s1
+    s1_ids = s1[C.ENTITY_ID][(s1[C.COUNTRY] == country).to_numpy()]
+    s1c = load_normalised("train", (1,), cfg, s1_ids, token_map)
+    poolc = load_normalised("train", (2, 3), cfg, pool_of(mock.fold)[C.ENTITY_ID], token_map,
+                            country=country)
+    s1c, poolc = _with_frequencies(cfg, s1c, poolc)
+    pairs = prepare(s1c, poolc, cfg, _tag(tag, s1c, poolc, token_map))
+    return s1c, poolc, pairs
+
+
+def run_mock(cfg: PipelineConfig, fitted: Fitted, mock: MockFold, tag: str = "mock",
+             roles: tuple[str, ...] = ("tune", "val"), timings: dict | None = None
+             ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score every present entity of ``mock``, one country at a time, 1-to-1 over all of them.
+
+    Returns ``(scored, report)``. ``scored``: SCORED_COLUMNS of the pairs of the ``roles``
+    entities that survive the pool-side 1-to-1 against every present entity of their
+    country, so ``decide`` / ``tune`` on any subset of them give what the whole-partition
+    decision gives (``decision.one_to_one_filter``). ``report``: ``blocking_report`` of each
+    role, i.e. candidate recall and candidates per S1 at the mock's density.
+    """
+    timings = {} if timings is None else timings
+    for k in ("blocking_seconds", "score_seconds", "decide_seconds"):
+        timings[k] = 0.0
+    keep = pd.Index(mock.fold.s1[C.ENTITY_ID][mock.role.isin(roles).to_numpy()])
+    out, cands = [], []
+    for country in sorted(mock.fold.s1[C.COUNTRY].unique()):
+        t0 = time.perf_counter()
+        s1c, poolc, pairs = mock_partition(cfg, mock, country, fitted.token_map, tag)
+        timings["blocking_seconds"] += round(time.perf_counter() - t0, 2)
+        t0 = time.perf_counter()
+        scored = score(pairs, s1c, poolc, fitted.matcher, cfg)
+        timings["score_seconds"] += round(time.perf_counter() - t0, 2)
+        del s1c, poolc
+        t0 = time.perf_counter()
+        kept = one_to_one_filter(scored)
+        out.append(kept[isin(kept[C.S1_ID], keep)].reset_index(drop=True))
+        cands.append(pairs.loc[isin(pairs[C.S1_ID], keep), [C.S1_ID, C.ENTITY_ID]])
+        timings["decide_seconds"] += round(time.perf_counter() - t0, 2)
+        del pairs, scored, kept
+        mem_guard(f"run_mock {country}")
+    scored = pd.concat(out, ignore_index=True)
+    cand = pd.concat(cands, ignore_index=True)
+    report = pd.DataFrame({r: blocking_report(cand, mock.part(r)) for r in roles}).T
+    return scored, report
+
+
+def _rows_of(scored: pd.DataFrame, fold: Fold) -> pd.DataFrame:
+    """Rows of ``scored`` whose S1 entity is in ``fold``."""
+    return scored[isin(scored[C.S1_ID], pd.Index(fold.s1[C.ENTITY_ID]))]
+
+
+def tune_mock(scored: pd.DataFrame, mock: MockFold,
+              grid: Grid) -> tuple[DecisionRule, pd.DataFrame]:
+    """``decision.tune`` on the mock's tune entities (``scored`` from ``run_mock``)."""
+    part = mock.part("tune")
+    return tune(_rows_of(scored, part), part.s1[C.ENTITY_ID], part.pairs, grid)
+
+
+def mock_scores(scored: pd.DataFrame, mock: MockFold, rule: DecisionRule,
+                role: str = "val") -> pd.DataFrame:
+    """``score_pairs`` of ``rule`` on the mock's ``role`` entities: all, then per country."""
+    part = mock.part(role)
+    matches = decide(_rows_of(scored, part), rule)
+    rows = {"all": score_pairs(matches, part)}
+    for country in sorted(part.s1[C.COUNTRY].unique()):
+        in_c = (part.s1[C.COUNTRY] == country).to_numpy()
+        ids = pd.Index(part.s1[C.ENTITY_ID][in_c])
+        sub = Fold(f"{part.name}_{country}", part.s1[in_c].reset_index(drop=True), part.s2,
+                   part.s3, part.pairs[isin(part.pairs[C.S1_ID], ids)])
+        rows[country] = score_pairs(matches, sub)
+    return pd.DataFrame(rows).T
 
 
 def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,

@@ -160,3 +160,26 @@ def test_retune_keeps_matcher_and_saves(dataset_dir: Path, tmp_path: Path) -> No
     assert again.matcher is fitted.matcher and again.token_map == fitted.token_map
     assert (tmp_path / "art2" / "rule.json").exists()
     assert "retuned_from" in again.info
+
+
+def test_run_mock_scores_tunes_and_reports(dataset_dir: Path, tmp_path: Path) -> None:
+    """The mock path: every present S1 scored per country, 1-to-1 across them, per-role use."""
+    from entity_resolution.decision import DecisionRule
+    from entity_resolution.mock import build_mock
+    from entity_resolution.pipeline import mock_scores, run_mock, tune_mock
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    fitted = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "art")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=train.s1[C.ENTITY_ID], drop_first=[], shape={})
+    assert len(mock.fold.s1) == len(train.s1) + len(val.s1)       # no shape: all present
+    scored, report = run_mock(cfg, fitted, mock)
+    assert not scored[C.ENTITY_ID].duplicated().any()               # 1-to-1 across roles
+    assert set(report.index) == {"tune", "val"}
+    rule, table = tune_mock(scored, mock, cfg.grid)
+    assert isinstance(rule, DecisionRule) and len(table)
+    scores = mock_scores(scored, mock, rule)
+    assert scores.index[0] == "all"
+    assert set(scores.index[1:]) == set(mock.part("val").s1[C.COUNTRY])
+    assert scores.loc["all", "entities"] == len(mock.ids("val"))
+    assert 0.0 <= scores.loc["all", "f_beta"] <= 1.0
