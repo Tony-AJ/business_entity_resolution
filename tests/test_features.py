@@ -19,9 +19,11 @@ from entity_resolution.features import (
     FEATURE_COLUMNS,
     NAN_FEATURES,
     REGISTRY,
+    STATS_GROUPS,
     build_features,
     feature_names,
     iter_chunks,
+    pool_stats,
 )
 from entity_resolution.normalize import NORM_COLUMNS
 
@@ -103,7 +105,7 @@ def _toy() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def test_registry_names_unique_and_count():
     every = feature_names(ALL_GROUPS)
-    assert len(every) == len(set(every)) == 48
+    assert len(every) == len(set(every)) == sum(len(v) for v in FEATURE_COLUMNS.values())
     assert feature_names() == [c for g in DEFAULT_GROUPS for c in FEATURE_COLUMNS[g]]
     assert len(feature_names()) == 47 and "pool_context" not in DEFAULT_GROUPS
     assert set(FEATURE_COLUMNS) == set(REGISTRY) and NAN_FEATURES <= set(every)
@@ -287,7 +289,9 @@ def test_groups_are_functions_of_aligned_rows():
     right = pooln.set_index(C.ENTITY_ID).loc[pairs[C.ENTITY_ID]].reset_index()
     whole = build_features(pairs, s1n, pooln, ALL_GROUPS)
     for g, group in REGISTRY.items():
-        pd.testing.assert_frame_equal(group(pairs, left, right), whole[FEATURE_COLUMNS[g]])
+        extra = {"stats": pool_stats(pooln, (g,))} if g in STATS_GROUPS else {}
+        pd.testing.assert_frame_equal(group(pairs, left, right, **extra),
+                                      whole[FEATURE_COLUMNS[g]])
 
 
 def test_bad_input_raises():
