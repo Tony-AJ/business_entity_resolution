@@ -18,7 +18,7 @@ changes and commit it with the work (`docs(tracker): ...`).
 
 Status: `done` · `doing` · `todo` · `blocked` · `skipped`.
 
-Last updated: 2026-09-26 17:35 IST (day 2).
+Last updated: 2026-09-26 18:45 IST (day 2).
 
 ## Snapshot
 
@@ -28,10 +28,8 @@ Last updated: 2026-09-26 17:35 IST (day 2).
   est_public **0.9679**, v043 (M3's groups in stage 1) **0.9678**, against **0.9659** for the
   same pipeline without them (the logged v107, reproduced exactly on this machine). Both KEEP.
   v043's stage 1 alone scores plain val **0.9876**, the best single-stage model so far.
-- **Done:** 50 of 60 tasks; 1 doing (E-06, v042 test inference); 5 todo (the push and PR,
-  status posts, day-3 process, and M1's upload decision); 4 skipped with reasons.
-- **Next:** v042's test files to M1 (E-06/E-07), push `feat/m3-stage2-features` and open its
-  PR when the user says so (I-09).
+- **Done:** 55 of 63 tasks: every feature and task of M3's plan is implemented, including the evening's `interactions`, `missing_flags`, zero-gain pruning and faster look-ups; 7 todo (the runs the user starts: v042 test inference, v044; the push and PR; status posts; day-3 process; M1's upload decision); 1 skipped with reasons.
+- **Next (on the user's instruction):** run v044 (four arms, ~1.5 h) and resume v042's test inference; then push `feat/m3-stage2-features` and open its PR.
 
 ## 1. Module deliverables (03 §3, 02 §5)
 
@@ -61,11 +59,12 @@ Built by M1 in the day-1 walking skeleton, on M3's module; M3 owns and extends t
 | F-08 | Speed check of the new groups | done | 26 Sep | 600k synthetic pairs: idf 332k/s, token_freq 321k/s, address_extra ~650k/s (v001 groups 72k/s); `pool_stats` ~5 s per million records |
 | F-09 | Pool-side competition without the S1-sampling bias (TRACKER #17, second half) | done | 26 Sep (M1) | superseded by `stacking.py`: `pool_rank`, `pool_gap`, `pool_p1_sum`, `pool_degree` over every present S1 of the mock / test partition; `pool_gap` carries ~71 % of stage 2's gain. `ctx_pool_indegree` stays opt-in |
 | F-10 | `token_freq` pool-size robustness at the test's density | done | 26 Sep, v042 | the mock has the test's density: arm B (with) 0.9679 vs arm C (without) 0.9675, so the counts help there too |
-| F-11 | Faster token_freq look-ups (per-record counts once per partition) | skipped | | in the two-stage matcher M3's groups run on the kept pairs only (6.3M of 47.3M mock pairs), so the look-up cost stopped mattering |
-| F-12 | Drop features at zero gain for three consecutive versions (08 §8) | skipped | | `sim_addr_char`, `addr_empty_r`, `addr_empty_l`, `postcode_prefix_eq` stay at zero, but v101 / v104 / v107's saved models read the v001 columns and zero-gain columns cost nothing; a cleanup after the challenge |
-| F-13 | Cross-field interactions (07 §3) | skipped | | trees learn them; stage 2 lives on competition features (95 % of its gain in v043); importance never justified them |
+| F-11 | Faster look-ups against the pool-statistics tables | done | 26 Sep, `b19f54d` | token tables keep a hash index on their `CountryStats` (Arrow's `index_in` rebuilt a hash of the whole table on every call: 0.74 s at 3M keys / 1M queries); token_freq looks each run of the repeated S1 string up once; identical counts (`test_count_matches_a_dict_on_both_paths`, `test_stats_groups_identical_with_cached_indexes`) |
+| F-12 | Drop features at zero gain for three consecutive versions (08 §8) | done | 26 Sep, `1378380`, `8933bdc` | `features.ZERO_GAIN_COLUMNS` (`sim_addr_char`, `addr_empty_r`, `addr_empty_l`, `postcode_prefix_eq`) and `TwoStageConfig.drop_columns`, which leaves them out of stage 2 while saved stage-1 models still read them; measured by v044's arm E |
+| F-13 | Cross-field interactions (07 §3): `interactions` group (`name_strong_addr_weak`, `addr_strong_name_weak`, `both_strong`) | done | 26 Sep, `1378380` | `test_interaction_flags_by_hand`; reuses name_fuzzy's / address's similarities when they run in the same build |
 | F-14 | `TwoStageConfig.extra_groups`: M3's groups built on the kept pairs with pool statistics of the whole partition, into stage 2 on the mock and on test (TRACKER 17b) | done | 26 Sep, `638e774` | `test_extra_groups_ride_on_the_kept_pairs`, `test_extra_groups_are_checked` |
 | F-15 | Stage-1 cache records its `TwoStageConfig` fields and refuses a reuse under another configuration (review finding: stale features were returned silently) | done | 26 Sep, `024b47c` | `test_stage1_cache_refuses_another_configuration` |
+| F-16 | Explicit flags where missingness is informative (07 §1): `missing_flags` group (`nums_empty_l`, `nums_empty_r`) | done | 26 Sep, `1378380` | `test_missing_flags_by_hand` |
 
 ## 3. Experiments (C group, v040–v059)
 
@@ -76,8 +75,9 @@ Built by M1 in the day-1 walking skeleton, on M3's module; M3 owns and extends t
 | E-03 | C1–C5 ladder of 07 §6 | | | | | | skipped: v001 already ships every one of these groups; importance per version replaces the ladder |
 | E-04 | v042 | v104 two-stage + M3's groups in stage 2; 3 arms; v107 rule tuning | – | 0.9762 | **0.9679** (+0.0020) | KEEP | done, `d01fc5f` (TRACKER 17c) |
 | E-05 | v043 | stage 1 = v101 + M3's groups; v104 two-stage; v107 rule tuning | 0.9876 (stage 1) | 0.9762 | 0.9678 (+0.0019) | KEEP | done, `5f3b842` (TRACKER 17d) |
-| E-06 | v042 test inference: both TSVs, our checker; files in `submissions/v042/` | | | | | | doing (TRACKER 17e) |
+| E-06 | v042 test inference: both TSVs, our checker; files in `submissions/v042/` | | | | | | todo: stopped at the user's request after France; the test normalisation and France's stage-1 output are cached, so a rerun resumes (TRACKER 17e) |
 | E-07 | Upload of v042 (or v043) | | | | | M1's decision (LEADERBOARD.md is M1's) | todo (M1) |
+| E-08 | v044 | v042 + interactions + missing_flags in stage 2; arm E without the zero-gain columns | | | | | todo: notebook prepared (`f6492e5`), runs on the user's instruction |
 
 Every comparison is same-machine: v001 (0.98436, harder 0.98383), v101 (rule 0.42/0/0.52, 1,666
 rounds) and v107 (est_public 0.96588, mock F0.5 0.97451) were re-run here and reproduced their
@@ -97,7 +97,8 @@ logged numbers exactly, so the deltas are the features' effect.
 | T-08 | Full suite green after PR #8: 217 tests | done | 26 Sep, `29fdd6a` |
 | T-09 | Two-stage with extra groups end to end (mock stage 1, stage 2, save / load, test files that validate, France included) and config checks | done | 26 Sep, `638e774` |
 | T-10 | Stage-1 cache: a reuse under another configuration raises; an older sidecar is still read | done | 26 Sep, `024b47c` |
-| T-11 | Full suite on `feat/m3-stage2-features`: ruff + 266 pytest tests (XGBoost 3.1.1 installed in the venv for main's GPU backend) | done | 26 Sep, `024b47c` |
+| T-11 | Full suite on `feat/m3-stage2-features`: ruff + 273 pytest tests (XGBoost 3.1.1 installed in the venv for main's GPU backend) | done | 26 Sep, `b19f54d` |
+| T-12 | New groups and pruning: `test_interaction_flags_by_hand`, `test_missing_flags_by_hand`, `test_new_flags_are_binary_and_zero_gain_names_exist`, `test_drop_columns_leave_stage2_only`, three look-up tests (F-11) | done | 26 Sep, `1378380`, `8933bdc`, `b19f54d` |
 
 ## 5. Analysis and error follow-up (07 §8, 08 §8, 18 §3)
 
@@ -154,6 +155,12 @@ next: v042 test files for M1's upload decision; PR of feat/m3-stage2-features
 | `0b2122c` | docs(plan): add v043 to 07's two-stage section |
 | `2124541` | docs(tracker): record M3's two-stage work, v042 and v043 |
 | `f22c3a9` | docs(methodology): add M3's feature groups and v040-v043 results |
+| `05eec36` | docs(tracker): update M3's tracker with the day-2 two-stage work |
+| `1378380` | feat(features): add interactions and missing_flags feature groups |
+| `8933bdc` | feat(twostage): add drop_columns to prune stage-2 inputs |
+| `80d6216` | docs(plan): document interactions, missing_flags and pruning in 07 |
+| `f6492e5` | chore(experiments): prepare v044 notebook, to run on request |
+| `b19f54d` | perf(features): cache token-table indexes, look S1 runs up once |
 
 Day 1–2 morning (`feat/features-c2-c5`, merged as PR #8): `c8b7edc`, `1d1df63`, `1fd7220`,
 `c1439ab`, `de3a870`, `b53be04`, `9d77eac`, `c27a5ff`, `0cee0b4`, `26e25c7`, `6e7b015`,
