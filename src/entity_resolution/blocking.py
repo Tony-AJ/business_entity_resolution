@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sparse_dot_topn import sp_matmul_topn
+from sparse_dot_topn import sp_matmul_topn, zip_sp_matmul_topn
 
 from . import config as C
 
@@ -86,6 +86,10 @@ class BlockingConfig:
     addr_char: TopKSpec | None = None
     max_per_s1: int = 60
     s1_chunk: int = 50_000
+    # the pool side of a top-k pass is transposed and queried in chunks of this many rows
+    # (02 §7): each chunk's top-k result is combined with zip_sp_matmul_topn, so the full
+    # transposed pool matrix (India test: 4.72M rows) is never held in memory at once
+    pool_chunk: int = 2_000_000
     n_threads: int = 12
     vocab_sample: int = 500_000
     seed: int = C.SEED
@@ -121,8 +125,9 @@ class TopK:
     """A fitted TF-IDF space for one pass over one partition: pool matrix ready to query."""
 
     def __init__(self, spec: TopKSpec, s1_text: pd.Series, pool_text: pd.Series,
-                 vocab_sample: int, seed: int, n_threads: int) -> None:
-        """Fit the vocabulary on a sample of S1 ∪ pool and transform the whole pool once."""
+                 vocab_sample: int, seed: int, n_threads: int,
+                 pool_chunk: int = 2_000_000) -> None:
+        """Fit the vocabulary on a sample of S1 ∪ pool and transform the pool in chunks."""
         self.spec, self.n_threads = spec, n_threads
         both = pd.concat([s1_text, pool_text], ignore_index=True)
         sample = both.sample(min(vocab_sample, len(both)), random_state=seed)
@@ -145,7 +150,15 @@ class TopK:
         except ValueError:  # empty vocabulary (tiny or empty partition)
             self.ok = False
             return
-        self.pool_t = self._transform(pool_text).T.tocsr()  # V x n_pool, transposed once
+        # transposed in pool_chunk-row pieces: each piece (V x chunk) is queried separately
+        # and the per-chunk top-k results are zipped, so the full V x n_pool transpose
+        # (India test: 4.72M pool rows) is never materialised at once
+        self.pool_ts = []
+        for p0 in range(0, len(pool_text), pool_chunk):
+            chunk = self._transform(pool_text.iloc[p0:p0 + pool_chunk]).T.tocsr()
+            self.pool_ts.append(chunk)
+            del chunk
+            gc.collect()
 
     def _transform(self, text: pd.Series) -> sp.csr_matrix:
         """TF-IDF rows for ``text`` in 500k-row slices (bounded transient memory)."""
@@ -157,13 +170,15 @@ class TopK:
 
     def query(self, s1_text: pd.Series) -> pd.DataFrame:
         """Top-k pool neighbours of each text above ``min_sim``: s1_idx (local), pool_idx, sim."""
-        if not self.ok or len(s1_text) == 0 or self.pool_t.shape[1] == 0:
+        if not self.ok or len(s1_text) == 0 or not self.pool_ts:
             return pd.DataFrame({"s1_idx": np.zeros(0, np.int32),
                                  "pool_idx": np.zeros(0, np.int32),
                                  "sim": np.zeros(0, np.float32)})
         a = self._transform(s1_text)
-        res = sp_matmul_topn(a, self.pool_t, top_n=self.spec.top_k,
-                             threshold=self.spec.min_sim, sort=True, n_threads=self.n_threads)
+        chunks = [sp_matmul_topn(a, pt, top_n=self.spec.top_k, threshold=self.spec.min_sim,
+                                 sort=True, n_threads=self.n_threads) for pt in self.pool_ts]
+        res = chunks[0] if len(chunks) == 1 else zip_sp_matmul_topn(top_n=self.spec.top_k,
+                                                                     C_mats=chunks)
         coo = res.tocoo()
         return pd.DataFrame({"s1_idx": coo.row.astype(np.int32),
                              "pool_idx": coo.col.astype(np.int32),
@@ -230,7 +245,7 @@ def block_partition(s1n: pd.DataFrame, pooln: pd.DataFrame,
             rows = np.flatnonzero(pooln["addr_tokens"].to_numpy() <= spec.pool_max_addr_tokens)
         pool_rows[name] = rows
         spaces[name] = TopK(spec, s1n[spec.column], pooln[spec.column].iloc[rows],
-                            cfg.vocab_sample, cfg.seed, cfg.n_threads)
+                            cfg.vocab_sample, cfg.seed, cfg.n_threads, cfg.pool_chunk)
     out = []
     ex_s1 = {k: v["s1_idx"].to_numpy() for k, v in exact.items()}  # sorted by s1_idx
     for a0 in range(0, len(s1n), cfg.s1_chunk):
