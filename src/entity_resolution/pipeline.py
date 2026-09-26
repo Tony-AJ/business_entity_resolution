@@ -25,6 +25,10 @@ feature group and the ``BlockingConfig.nofill_max_group`` pass read. Everything 
                    blocking=BlockingConfig(nofill_max_group=50),
                    feature_groups=(*groups, "nofill"))
 
+The learned token evidence (``evidence.py``, opt-in ``PipelineConfig.evidence.learn``) is
+fitted next to them and handed to ``build_features(evidence=)`` for the ``tok_evidence``
+group: ``evidence=EvidenceConfig(learn=True)``, ``feature_groups=(..., "tok_evidence")``.
+
 Candidate pairs are cached per tag, country and blocking-config hash (``blocking.block``),
 so a new model version reuses the candidates of an unchanged blocking configuration.
 Scoring builds features chunk by chunk and keeps only the scored pairs.
@@ -59,6 +63,7 @@ from .decision import (
     tune,
 )
 from .evaluate import blocking_report, entity_counts, entity_tight_from_counts, score_pairs
+from .evidence import EvidenceConfig, TokenEvidence, evidence_table, near_duplicates
 from .features import DEFAULT_GROUPS, build_features, iter_chunks, pool_stats
 from .mock import FP_WEIGHT, PUBLIC_OFFSET, MockFold
 from .model import Matcher, MatcherParams
@@ -87,6 +92,8 @@ class PipelineConfig:
     normalise: NormaliseConfig = field(default_factory=NormaliseConfig)
     blocking: BlockingConfig = field(default_factory=BlockingConfig)
     feature_groups: tuple[str, ...] = DEFAULT_GROUPS
+    # learned token evidence of one-sided name words (the tok_evidence group reads it)
+    evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     model: MatcherParams = field(default_factory=MatcherParams)
     grid: Grid = field(default_factory=Grid)
     n_fit_s1: int = 200_000          # S1 entities sampled from the fit side (whole fit pool kept)
@@ -117,7 +124,9 @@ class PipelineConfig:
         g = d["grid"]
         grid = Grid(**{k: tuple(v) if isinstance(v, list) else v for k, v in g.items()})
         return cls(normalise=NormaliseConfig(**d["normalise"]), blocking=blocking,
-                   feature_groups=tuple(d["feature_groups"]), model=MatcherParams(**d["model"]),
+                   feature_groups=tuple(d["feature_groups"]),
+                   evidence=EvidenceConfig(**d.get("evidence", {})),
+                   model=MatcherParams(**d["model"]),
                    grid=grid, **{k: d[k] for k in ("n_fit_s1", "n_stop_s1", "n_tune_s1",
                                                    "tune_pool", "chunk_rows")},
                    dataset_dir=Path(d["dataset_dir"]), cache_dir=Path(d["cache_dir"]))
@@ -134,6 +143,7 @@ class Fitted:
     token_map: dict[str, str] = field(default_factory=dict)
     info: dict = field(default_factory=dict)
     fillers: list[str] | None = None  # learned filler tokens; None: the version learns none
+    token_evidence: TokenEvidence | None = None  # learned word log-odds; None: none learned
 
     def save(self, out: Path) -> Path:
         """Write model/, rule.json, tune_table.csv, token_map.json, config and fit info, and
@@ -147,6 +157,9 @@ class Fitted:
         (out / "token_map.json").write_text(json.dumps(self.token_map, sort_keys=True) + "\n")
         if self.fillers is not None:
             (out / "fillers.json").write_text(json.dumps(self.fillers) + "\n")
+        if self.token_evidence is not None:
+            (out / "token_evidence.json").write_text(json.dumps(self.token_evidence.record())
+                                                     + "\n")
         (out / "config.json").write_text(json.dumps(self.config.record(), indent=2) + "\n")
         (out / "fit_info.json").write_text(json.dumps(self.info, indent=2, default=float) + "\n")
         return out
@@ -160,9 +173,12 @@ class Fitted:
         info = json.loads(info_path.read_text()) if info_path.exists() else {}
         fillers_path = out / "fillers.json"
         fillers = json.loads(fillers_path.read_text()) if fillers_path.exists() else None
+        ev_path = out / "token_evidence.json"
+        evidence = (TokenEvidence.from_record(json.loads(ev_path.read_text()))
+                    if ev_path.exists() else None)
         return cls(Matcher.load(out / "model"), DecisionRule(**rule),
                    pd.read_csv(out / "tune_table.csv"), config,
-                   json.loads((out / "token_map.json").read_text()), info, fillers)
+                   json.loads((out / "token_map.json").read_text()), info, fillers, evidence)
 
 
 # ---------------------------------------------------------------- helpers ----
@@ -313,6 +329,38 @@ def learn_fillers(cfg: PipelineConfig, train: Fold) -> list[str] | None:
     return fillers
 
 
+def learn_token_evidence(cfg: PipelineConfig, train: Fold) -> TokenEvidence | None:
+    """Token evidence fitted on the train fold (``evidence.py``; cached as JSON); None when off.
+
+    Reads country and name_sorted of every S1 and pool record of the fold, one country at a
+    time (the near-duplicate pairs need the country's whole pool, and a name is unique only
+    among all its S1 records); the pairs of every country make one table.
+    """
+    ev = cfg.evidence
+    if not ev.learn:
+        return None
+    key = _hash([_static_key(cfg.normalise), asdict(ev), _ids_key(train.s1[C.ENTITY_ID]),
+                 _ids_key(train.pairs[C.ENTITY_ID])])
+    path = cfg.cache_dir / f"token_evidence_{key}.json"
+    if path.exists():
+        return TokenEvidence.from_record(json.loads(path.read_text()))
+    cols = [C.COUNTRY, "name_sorted"]
+    s1_all = load_normalised("train", (1,), cfg, train.s1[C.ENTITY_ID], columns=cols)
+    pool_ids = pd.concat([train.s2[C.ENTITY_ID], train.s3[C.ENTITY_ID]], ignore_index=True)
+    parts = []
+    for country in sorted(s1_all[C.COUNTRY].unique()):
+        s1n = s1_all[(s1_all[C.COUNTRY] == country).to_numpy()]
+        pooln = load_normalised("train", (2, 3), cfg, pool_ids, columns=cols, country=country)
+        parts.append(near_duplicates(s1n, pooln, train.pairs, ev))
+        del s1n, pooln
+        mem_guard(f"token evidence {country}")
+    del s1_all
+    table = evidence_table(pd.concat(parts, ignore_index=True), ev)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(table.record()))
+    return table
+
+
 def prepare(s1n: pd.DataFrame, pooln: pd.DataFrame, cfg: PipelineConfig, tag: str,
             timings: dict | None = None, fillers: list[str] | None = None) -> pd.DataFrame:
     """Candidate pairs for normalised S1 and pool records, cached under ``tag``.
@@ -393,17 +441,18 @@ def _with_frequencies(cfg: PipelineConfig, s1n: pd.DataFrame, pooln: pd.DataFram
 
 # ---------------------------------------------------------------- scoring ----
 def score(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame, matcher: Matcher,
-          cfg: PipelineConfig) -> pd.DataFrame:
+          cfg: PipelineConfig, evidence: TokenEvidence | None = None) -> pd.DataFrame:
     """SCORED_COLUMNS for every candidate pair, featured and predicted chunk by chunk.
 
     Pool statistics (idf, name frequency) are counted once over the whole ``pooln`` and
-    shared by every chunk, so they never depend on the chunking.
+    shared by every chunk, so they never depend on the chunking. ``evidence``: the version's
+    learned token evidence (``Fitted.token_evidence``) for the tok_evidence group.
     """
     prob = np.empty(len(pairs), dtype=np.float32)
     stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None
     for sl in iter_chunks(pairs, cfg.chunk_rows):
         X = build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows, stats=stats)
+                           chunk_rows=cfg.chunk_rows, stats=stats, evidence=evidence)
         prob[sl] = matcher.predict_proba(X)
         del X
     scored = pairs[[C.S1_ID, C.ENTITY_ID]].copy()
@@ -463,10 +512,14 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     normalise_split("train", cfg)
     token_map = learn_token_map(cfg, train)
     fillers = learn_fillers(cfg, train)
+    evidence = learn_token_evidence(cfg, train)
     timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
     info["token_map_size"] = len(token_map)
     if fillers is not None:  # logged with the version (fit_info.json)
         info["fillers"] = fillers
+    if evidence is not None:
+        info["token_evidence"] = {"pool_words": len(evidence.pool),
+                                  "s1_words": len(evidence.s1)}
     fit_fold, tune_fold = inner_split(train)
 
     # fit side: features in memory for LightGBM
@@ -474,7 +527,7 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     s1n, pooln, pairs = _side("fit", fit_s1, fit_fold, cfg, token_map, info, timings, fillers)
     t0 = time.perf_counter()
     X_fit = build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows)
+                           chunk_rows=cfg.chunk_rows, evidence=evidence)
     y_fit = label_pairs(pairs, fit_fold.pairs)["label"].to_numpy(np.int8)
     del s1n, pooln, pairs
     mem_guard("fit features")
@@ -484,7 +537,7 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     s1n, pooln, pairs = _side("stop", stop_s1, tune_fold, cfg, token_map, info, timings,
                               fillers)
     X_stop = build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
-                            chunk_rows=cfg.chunk_rows)
+                            chunk_rows=cfg.chunk_rows, evidence=evidence)
     y_stop = label_pairs(pairs, tune_fold.pairs)["label"].to_numpy(np.int8)
     timings["features_seconds"] = round(time.perf_counter() - t0, 2)
     del s1n, pooln, pairs
@@ -499,9 +552,10 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     del X_fit, y_fit, X_stop, y_stop
     mem_guard("matcher fit")
 
-    rule, table = _tune_rule(cfg, matcher, train, tune_fold, token_map, info, timings, fillers)
+    rule, table = _tune_rule(cfg, matcher, train, tune_fold, token_map, info, timings, fillers,
+                             evidence)
     fitted = Fitted(matcher, rule, table, cfg, token_map, {**info, "timings": dict(timings)},
-                    fillers)
+                    fillers, evidence)
     if out is not None:
         fitted.save(out)
     mem_guard("fit done")
@@ -510,7 +564,8 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
 
 def _tune_rule(cfg: PipelineConfig, matcher: Matcher, train: Fold, tune_fold: Fold,
                token_map: dict, info: dict, timings: dict,
-               fillers: list[str] | None = None) -> tuple[DecisionRule, pd.DataFrame]:
+               fillers: list[str] | None = None,
+               evidence: TokenEvidence | None = None) -> tuple[DecisionRule, pd.DataFrame]:
     """Decision rule on the tune side (all S1 unless n_tune_s1), scored chunk by chunk."""
     tune_s1 = tune_fold.s1 if cfg.n_tune_s1 is None else sample_s1(tune_fold.s1, cfg.n_tune_s1)
     if cfg.tune_pool not in ("fold", "train"):
@@ -520,7 +575,7 @@ def _tune_rule(cfg: PipelineConfig, matcher: Matcher, train: Fold, tune_fold: Fo
     name = "tune" if cfg.tune_pool == "fold" else "tunedense"
     s1n, pooln, pairs = _side(name, tune_s1, rule_fold, cfg, token_map, info, timings, fillers)
     t0 = time.perf_counter()
-    scored = score(pairs, s1n, pooln, matcher, cfg)
+    scored = score(pairs, s1n, pooln, matcher, cfg, evidence)
     timings["score_seconds"] = round(time.perf_counter() - t0, 2)
     del s1n, pooln, pairs
     t0 = time.perf_counter()
@@ -541,10 +596,10 @@ def retune(cfg: PipelineConfig, fitted: Fitted, train: Fold, out: Path | None = 
     info = {k: v for k, v in fitted.info.items() if k != "timings"}
     _, tune_fold = inner_split(train)
     rule, table = _tune_rule(cfg, fitted.matcher, train, tune_fold, fitted.token_map, info,
-                             timings, fitted.fillers)
+                             timings, fitted.fillers, fitted.token_evidence)
     out_fitted = Fitted(fitted.matcher, rule, table, cfg, fitted.token_map,
                         {**info, "timings": dict(timings), "retuned_from": asdict(fitted.rule)},
-                        fitted.fillers)
+                        fitted.fillers, fitted.token_evidence)
     if out is not None:
         out_fitted.save(out)
     mem_guard("retune done")
@@ -571,7 +626,7 @@ def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = 
     pairs = prepare(s1n, pooln, cfg, _tag(tag, s1n, pooln, fitted.token_map), timings,
                     fitted.fillers)
     t0 = time.perf_counter()
-    scored = score(pairs, s1n, pooln, fitted.matcher, cfg)
+    scored = score(pairs, s1n, pooln, fitted.matcher, cfg, fitted.token_evidence)
     timings["score_seconds"] = round(time.perf_counter() - t0, 2)
     t0 = time.perf_counter()
     matches = decide_by_country(scored, s1n, fitted.rule)
@@ -629,7 +684,7 @@ def run_mock(cfg: PipelineConfig, fitted: Fitted, mock: MockFold, tag: str = "mo
                                            fitted.fillers)
         timings["blocking_seconds"] += round(time.perf_counter() - t0, 2)
         t0 = time.perf_counter()
-        scored = score(pairs, s1c, poolc, fitted.matcher, cfg)
+        scored = score(pairs, s1c, poolc, fitted.matcher, cfg, fitted.token_evidence)
         timings["score_seconds"] += round(time.perf_counter() - t0, 2)
         del s1c, poolc
         t0 = time.perf_counter()
@@ -718,7 +773,7 @@ def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,
                         fillers=fitted.fillers)
         timings["blocking_seconds"] += round(time.perf_counter() - t0, 2)
         t0 = time.perf_counter()
-        scored = score(pairs, s1c, poolc, fitted.matcher, cfg)
+        scored = score(pairs, s1c, poolc, fitted.matcher, cfg, fitted.token_evidence)
         timings["score_seconds"] += round(time.perf_counter() - t0, 2)
         del poolc
         t0 = time.perf_counter()

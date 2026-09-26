@@ -81,6 +81,8 @@ def test_fit_and_run_fold_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path
     # fillers are opt-in: a default version learns, logs and saves none
     assert fitted.fillers is None and again.fillers is None and "fillers" not in fitted.info
     assert not (tmp_path / "art" / "fillers.json").exists()
+    assert fitted.token_evidence is None and again.token_evidence is None
+    assert not (tmp_path / "art" / "token_evidence.json").exists()
 
 
 def test_end_to_end_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path) -> None:
@@ -292,3 +294,30 @@ def test_learn_fillers_samples_whole_entities_past_the_cap(filler_dir: Path, tmp
     sampled = pipeline.learn_fillers(cfg, train)
     assert set(sampled) <= set(full) and sampled == pipeline.learn_fillers(cfg, train)
     assert len(list(cfg.cache_dir.glob("fillers_*.json"))) == 2       # one file per cap
+
+
+def test_token_evidence_end_to_end(filler_dir: Path, tmp_path: Path) -> None:
+    """Token evidence learned on the train fold (cached), saved with the version and read by
+    the tok_evidence group through fit, run_fold and run_test; off by default."""
+    import json
+
+    from entity_resolution.evidence import EvidenceConfig
+    from entity_resolution.pipeline import learn_token_evidence
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, evidence=EvidenceConfig(learn=True, sample_share=1.0, min_support=1,
+                                                prior=1.0),
+                  feature_groups=(*DEFAULT_GROUPS, "tok_evidence"))
+    assert PipelineConfig.from_record(json.loads(json.dumps(cfg.record()))) == cfg
+    train = load_fold("train", filler_dir, frac=0.5)
+    assert learn_token_evidence(base, train) is None
+    fitted = fit(cfg, train, tmp_path / "art")
+    ev = fitted.token_evidence
+    assert ev.pool["center"] > 0 > ev.pool["holdings"]      # a filler, a decoy marker
+    assert fitted.info["token_evidence"]["pool_words"] == len(ev.pool)
+    assert Fitted.load(tmp_path / "art", cfg).token_evidence == ev
+    assert learn_token_evidence(cfg, train) == ev            # read back from the cache
+    metrics, pairs, scored, _ = run_fold(cfg, fitted, load_fold("val", filler_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0 and len(scored) == len(pairs)
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
