@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -321,18 +322,19 @@ def _lookup(values: pa.Array, table: tuple[pa.Array, np.ndarray]) -> np.ndarray:
     return np.append(counts, 0)[pos]  # -1 picks the appended 0
 
 
-def _idf_overlap(left: pa.Array, right: pa.Array, df: tuple[pa.Array, np.ndarray],
+def _idf_overlap(left: pa.Array, right: pa.Array, df: Callable[[pa.Array], np.ndarray],
                  n_docs: int) -> tuple[np.ndarray, ...]:
     """IDF-weighted token agreement of aligned space-separated strings, one float32 per pair.
 
     Tokens weigh idf = ln((1 + N) / (1 + df)) + 1 (binary term weights, set semantics), with
-    df the number of the N pool records holding the token (``pool_stats``). Returns
+    df the number of the N pool records holding the token: ``df(tokens)`` gives it (e.g.
+    ``CountryStats.count`` of the column's token table, ``pool_stats``). Returns
     ``(cosine, top, cover_left, cover_right)``: the cosine of the two idf vectors, the largest
     shared idf over the largest possible one (0 when nothing is shared), and the share of each
     side's idf mass found on the other side. All four are NaN when either string is empty.
     """
     mat, vocab, rows_l, rows_r, _ = _token_matrix(left, right)
-    idf = np.log((1.0 + n_docs) / (1.0 + _lookup(vocab, df))) + 1.0
+    idf = np.log((1.0 + n_docs) / (1.0 + df(vocab))) + 1.0
     doc = np.repeat(np.arange(mat.shape[0]), np.diff(mat.indptr))
     weight = idf[mat.indices]
     mass = np.bincount(doc, weights=weight, minlength=mat.shape[0])
@@ -359,6 +361,9 @@ def _idf_overlap(left: pa.Array, right: pa.Array, df: tuple[pa.Array, np.ndarray
 
 # ---------------------------------------------------------- pool statistics ----
 _NO_TABLE = (pa.array([], pa.large_string()), np.zeros(0, dtype=np.int64))
+# token tables from this size up keep a hash index (CountryStats.count): Arrow's index_in
+# rebuilds its hash of the whole table on every call, i.e. for every chunk and side
+_INDEX_MIN_KEYS = 50_000
 
 
 @dataclass(frozen=True)
@@ -372,10 +377,28 @@ class CountryStats:
 
     n_docs: int
     tables: dict[tuple[str, str], tuple[pa.Array, np.ndarray]] = field(default_factory=dict)
+    # hash indexes of the large token tables, built on first use (F-11); not part of equality
+    _indexes: dict = field(default_factory=dict, init=False, compare=False, repr=False)
 
     def table(self, column: str, kind: str) -> tuple[pa.Array, np.ndarray]:
         """The (values, counts) table of ``column``/``kind``; empty when not computed."""
         return self.tables.get((column, kind), _NO_TABLE)
+
+    def count(self, values: pa.Array, column: str, kind: str) -> np.ndarray:
+        """How many records the (column, kind) table gives each of ``values``; 0 if absent.
+
+        A token table answers one small query per chunk and side (the chunk's vocabulary) but
+        is large, so its hash index is built once and kept (``_INDEX_MIN_KEYS``); the value
+        tables, queried with a chunk's worth of mostly distinct strings, go through
+        ``_lookup``, which needs no memory beyond the call. Both give identical counts.
+        """
+        keys, counts = self.table(column, kind)
+        if kind != "tokens" or len(keys) < _INDEX_MIN_KEYS:
+            return _lookup(values, (keys, counts))
+        index = self._indexes.get((column, kind))
+        if index is None:
+            index = self._indexes[(column, kind)] = pd.Index(keys.to_pandas())
+        return np.append(counts, 0)[index.get_indexer(values.to_pandas())]
 
 
 PoolStats = dict[str, CountryStats]  # country -> statistics of its pool records
@@ -720,7 +743,8 @@ def _idf(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
         for column, prefix in (("name_core", "idf_name"), ("addr_norm", "idf_addr")):
             col_l, col_r = fields[column]
             scores = _idf_overlap(col_l.take(at), col_r.take(at),
-                                  country.table(column, "tokens"), country.n_docs)
+                                  partial(country.count, column=column, kind="tokens"),
+                                  country.n_docs)
             for suffix, values in zip(("cos", "top", "cover_l", "cover_r"), scores,
                                       strict=True):
                 out[f"{prefix}_{suffix}"][rows] = values
@@ -747,11 +771,12 @@ def _token_freq(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
     for rows, country in _by_country(left, stats, "token_freq"):
         at = pa.array(rows)
         for column, prefix in (("name_core", "freq_name"), ("addr_norm", "freq_addr")):
-            table = country.table(column, "values")
             for side, values in zip(("l", "r"), fields[column], strict=True):
                 values = values.take(at)
-                out[f"{prefix}_{side}"][rows] = np.where(_empty(values), np.nan,
-                                                         _lookup(values, table))
+                # the S1 record repeats once per candidate: look each run up once (F-11)
+                runs, run = _runs(values, repeats=side == "l")
+                counts = country.count(runs, column, "values")[run]
+                out[f"{prefix}_{side}"][rows] = np.where(_empty(values), np.nan, counts)
     return _frame(pairs.index, out)
 
 

@@ -523,3 +523,50 @@ def test_new_flags_are_binary_and_zero_gain_names_exist():
     flags = [*FEATURE_COLUMNS["interactions"], *FEATURE_COLUMNS["missing_flags"]]
     assert X[flags].isin([0.0, 1.0]).all().all()  # isin is False on NaN
     assert set(ZERO_GAIN_COLUMNS) <= set(X.columns)
+
+
+# ------------------------------------------------------- faster table look-ups (F-11) ----
+def test_count_matches_a_dict_on_both_paths(monkeypatch):
+    import pyarrow as pa
+
+    from entity_resolution import features as F
+    rng = np.random.default_rng(0)
+    keys = [f"t{i}" for i in rng.permutation(200)]
+    counts = rng.integers(1, 9, len(keys))
+    stats = F.CountryStats(100, {("name_core", "tokens"): (pa.array(keys, pa.large_string()),
+                                                           counts),
+                                 ("name_core", "values"): (pa.array(keys, pa.string()),
+                                                           counts)})
+    queries = [f"t{i}" for i in rng.integers(0, 400, 1000)] + ["", "t0", "t0"]
+    ref = dict(zip(keys, counts.tolist(), strict=True))
+    want = [ref.get(q, 0) for q in queries]
+    values = pa.array(queries, pa.large_string())
+    for threshold in (10**9, 1):  # Arrow's index_in, then the cached hash index
+        monkeypatch.setattr(F, "_INDEX_MIN_KEYS", threshold)
+        for kind in ("tokens", "values"):
+            assert stats.count(values, "name_core", kind).tolist() == want
+    assert F.CountryStats(0).count(values, "addr_norm", "tokens").tolist() == [0] * len(queries)
+
+
+def test_token_index_is_built_once(monkeypatch):
+    import pyarrow as pa
+
+    from entity_resolution import features as F
+    monkeypatch.setattr(F, "_INDEX_MIN_KEYS", 1)
+    stats = F.CountryStats(3, {("addr_norm", "tokens"): (pa.array(["a", "b"], pa.large_string()),
+                                                         np.array([2, 1]))})
+    values = pa.array(["b", "c"], pa.large_string())
+    assert stats.count(values, "addr_norm", "tokens").tolist() == [1, 0]
+    index = stats._indexes[("addr_norm", "tokens")]
+    assert stats.count(values, "addr_norm", "tokens").tolist() == [1, 0]
+    assert stats._indexes[("addr_norm", "tokens")] is index and len(stats._indexes) == 1
+    assert stats == F.CountryStats(3, stats.tables)  # the cache is not part of equality
+
+
+def test_stats_groups_identical_with_cached_indexes(monkeypatch):
+    from entity_resolution import features as F
+    pairs, s1n, pooln = _toy()
+    groups = tuple(g for g in ALL_GROUPS if g in STATS_GROUPS)
+    plain = build_features(pairs, s1n, pooln, groups)
+    monkeypatch.setattr(F, "_INDEX_MIN_KEYS", 1)
+    pd.testing.assert_frame_equal(build_features(pairs, s1n, pooln, groups, chunk_rows=1), plain)
