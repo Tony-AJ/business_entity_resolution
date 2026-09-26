@@ -10,7 +10,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 12:25 IST (day 2).
+Last updated: 2026-09-26 12:30 IST (day 2).
 
 ## Day 1 — Fri 25 Sep
 
@@ -79,7 +79,10 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 46 | Packaging: `scripts/package_submission.sh` + `make package` (doc 16 checklist) | M1 (agent) | INT | 11:00 | done | Flat zip (output/, code/, Documentation_template.md at the root); dry run passes the preflight |
 | 47 | v105: blocking budgets at mock density (word top-k 25→50, cap 60→100, exact groups 50→200, address-word pass, sim-first cap) | M1 | A2–A5 | 12:15 | done | **B6 adopted: candidate recall 0.9677 → 0.9780** (misses −32 %) at 65.5 per S1. Exact-first cap was the culprit (bigger exact groups alone: 0.9551). 8 min via one superset per country |
 | 48 | v106: stage 1 retrained on the GPU (XGBoost, 360k entities absent from the mock) + B6 blocking + rival features + rules v3; two-stage on top; **upload** | M1 | D4 / A5 | 16:30 | doing | Started 12:15; re-blocks mock and test with B6 (1.9× pairs) |
-| 49 | v102 (user request): v101 + rule tuned on the dense tune pool, for an extra public data point | M1 | E2 | 16:30 | todo | Queued after v106 |
+| 49 | v102 (user request): v101 + rule tuned on the dense tune pool, for an extra public data point | M1 | E2 | 18:00 | todo | Queued after v108, v109 |
+| 53 | v108: stage 2 on fit + tune entities (out of fold), 127 leaves, from v106's stage-1 cache | M1 | D3 | 17:00 | todo | Spec-driven stage-2 variant notebook; queued right after v106 |
+| 54 | v109: name + address-number exact key on top of B6 (blocking study, derived from one superset) | M1 | A1 | 17:10 | todo | Targets B6's remaining "name close" misses (common names, groups > 200); derivation checked equal to direct blocking |
+| 55 | Methodology draft updated with day-2 results | M1 (agent) | INT | 13:30 | doing | |
 | 50 | Tight mock: false merges ×1.45 + offset, calibrated on uploads #2–#3; `fp_weight` tuning | M1 | INT / E2 | 11:15 | done | est_public reproduces both public scores |
 | 51 | v107: v104's two-stage + rule tuned on the tight mock (+ expected-F0.5 candidate); **upload #4** | M1 | E2 / E5 | 12:15 | done | est_public **0.9659** (mock 0.9745); expected-F0.5 decoding won; 5 min from caches. Upload pending |
 | 52 | France: département names (Nord, Gironde, Loire-Atlantique, Pas-de-Calais: 27 % of French address components) mapped to region codes, rules v3 | M1 | B | 12:15 | done | Committed during v105; v106 is the first version with it |
