@@ -9,7 +9,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 | Day | Date | Used | Left |
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
-| 2 | 2026-09-26 | 2 | 3 |
+| 2 | 2026-09-26 | 3 | 2 |
 | 3 | 2026-09-27 | 0 | 5 |
 
 ## Before every upload
@@ -37,6 +37,21 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 ```
 
 <!-- Add submissions below this line, newest first. -->
+
+## Submission 05: 2026-09-26 ~18:00 IST
+- Version: v110_m3_features (on v107's two-stage)
+- Commit: c9ec108 (src/ as of 2c1a443); results in 031f767 `exp(v110)`
+- Change vs previous submission (v107): M3's four feature groups (idf, token_freq, ctx_idf,
+  address_extra: 76 features); blocking B6 + name + address-number exact pass (v105, v109:
+  mock candidate recall 0.9677 -> 0.9829 before the filter, 0.9788 after); stage 1 retrained on
+  the GPU (XGBoost, 213k train-fold entities absent from the mock, 6.99M of 14.9M rows under the
+  4 GB cap); stage 2 with rival features; rule re-tuned on the tight mock.
+- Threshold / decision rule: expected-F0.5 decoding, gamma 1.5, expected misses 0.1, max 11, 1-to-1 (tuned for 1 - L_FN - 1.45 L_FP on the mock tune entities)
+- Mock F0.5 0.9817; est_public 0.9731 (v107: mock 0.9745, est 0.9659, public 0.966); pair
+  recall 0.952 (v107 0.934), precision 0.997
+- Public F0.5: (fill in after upload)
+- Notes: files in submissions/v110/; both validators PASS; test candidates 4.8 (India), 5.0 (US),
+  6.1 (France) per S1; matched share 94.1 / 94.3 / 94.8 %.
 
 ## Submission 04: 2026-09-26 12:29 IST
 - Version: v107_tight_rule (on v104_two_stage)
