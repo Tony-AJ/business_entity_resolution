@@ -57,7 +57,13 @@ from .pipeline import (
     sort_matches,
 )
 from .split import hash_unit
-from .stacking import anchor_features, cohesion_features, competition_features, group_stats
+from .stacking import (
+    anchor_features,
+    cohesion_features,
+    competition_features,
+    group_stats,
+    rival_features,
+)
 from .submission import write_pairs
 from .trainset import label_pairs, sample_s1
 
@@ -75,6 +81,7 @@ class TwoStageConfig:
     n_stop_s1: int = 50_000      # mock tune entities whose kept pairs drive early stopping
     anchors: bool = True         # add stacking.ANCHOR_COLUMNS to the stage-2 frame
     cohesion: bool = False       # add stacking.COHESION_COLUMNS (each vs all other candidates)
+    rivals: bool = False         # add stacking.RIVAL_COLUMNS (the record vs its best rival S1)
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
 
     def __post_init__(self) -> None:
@@ -130,6 +137,9 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
         extra.append(anchor_features(kept, p1[keep], pooln).reset_index(drop=True))
     if tcfg.cohesion:
         extra.append(cohesion_features(kept, p1[keep], pooln).reset_index(drop=True))
+    if tcfg.rivals:
+        own = X["ad_token_set"].to_numpy() if "ad_token_set" in X.columns else None
+        extra.append(rival_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep, s1n, pooln, own))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 

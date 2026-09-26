@@ -222,3 +222,40 @@ def test_cohesion_features() -> None:
     assert f.loc[1, "coh_addr"] > f.loc[2, "coh_addr"]          # t2 fits the group, d1 not
     assert f["coh_support"].tolist() == [1.0, 1.0, 0.0, 0.0]    # t1<->t2 support each other
     assert np.isnan(f.loc[3, "coh_addr"])                        # b has no other candidate
+
+
+def test_rival_features() -> None:
+    """The record compares with the best OTHER S1 claiming it; lone records get NaN."""
+    from entity_resolution.stacking import RIVAL_COLUMNS, rival_features
+    pairs = pd.DataFrame({C.S1_ID: ["x", "y", "x", "z"], C.ENTITY_ID: ["r", "r", "q", "w"]})
+    p1 = np.array([0.9, 0.8, 0.5, 0.7], dtype=np.float32)
+    s1n = pd.DataFrame({C.ENTITY_ID: ["x", "y", "z"], "name_norm": ["acme", "acme", "zeta"],
+                        "addr_norm": ["12 main st", "400 oak ave", "9 elm rd"]})
+    pooln = pd.DataFrame({C.ENTITY_ID: ["r", "q", "w"], "name_norm": ["acme", "acme", "zeta"],
+                          "addr_norm": ["12 main st", "5 pine rd", "9 elm rd"]})
+    keep = np.array([True, True, False, True])
+    f = rival_features(pairs, p1, keep, s1n, pooln, own_addr=np.array([1.0, 0.2, 1.0]))
+    assert list(f.columns) == RIVAL_COLUMNS and len(f) == 3
+    assert f.loc[0, "riv_addr_ts"] < 0.5                 # x's rival y lives elsewhere
+    assert f.loc[1, "riv_addr_ts"] == 1.0                # y's rival x has r's address
+    assert f.loc[0, "riv_addr_gap"] > 0.5 and f.loc[1, "riv_addr_gap"] < 0
+    assert f.iloc[2].isna().all()                        # w has a single claimant
+
+
+def test_stage1_with_every_optional_group(dataset_dir: Path, tmp_path: Path) -> None:
+    """Anchors, cohesion and rivals together still give aligned frames end to end."""
+    from entity_resolution.stacking import COHESION_COLUMNS, RIVAL_COLUMNS
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, cohesion=True, rivals=True,
+                          model=MatcherParams(backend="heuristic"))
+    outs = mock_stage1(cfg, stage1, mock, tcfg)
+    for o in outs.values():
+        tail = STACK_COLUMNS + ANCHOR_COLUMNS + COHESION_COLUMNS + RIVAL_COLUMNS
+        assert list(o.X.columns[-len(tail):]) == tail and len(o.X) == len(o.pairs)
+    models, _ = fit_stage2(outs, mock, tcfg)
+    scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
+    assert not scored[C.ENTITY_ID].duplicated().any()

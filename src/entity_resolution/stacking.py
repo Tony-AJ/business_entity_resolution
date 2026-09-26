@@ -241,3 +241,44 @@ def cohesion_features(pairs: pd.DataFrame, p1: np.ndarray, pooln: pd.DataFrame) 
     single = np.repeat(sizes == 1, sizes)
     out["coh_support"][single] = 0.0
     return pd.DataFrame(out, index=pairs.index)
+
+
+RIVAL_COLUMNS = ["riv_addr_ts", "riv_name_ts", "riv_addr_gap"]
+
+
+def rival_features(pairs: pd.DataFrame, p1: np.ndarray, keep: np.ndarray, s1n: pd.DataFrame,
+                   pooln: pd.DataFrame, own_addr: np.ndarray | None = None) -> pd.DataFrame:
+    """``RIVAL_COLUMNS`` for the kept rows: the pool record against its best RIVAL S1 entity.
+
+    For a pair (S1 x, record r) the rival is the S1 entity with the best p1 for r other than x
+    (over every pair of the partition). A true owner loses r in the 1-to-1 when a rival scores
+    it higher; comparing r with the rival's own name and address shows whether it fits x or
+    the rival better.
+
+    riv_addr_ts   token-set similarity of r's address and the rival's (NaN without a rival)
+    riv_name_ts   the same on names
+    riv_addr_gap  ``own_addr`` (r against x, e.g. the pair's ad_token_set) minus riv_addr_ts
+
+    Returns float32 rows for ``keep`` (a boolean mask over ``pairs``), on a fresh RangeIndex.
+    """
+    p = np.nan_to_num(np.asarray(p1, dtype=np.float32), nan=0.0)
+    rows = np.flatnonzero(keep)
+    out = {c: np.full(len(rows), np.nan, dtype=np.float32) for c in RIVAL_COLUMNS}
+    if len(rows) == 0:
+        return pd.DataFrame(out)
+    pool_codes, _ = pd.factorize(pairs[C.ENTITY_ID], use_na_sentinel=False)
+    rival = best_other_rows(pool_codes, p)[rows]           # a row of pairs, -1 without rival
+    has = np.flatnonzero(rival >= 0)
+    s1_at = positions(pairs[C.S1_ID].to_numpy()[rival[has]], s1n[C.ENTITY_ID])
+    pool_at = positions(pairs[C.ENTITY_ID].to_numpy()[rows[has]], pooln[C.ENTITY_ID])
+    for lo in range(0, len(has), ANCHOR_CHUNK):
+        sl = slice(lo, lo + ANCHOR_CHUNK)
+        sa, pa_ = s1_at[sl], pool_at[sl]
+        (ats,) = _fuzzy(_arrow(s1n["addr_norm"].iloc[sa].reset_index(drop=True)),
+                        _arrow(pooln["addr_norm"].iloc[pa_].reset_index(drop=True)), (_TOKEN_SET,))
+        (nts,) = _fuzzy(_arrow(s1n["name_norm"].iloc[sa].reset_index(drop=True)),
+                        _arrow(pooln["name_norm"].iloc[pa_].reset_index(drop=True)), (_TOKEN_SET,))
+        out["riv_addr_ts"][has[sl]], out["riv_name_ts"][has[sl]] = ats, nts
+    if own_addr is not None:
+        out["riv_addr_gap"] = np.asarray(own_addr, dtype=np.float32) - out["riv_addr_ts"]
+    return pd.DataFrame(out)
