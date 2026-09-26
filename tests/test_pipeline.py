@@ -277,3 +277,18 @@ def test_filler_switches_end_to_end(filler_dir: Path, tmp_path: Path) -> None:
     matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
     s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_learn_fillers_samples_whole_entities_past_the_cap(filler_dir: Path, tmp_path: Path,
+                                                          monkeypatch) -> None:
+    """Past FILLER_PAIRS pairs, fillers are learned on a hashed sample of S1 entities: a
+    deterministic subset of the pairs, cached under its own key."""
+    from entity_resolution import pipeline
+    from entity_resolution.normalize import NormaliseConfig
+    cfg = replace(tiny_cfg(tmp_path, filler_dir), normalise=NormaliseConfig(learn_fillers=True))
+    train = load_fold("train", filler_dir, frac=0.0)
+    full = pipeline.learn_fillers(cfg, train)
+    monkeypatch.setattr(pipeline, "FILLER_PAIRS", 4)                 # 8 pairs: ~half kept
+    sampled = pipeline.learn_fillers(cfg, train)
+    assert set(sampled) <= set(full) and sampled == pipeline.learn_fillers(cfg, train)
+    assert len(list(cfg.cache_dir.glob("fillers_*.json"))) == 2       # one file per cap
