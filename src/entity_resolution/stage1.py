@@ -102,6 +102,11 @@ def write_chunks(cfg: PipelineConfig, train: Fold, ids: pd.Index, token_map: dic
     return manifest
 
 
+# Rows x features that train on a 4 GB card: 12.5M x 53 peaked at 3.7 GB and 18M x 53 ran
+# out of memory, so the budget is 10M x 53.
+GPU_CELLS = 530_000_000
+
+
 class _Chunks(xgb.DataIter):
     """Disk chunks of ``write_chunks``, rows of the training or the held-out slice."""
 
@@ -136,18 +141,20 @@ class _Chunks(xgb.DataIter):
 
 
 def fit_stage1(manifest: dict, params: MatcherParams, stop_frac: float = 0.05,
-               max_rows: int = 18_000_000) -> Matcher:
+               max_rows: int | None = None) -> Matcher:
     """XGBoost on the chunks of ``manifest``; early stopping on the held-out id slice.
 
     ``params`` should say ``backend="xgb"``; ``device="cuda"`` trains on the GPU. At most
-    ``max_rows`` training rows are used (whole entities, by id hash): the binned matrix of
-    ~18M x 53 features is what a 4 GB card holds. Returns a ``Matcher`` (feature names =
-    the manifest's) usable as any fitted matcher.
+    ``max_rows`` training rows are used (whole entities, by id hash), by default
+    ``GPU_CELLS`` / features. Returns a ``Matcher`` (feature names = the manifest's) usable
+    as any fitted matcher.
     """
     if params.backend != "xgb":
         raise ValueError("fit_stage1 trains the xgb backend only")
     t0 = time.perf_counter()
     names = manifest["features"]
+    if max_rows is None:
+        max_rows = GPU_CELLS // len(names)
     keep = min(1.0, max_rows / max(manifest["rows"] * (1 - stop_frac), 1))
     train = xgb.QuantileDMatrix(_Chunks(manifest["chunks"], names, stop_frac, False, keep),
                                 max_bin=params.max_bin)
