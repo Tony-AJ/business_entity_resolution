@@ -9,7 +9,8 @@ once per data configuration, as Parquet under ``<dataset>/.cache/m4/<key>/``:
     fit     fit-side S1 sample of the inner split: pairs, features, labels (training rows)
     stop    tune-side S1 sample (n_stop_s1): pairs, features, labels (early stopping)
     tune    every tune S1 (or n_tune_s1): pairs, features, labels, S1 ids, truth
-            (``decision.tune``)
+            (``decision.tune``); blocked against the tune fold's pool, or the whole train
+            pool with ``tune_pool="train"`` (``pipeline._tune_rule``'s "tunedense" side)
     val     the fixed val fold as ``run_fold`` scores it: pairs, features, labels, S1 ids and
             country, truth, pool ids, blocking report, normalised S1 rows and matched pool
             rows (``evaluate.slice_report``)
@@ -24,14 +25,16 @@ Equivalence with the pipeline is the contract. Every side is built by the pipeli
 functions with the same arguments: ``normalise_split``, ``learn_token_map``,
 ``trainset.inner_split`` / ``sample_s1``, ``pipeline._side`` (read-only use of a private
 helper: fit, stop and tune sides) or the ``load_normalised`` + ``prepare`` + ``_tag`` lines
-of ``run_fold`` (val, harder), ``label_pairs`` and ``build_features``. Features are built
-like the pipeline builds them: whole side at once for fit/stop (``fit``), per
-``iter_chunks`` slice for tune/val/harder (``score``), so even the chunk-dependent
-``pool_context`` group matches. Rows keep the pipeline's pair order; float32 values
-round-trip Parquet bit for bit. Evaluation reuses ``Matcher``, ``decision.tune``,
-``pipeline.decide_by_country`` and ``evaluate.score_pairs``, so default ``PipelineConfig()``
-and ``MatcherParams()`` reproduce ``pipeline.fit`` + ``run_fold`` exactly (same rule,
-``tune_f_beta``, val ``f_beta``, matches; tests/test_snapshot.py).
+of ``run_fold`` (val, harder, with its ``_with_frequencies``), ``label_pairs`` and
+``build_features``. Features are built like the pipeline builds them: whole side at once
+for fit/stop (``fit``), per ``iter_chunks`` slice for tune/val/harder (``score``), so even
+the chunk-dependent ``pool_context`` group matches; the ``STATS_GROUPS`` read
+``pool_stats`` of the side's whole pool, counted once per side as ``score`` does. Rows
+keep the pipeline's pair order; float32 values round-trip Parquet bit for bit. Evaluation
+reuses ``Matcher``, ``decision.tune``, ``pipeline.decide_by_country`` and
+``evaluate.score_pairs``, so default ``PipelineConfig()`` and ``MatcherParams()`` reproduce
+``pipeline.fit`` + ``run_fold`` exactly (same rule, ``tune_f_beta``, val ``f_beta``,
+matches; tests/test_snapshot.py).
 
 Key: a short hash of the code that produces the data (content of the data modules, not the
 git commit, so edits to model.py or decision.py keep the snapshot valid), the normalisation,
@@ -70,13 +73,14 @@ from .evaluate import (
     score_pairs,
     slice_report,
 )
-from .features import build_features, feature_names, iter_chunks
+from .features import build_features, feature_names, iter_chunks, pool_stats
 from .model import Matcher, MatcherParams, SeedEnsemble, fit_matcher, reliability
 from .split import Fold
 from .tracking import git_commit
 from .trainset import INNER_FRAC, INNER_SEED, SAMPLE_SEED, inner_split, label_pairs, sample_s1
 
 FORMAT = 1                      # bump when the on-disk layout changes
+TUNE_POOLS = {"fold": "tune", "train": "tunedense"}  # tune_pool -> pipeline._tune_rule's tag
 SIDES = ("fit", "stop", "tune", "val", "harder")
 WHOLE_SIDES = ("fit", "stop")   # featured in one build_features call, as pipeline.fit does
 MANIFEST = "manifest.json"
@@ -108,7 +112,8 @@ def snapshot_key(cfg: P.PipelineConfig, train: Fold, val: Fold,
     """``(key, parts)``: the snapshot folder name and everything hashed into it.
 
     ``cfg.model`` and ``cfg.grid`` are left out on purpose (``evaluate_params`` varies them);
-    so is ``normalise.chunk_rows``, which only bounds memory.
+    so is ``normalise.chunk_rows``, which only bounds memory. ``tune_pool`` is hashed only
+    when it is not the default "fold", so default-pool keys are computed as before.
     """
     norm = asdict(cfg.normalise)
     norm.pop("chunk_rows", None)
@@ -130,6 +135,8 @@ def snapshot_key(cfg: P.PipelineConfig, train: Fold, val: Fold,
                   "val_pool": P._ids_key(P.pool_of(val)[C.ENTITY_ID]),
                   "val_pairs": len(val.pairs)},
     }
+    if cfg.tune_pool != "fold":
+        parts["tune_pool"] = cfg.tune_pool
     return P._hash(parts), parts
 
 
@@ -183,6 +190,8 @@ def _write_side(folder: Path, side: str, pairs: pd.DataFrame, s1n: pd.DataFrame,
     Fit/stop sides are featured in one ``build_features`` call over the whole side, like
     ``pipeline.fit``; the other sides per ``iter_chunks`` slice, like ``pipeline.score``, and
     each slice is written before the next is built, so only one chunk of features is alive.
+    Pool statistics (``STATS_GROUPS``) are counted once over the whole ``pooln`` and shared
+    by every slice, as ``pipeline.score`` does, so they never depend on the chunking.
     """
     names = feature_names(cfg.feature_groups)
     schema = _schema(names)
@@ -192,8 +201,9 @@ def _write_side(folder: Path, side: str, pairs: pd.DataFrame, s1n: pd.DataFrame,
     s1_ids, pool_ids = _large(pairs[C.S1_ID]), _large(pairs[C.ENTITY_ID])
     passes = pairs[PASS].to_numpy(np.uint8)
     whole = side in WHOLE_SIDES
+    stats = pool_stats(pooln, cfg.feature_groups) if n else None
     X_all = (build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
-                            chunk_rows=cfg.chunk_rows) if whole else None)
+                            chunk_rows=cfg.chunk_rows, stats=stats) if whole else None)
     slices = ([slice(a, min(a + cfg.chunk_rows, n)) for a in range(0, n, cfg.chunk_rows)]
               if whole else iter_chunks(pairs, cfg.chunk_rows))
     path = folder / f"{side}.parquet"
@@ -203,7 +213,7 @@ def _write_side(folder: Path, side: str, pairs: pd.DataFrame, s1n: pd.DataFrame,
         for sl in slices:
             X = (X_all.iloc[sl] if whole else
                  build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                                chunk_rows=cfg.chunk_rows))
+                                chunk_rows=cfg.chunk_rows, stats=stats))
             m = sl.stop - sl.start
             cols = [s1_ids.slice(sl.start, m), pool_ids.slice(sl.start, m),
                     country.slice(sl.start, m), pa.array(passes[sl]), pa.array(label[sl]),
@@ -248,10 +258,12 @@ def _write_val_extras(folder: Path, fold: Fold, s1n: pd.DataFrame, pooln: pd.Dat
 def _fold_records(fold: Fold, tag: str, cfg: P.PipelineConfig, token_map: dict[str, str],
                   info: dict, timings: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Normalised S1 / pool records and candidate pairs of a labelled fold: the first lines
-    of ``pipeline.run_fold`` with the same arguments, plus its blocking report."""
+    of ``pipeline.run_fold`` with the same arguments, plus its blocking report. Name
+    frequencies (``frequency`` group) are counted over the whole fold, as ``run_fold`` does."""
     t0 = time.perf_counter()
     s1n = P.load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID], token_map)
     pooln = P.load_normalised("train", (2, 3), cfg, P.pool_of(fold)[C.ENTITY_ID], token_map)
+    s1n, pooln = P._with_frequencies(cfg, s1n, pooln)  # s1n is the whole fold here
     timings[f"{tag}_load_seconds"] = round(time.perf_counter() - t0, 2)
     t0 = time.perf_counter()
     pairs = P.prepare(s1n, pooln, cfg, P._tag(tag, s1n, pooln, token_map))
@@ -278,10 +290,13 @@ def build_snapshot(cfg: P.PipelineConfig, train: Fold, val: Fold, out_dir: Path 
     recorded in its manifest are kept, so an interrupted build resumes where it stopped and
     a second call returns at once. ``timings`` receives ``<side>_{load,blocking,features}_
     seconds``. Candidate pairs come from (and go to) the pipeline's own blocking cache.
+    ``cfg.tune_pool`` picks the tune side's pool exactly as ``pipeline._tune_rule`` does.
     """
     unknown = [s for s in sides if s not in SIDES]
     if unknown:
         raise ValueError(f"unknown sides {unknown}; known: {list(SIDES)}")
+    if cfg.tune_pool not in TUNE_POOLS:
+        raise ValueError(f"tune_pool must be one of {list(TUNE_POOLS)}, got {cfg.tune_pool!r}")
     timings = {} if timings is None else timings
     t0 = time.perf_counter()
     P.normalise_split("train", cfg)
@@ -311,15 +326,20 @@ def build_snapshot(cfg: P.PipelineConfig, train: Fold, val: Fold, out_dir: Path 
         fit_fold, tune_fold = inner_split(train)
         tune_s1 = (tune_fold.s1 if cfg.n_tune_s1 is None
                    else sample_s1(tune_fold.s1, cfg.n_tune_s1))
+        rule_fold = tune_fold if cfg.tune_pool == "fold" else Fold(  # as pipeline._tune_rule
+            "tune", train.s1, train.s2, train.s3, tune_fold.pairs)
         inner = {"fit": (sample_s1(fit_fold.s1, cfg.n_fit_s1), fit_fold),
                  "stop": (sample_s1(tune_fold.s1, cfg.n_stop_s1), tune_fold),
-                 "tune": (tune_s1, tune_fold)}
+                 "tune": (tune_s1, rule_fold)}
     info: dict = {}
     for side in todo:
         t_side = time.perf_counter()
         if side in inner:
             s1, fold = inner[side]
-            s1n, pooln, pairs = P._side(side, s1, fold, cfg, token_map, info, timings)
+            # the pipeline's side name: its blocking cache tag and timing / info keys
+            name = TUNE_POOLS[cfg.tune_pool] if side == "tune" else side
+            s1n, pooln, pairs = P._side(name, s1, fold, cfg, token_map, info, timings)
+            info[f"{side}_blocking"] = info.get(f"{name}_blocking")
         else:
             fold = val if side == "val" else harder_fold(val)
             s1 = fold.s1
