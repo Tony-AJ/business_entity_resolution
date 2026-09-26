@@ -4,6 +4,7 @@ Who is doing what, per the team split in [docs/plan/03_TEAM_WORKING_STRATEGY.md]
 Update your own rows when a task changes state and commit the change with your work
 (`docs(tracker): ...`). Scores live in `experiments/experiments.csv`; uploads in
 [LEADERBOARD.md](LEADERBOARD.md). The version table below mirrors them for a quick read.
+Per-member detail: [M3 features](docs/trackers/M3_TRACKER.md).
 
 Status: `todo` · `doing` · `done` · `blocked`. Owners: M1 lead / integration, M2
 normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision + errors.
