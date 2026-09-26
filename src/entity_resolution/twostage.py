@@ -42,7 +42,7 @@ from .decision import (
     rule_to_json,
 )
 from .evaluate import blocking_report
-from .features import build_features, iter_chunks
+from .features import _ALL_INPUTS, FREQ_COLUMNS, build_features, iter_chunks
 from .mock import MockFold
 from .model import Matcher, MatcherParams
 from .pipeline import (
@@ -105,6 +105,16 @@ class Stage1Output:
     pairs: pd.DataFrame      # source1_entity_id, entity_id of the kept pairs
     X: pd.DataFrame          # pair features + STACK_COLUMNS (+ ANCHOR_COLUMNS), float32
     n_all: int               # candidate pairs before the filter
+
+
+# normalised columns the stage-1 pass reads (features, anchors, cohesion, rivals); blocking's
+# own texts (name_addr: name + address, the longest) are dropped once the pairs exist
+_STAGE1_COLUMNS = (C.ENTITY_ID, C.COUNTRY, *_ALL_INPUTS, *FREQ_COLUMNS)
+
+
+def trim(records: pd.DataFrame) -> pd.DataFrame:
+    """``records`` without the normalised columns the stage-1 pass never reads."""
+    return records[[c for c in records.columns if c in _STAGE1_COLUMNS]]
 
 
 def keep_mask(s1_ids: pd.Series, p1: np.ndarray, floor: float, max_cands: int) -> np.ndarray:
@@ -193,6 +203,7 @@ def mock_stage1(cfg: PipelineConfig, stage1: Fitted, mock: MockFold, tcfg: TwoSt
 
         def compute(country: str = country) -> Stage1Output:
             s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag)
+            s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
 
         out[country] = _cached_stage1(cache_dir, f"mock_{country}", compute)
@@ -366,6 +377,7 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
                                     country=country)
             s1c, poolc = _with_frequencies(cfg, s1c, poolc)
             pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map))
+            s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
 
         o = _cached_stage1(cache_dir, f"test_{country}", compute)
