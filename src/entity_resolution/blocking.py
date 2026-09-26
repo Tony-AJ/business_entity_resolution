@@ -18,6 +18,8 @@ Passes (bit in ``pass``):
     32 addr_char        address char n-gram TF-IDF top-k    (optional)
     64 exact_name_num   equal ``name_core`` AND a shared address number   (optional: small
                         groups even for common names; ranked first by the sim-first cap)
+    128 exact_nofill    equal words of ``name_core_nofill``, name_core without the learned
+                        filler tokens   (optional: "acme center" meets "acme"; its own group cap)
 
 Inside a partition everything is positional int32 until the end; S1 records are processed
 in chunks so the per-chunk union and the ``max_per_s1`` cap bound the memory.
@@ -37,9 +39,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sparse_dot_topn import sp_matmul_topn
 
 from . import config as C
+from .normalize import NOFILL, sorted_words
 
 PASS_BITS = {"exact_core": 1, "exact_sorted": 2, "exact_squash": 4, "name_char": 8,
-             "name_addr_word": 16, "addr_char": 32, "exact_name_num": 64}
+             "name_addr_word": 16, "addr_char": 32, "exact_name_num": 64, "exact_nofill": 128}
 EXACT_BITS = PASS_BITS["exact_core"] | PASS_BITS["exact_sorted"] | PASS_BITS["exact_squash"]
 SIM_COLUMNS = ["sim_name_char", "sim_name_addr_word", "sim_addr_char"]
 PAIR_COLUMNS = [C.S1_ID, C.ENTITY_ID, "pass", *SIM_COLUMNS]
@@ -95,6 +98,12 @@ class BlockingConfig:
     # off. A common name whose name_core group is too large to join still meets its true
     # records through a shared house / plot number
     name_num_max_group: int | None = None
+    # exact pass on the sorted words of name_core_nofill (name_core without the learned
+    # filler tokens, normalize.fit_fillers): pool key groups up to this size; None = off.
+    # Needs the column, which pipeline.load_normalised adds for a version that learns fillers.
+    # Train fold, 26 fillers: +24k US / +40k India true pairs at 50 (0.3 / 0.5 extra
+    # candidates per S1), +34k / +50k at 200 (1.0 / 1.6 per S1)
+    nofill_max_group: int | None = None
     s1_chunk: int = 50_000
     n_threads: int = 12
     vocab_sample: int = 500_000
@@ -111,6 +120,8 @@ class BlockingConfig:
             d.pop("cap_order")
         if d.get("name_num_max_group") is None:
             d.pop("name_num_max_group")
+        if d.get("nofill_max_group") is None:
+            d.pop("nofill_max_group")
         blob = json.dumps(d, sort_keys=True, default=str).encode()
         return hashlib.sha1(blob).hexdigest()[:8]
 
@@ -176,6 +187,22 @@ def name_num_pass(s1n: pd.DataFrame, pooln: pd.DataFrame, max_group: int) -> pd.
     s1 = s1[(size[lc] > 0) & (size[lc] <= max_group)]
     out = s1.merge(pool, on="k", how="inner")[["s1_idx", "pool_idx"]].drop_duplicates()
     return out.astype(np.int32).sort_values(["s1_idx", "pool_idx"]).reset_index(drop=True)
+
+
+def nofill_pass(s1n: pd.DataFrame, pooln: pd.DataFrame, max_group: int) -> pd.DataFrame:
+    """Pairs whose filler-free core names hold the same words: ``exact_pass`` on the sorted
+    distinct words of ``name_core_nofill`` (as ``name_sorted`` is of ``name_core``).
+
+    "acme center" and "center acme services" both key "acme" when "center" and "services"
+    are learned fillers. Output as ``exact_pass``; ValueError without the column.
+    """
+    for label, df in (("s1n", s1n), ("pooln", pooln)):
+        if NOFILL not in df.columns:
+            raise ValueError(f"{label} lacks {NOFILL!r}: learn fillers "
+                             "(NormaliseConfig.learn_fillers) and load the records with them")
+    key = "nofill_words"
+    return exact_pass(pd.DataFrame({key: sorted_words(s1n[NOFILL])}),
+                      pd.DataFrame({key: sorted_words(pooln[NOFILL])}), key, max_group)
 
 
 class TopK:
@@ -261,7 +288,8 @@ def union_passes(parts: dict[str, pd.DataFrame], max_per_s1: int,
     out["pass"] = g["pass"].agg(np.bitwise_or.reduce).astype(np.uint8)
     out = out.reset_index()
     best = out[SIM_COLUMNS].max(axis=1).fillna(0.0).to_numpy()
-    exact = (out["pass"].to_numpy() & (EXACT_BITS | PASS_BITS["exact_name_num"])) != 0
+    exact_bits = EXACT_BITS | PASS_BITS["exact_name_num"] | PASS_BITS["exact_nofill"]
+    exact = (out["pass"].to_numpy() & exact_bits) != 0
     if cap_order == "sim_first":            # by best sim desc; unscored exact pairs last
         best = np.where(np.isnan(out[SIM_COLUMNS].to_numpy()).all(axis=1), -1.0, best)
         # name + number pairs are rare and precise: they go first, whatever their cosine
@@ -291,6 +319,8 @@ def block_partition(s1n: pd.DataFrame, pooln: pd.DataFrame,
              for k in cfg.exact_keys}
     if cfg.name_num_max_group is not None:
         exact["exact_name_num"] = name_num_pass(s1n, pooln, cfg.name_num_max_group)
+    if cfg.nofill_max_group is not None:
+        exact["exact_nofill"] = nofill_pass(s1n, pooln, cfg.nofill_max_group)
     spaces, pool_rows = {}, {}
     for name, _ in _TOPK_PASS:
         spec = getattr(cfg, name)
