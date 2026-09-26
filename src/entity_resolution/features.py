@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import jellyfish
 import numpy as np
@@ -928,6 +929,9 @@ def _tok_evidence(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, 
     return _frame(pairs.index, out)
 
 
+# Both token codes are pure functions, and the same tokens come back on both sides, in both
+# columns and in every chunk: a bounded cache (~50 MB at most) codes each of them about once
+@lru_cache(maxsize=1 << 18)
 def _phonetic_soundex_token(token: str) -> str:
     """Soundex of ``token``, empty for a token with no letters (house numbers, postcodes).
 
@@ -937,6 +941,7 @@ def _phonetic_soundex_token(token: str) -> str:
     return jellyfish.soundex(token) if any(c.isalpha() for c in token) else ""
 
 
+@lru_cache(maxsize=1 << 18)
 def _phonetic_metaphone_token(token: str) -> str:
     """Double Metaphone primary code of ``token`` (its secondary if the primary is empty).
 
@@ -951,12 +956,15 @@ def _phonetic_metaphone_token(token: str) -> str:
 
 
 def _phonetic_docs(arr: pa.Array) -> tuple[pa.Array, pa.Array]:
-    """(Soundex, Double Metaphone) documents of ``arr``, one call per distinct token.
+    """(Soundex, Double Metaphone) documents of ``arr``, each distinct string coded once.
 
-    ``map_tokens`` dictionary-encodes the token vocabulary once and calls each phonetic
-    function only on the distinct tokens, so cost scales with vocabulary size, not row count.
+    Pair rows repeat an S1 string once per candidate (and a pool string once per S1 that
+    retrieved it), so only the distinct strings go through ``map_tokens``, which calls each
+    phonetic function once per distinct token; the documents are then taken back to the rows.
     """
-    return map_tokens(arr, _phonetic_soundex_token), map_tokens(arr, _phonetic_metaphone_token)
+    enc = pc.dictionary_encode(arr, null_encoding="encode")  # a null maps as it did per row
+    return (map_tokens(enc.dictionary, _phonetic_soundex_token).take(enc.indices),
+            map_tokens(enc.dictionary, _phonetic_metaphone_token).take(enc.indices))
 
 
 def _phonetic_column(left: pd.DataFrame, right: pd.DataFrame, column: str,

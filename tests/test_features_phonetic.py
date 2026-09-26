@@ -159,3 +159,21 @@ def test_phonetic_features_ignore_non_alpha_tokens():
     # "411001" != "411002" as text, but neither has a letter, so it never enters the comparison
     assert row["addr_phonetic_exact_match"] == 1.0
     assert row["addr_phonetic_jaccard"] == 1.0
+
+
+def test_phonetic_docs_code_distinct_strings_like_every_row():
+    """Coding each distinct string once and taking it back to the rows gives the documents of
+    coding every row: repeats, a null, an empty string and a digits-only token included."""
+    import pyarrow as pa
+
+    from entity_resolution.features import (
+        _phonetic_docs,
+        _phonetic_metaphone_token,
+        _phonetic_soundex_token,
+    )
+    from entity_resolution.normalize import map_tokens
+    arr = pa.array(["kumar trading", None, "", "cumar  trading", "kumar trading", "12 b"])
+    sx, dm = _phonetic_docs(arr)
+    assert sx.to_pylist() == map_tokens(arr, _phonetic_soundex_token.__wrapped__).to_pylist()
+    assert dm.to_pylist() == map_tokens(arr, _phonetic_metaphone_token.__wrapped__).to_pylist()
+    assert sx[0].as_py() == sx[4].as_py() == "K560 T635"
