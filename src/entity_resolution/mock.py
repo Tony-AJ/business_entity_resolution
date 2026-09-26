@@ -117,6 +117,8 @@ def build_mock(train: Fold, val: Fold, tune_ids: Collection[str],
         pool_c = {k: (df[C.COUNTRY] == country).to_numpy() for k, df in ((2, s2), (3, s3))}
         n_pool = int(pool_c[2].sum() + pool_c[3].sum())
         target = shape.get(country)
+        if target is not None and (target.s1 == 0 or target.pool == 0):
+            target = None                     # no usable test shape: keep the country whole
         frac = 1.0 if target is None or n_pool == 0 else min(1.0, target.pool / n_pool)
         keep_c = in_c & (cluster_rank < frac)                            # step 1: clusters
         kept_ids = pd.Index(ids[keep_c])

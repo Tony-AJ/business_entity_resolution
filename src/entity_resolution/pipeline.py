@@ -40,7 +40,16 @@ import pyarrow.parquet as pq
 from . import config as C
 from .blocking import BlockingConfig, block
 from .data import isin, load_source
-from .decision import SCORED_COLUMNS, DecisionRule, Grid, decide, one_to_one_filter, tune
+from .decision import (
+    SCORED_COLUMNS,
+    DecisionRule,
+    ExpectedRule,
+    Grid,
+    apply_rule,
+    decide,
+    one_to_one_filter,
+    tune,
+)
 from .evaluate import blocking_report, score_pairs
 from .features import DEFAULT_GROUPS, build_features, iter_chunks
 from .mock import MockFold
@@ -545,16 +554,22 @@ def _rows_of(scored: pd.DataFrame, fold: Fold) -> pd.DataFrame:
 
 def tune_mock(scored: pd.DataFrame, mock: MockFold,
               grid: Grid) -> tuple[DecisionRule, pd.DataFrame]:
-    """``decision.tune`` on the mock's tune entities (``scored`` from ``run_mock``)."""
+    """``decision.tune`` on the mock's tune entities (``scored`` from ``run_mock``).
+
+    ``scored`` already went through the 1-to-1, so the grid must keep it on: a rule without
+    it would be tuned on filtered pairs and then applied unfiltered at test time.
+    """
+    if not all(grid.one_to_one):
+        raise ValueError("tune_mock needs grid.one_to_one == (True,): the mock is 1-to-1 filtered")
     part = mock.part("tune")
     return tune(_rows_of(scored, part), part.s1[C.ENTITY_ID], part.pairs, grid)
 
 
-def mock_scores(scored: pd.DataFrame, mock: MockFold, rule: DecisionRule,
+def mock_scores(scored: pd.DataFrame, mock: MockFold, rule: DecisionRule | ExpectedRule,
                 role: str = "val") -> pd.DataFrame:
     """``score_pairs`` of ``rule`` on the mock's ``role`` entities: all, then per country."""
     part = mock.part(role)
-    matches = decide(_rows_of(scored, part), rule)
+    matches = apply_rule(_rows_of(scored, part), rule)
     rows = {"all": score_pairs(matches, part)}
     for country in sorted(part.s1[C.COUNTRY].unique()):
         in_c = (part.s1[C.COUNTRY] == country).to_numpy()

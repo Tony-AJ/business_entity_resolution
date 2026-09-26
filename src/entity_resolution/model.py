@@ -348,7 +348,7 @@ class Matcher:
         if backend == "lgbm":
             raw = self.model_.feature_importance("gain", iteration=self.best_iteration_)
         elif backend == "xgb":
-            gain = self.model_.get_score(importance_type="total_gain")
+            gain = self.model_[:self.best_iteration_].get_score(importance_type="total_gain")
             raw = [gain.get(n, 0.0) for n in names]
         elif backend == "logreg":
             coef = np.abs(self.model_.named_steps["lr"].coef_[0])
