@@ -82,6 +82,10 @@ class TwoStageConfig:
     anchors: bool = True         # add stacking.ANCHOR_COLUMNS to the stage-2 frame
     cohesion: bool = False       # add stacking.COHESION_COLUMNS (each vs all other candidates)
     rivals: bool = False         # add stacking.RIVAL_COLUMNS (the record vs its best rival S1)
+    # mock roles stage 2 trains on, all scored out of fold. With "tune" among them, early
+    # stopping reads each model's held-out part (not tune entities), so the rule tuned on
+    # the tune entities still sees out-of-fold probabilities
+    train_roles: tuple[str, ...] = ("fit",)
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
 
     def __post_init__(self) -> None:
@@ -213,6 +217,13 @@ def _rows(outs: dict[str, Stage1Output], ids: pd.Index,
     return (pd.concat(pairs, ignore_index=True), pd.concat(X, ignore_index=True))
 
 
+def _train_ids(mock: MockFold, tcfg: TwoStageConfig) -> pd.Index:
+    """Present mock entities stage 2 trains on (and scores out of fold)."""
+    if "val" in tcfg.train_roles:
+        raise ValueError("stage 2 never trains on val entities")
+    return pd.Index(mock.fold.s1[C.ENTITY_ID][mock.role.isin(tcfg.train_roles).to_numpy()])
+
+
 def fit_stage2(outs: dict[str, Stage1Output], mock: MockFold, tcfg: TwoStageConfig,
                columns: list[str] | None = None) -> tuple[list[Matcher], dict]:
     """One stage-2 matcher per cross-fitting part, trained on the other parts' fit entities.
@@ -221,14 +232,22 @@ def fit_stage2(outs: dict[str, Stage1Output], mock: MockFold, tcfg: TwoStageConf
     tuned on all tune entities, as in ``pipeline.fit``). ``columns`` restricts the features
     (ablations); None = every column of the stage-1 output.
     """
-    fit_ids = pd.Series(mock.ids("fit"))
+    fit_ids = pd.Series(_train_ids(mock, tcfg))
     part_of_id = fold_of(fit_ids, tcfg.folds, tcfg.seed)
-    stop_ids = pd.Index(sample_s1(mock.part("tune").s1, tcfg.n_stop_s1)[C.ENTITY_ID])
-    stop_pairs, X_stop = _rows(outs, stop_ids, columns)
-    y_stop = label_pairs(stop_pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
-    del stop_pairs
+    held_out_stop = "tune" in tcfg.train_roles
+
+    def stop_set(ids: pd.Index) -> tuple[pd.DataFrame, np.ndarray]:
+        """Early-stopping rows: the kept pairs of a hashed sample of ``ids``."""
+        sample = sample_s1(pd.DataFrame({C.ENTITY_ID: ids}), tcfg.n_stop_s1)[C.ENTITY_ID]
+        stop_pairs, X_stop = _rows(outs, pd.Index(sample), columns)
+        return X_stop, label_pairs(stop_pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
+
+    if not held_out_stop:
+        X_stop, y_stop = stop_set(pd.Index(mock.ids("tune")))
     models, info, rows, positives = [], {}, 0, 0
     for f in range(tcfg.folds):
+        if held_out_stop:        # the part this model never trains on
+            X_stop, y_stop = stop_set(pd.Index(fit_ids[part_of_id == f]))
         # one copy per model: the frame of the entities outside part f, built directly
         pairs, X = _rows(outs, pd.Index(fit_ids[part_of_id != f]), columns)
         y = label_pairs(pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
@@ -269,7 +288,7 @@ def mock_scored(outs: dict[str, Stage1Output], models: list[Matcher], mock: Mock
     ``pipeline.run_mock``; the report is the candidate set after the stage-1 filter. The
     models' own feature lists pick the columns they read.
     """
-    fit_ids = mock.ids("fit")
+    fit_ids = _train_ids(mock, tcfg)
     keep = pd.Index(mock.fold.s1[C.ENTITY_ID][mock.role.isin(roles).to_numpy()])
     out, cands = [], []
     for o in outs.values():
@@ -315,7 +334,8 @@ class TwoStage:
     def load(cls, out: Path, cfg: PipelineConfig) -> TwoStage:
         """Read back what ``save`` wrote; ``cfg`` is the stage-1 pipeline configuration."""
         tc = json.loads((out / "two_stage.json").read_text())
-        tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"])})
+        tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"]),
+                                 "train_roles": tuple(tc.get("train_roles", ("fit",)))})
         rule = rule_from_json(json.loads((out / "rule.json").read_text()))
         models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
         info_path = out / "fit_info.json"

@@ -259,3 +259,20 @@ def test_stage1_with_every_optional_group(dataset_dir: Path, tmp_path: Path) -> 
     models, _ = fit_stage2(outs, mock, tcfg)
     scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
     assert not scored[C.ENTITY_ID].duplicated().any()
+
+
+def test_train_roles_fit_and_tune(dataset_dir: Path, tmp_path: Path) -> None:
+    """Training on fit + tune entities scores both out of fold and refuses val."""
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=train.s1[C.ENTITY_ID][:1], drop_first=[], shape={})
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, train_roles=("fit", "tune"),
+                          model=MatcherParams(backend="heuristic"))
+    outs = mock_stage1(cfg, stage1, mock, tcfg)
+    models, _ = fit_stage2(outs, mock, tcfg)
+    scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
+    assert len(models) == 2 and not scored[C.ENTITY_ID].duplicated().any()
+    with pytest.raises(ValueError, match="val"):
+        fit_stage2(outs, mock, TwoStageConfig(train_roles=("fit", "val")))
