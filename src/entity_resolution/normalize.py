@@ -95,8 +95,8 @@ class NormaliseConfig:
     # learned filler tokens (fit_fillers) feed the opt-in NOFILL column, added on load by
     # add_nofill like the token map and never hashed. A filler is added by the pool in at
     # least filler_min_share of the Latin true pairs, and at least filler_min_ratio times per
-    # pair whose S1 name holds it (1.0: added as often as genuinely present, 26 tokens on the
-    # train fold; 2.0 drops "center" and "services", the two riskiest)
+    # pair whose S1 name holds it (1.0: added as often as genuinely present, 26 tokens on an
+    # 8 % sample of the train fold; 2.0 drops "center" and "services", the two riskiest)
     learn_fillers: bool = False
     filler_min_share: float = 1e-4
     filler_min_ratio: float = 1.0

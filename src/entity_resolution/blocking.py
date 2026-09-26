@@ -101,8 +101,9 @@ class BlockingConfig:
     # exact pass on the sorted words of name_core_nofill (name_core without the learned
     # filler tokens, normalize.fit_fillers): pool key groups up to this size; None = off.
     # Needs the column, which pipeline.load_normalised adds for a version that learns fillers.
-    # Train fold, 26 fillers: +24k US / +40k India true pairs at 50 (0.3 / 0.5 extra
-    # candidates per S1), +34k / +50k at 200 (1.0 / 1.6 per S1)
+    # Train fold, 26 fillers, true pairs no sorted-name key finds (estimated from an 8 %
+    # sample): +24k US / +40k India at 50 for 0.3 / 0.5 extra candidates per S1, +34k / +50k
+    # at 200 for 1.0 / 1.6 per S1
     nofill_max_group: int | None = None
     s1_chunk: int = 50_000
     n_threads: int = 12
