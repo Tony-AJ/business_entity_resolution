@@ -218,3 +218,19 @@ Both are KEEP and tie on est_public. In stage 1 the groups take 14.2 % of the ga
 16 % and let the filter keep 4.37 candidates per S1 instead of 4.59 at the same recall. v042
 goes to test inference: fewer false merges, v101's public-proven stage 1 unchanged, and the
 M3 groups cost only the kept pairs at test scale.
+
+## 12. Remaining planned features, implemented (opt-in, day 2 evening)
+
+| Group (plan) | Feature | Definition | Missing |
+|---|---|---|---|
+| interactions (07 §3, C5) | `name_strong_addr_weak` | `core_token_set` ≥ 0.9 and `ad_jaccard` < 0.2: same name, another address (decoy) | 0 when a side is empty |
+| | `addr_strong_name_weak` | `ad_token_set` ≥ 0.9 and `core_token_set` < 0.5: same address, another name (rename, same building) | 0 when a side is empty |
+| | `both_strong` | `core_token_set` ≥ 0.9 and `ad_token_set` ≥ 0.9 | 0 when a side is empty |
+| missing_flags (07 §1, C4) | `nums_empty_l`, `nums_empty_r` | that side's address has no number (the numeric group is NaN then) | 0/1 |
+
+`interactions` reuses name_fuzzy's and address's similarities when they run in the same build
+(`_CARRY`), and computes them with the same scorers otherwise, so the flags never depend on
+which groups ran. `features.ZERO_GAIN_COLUMNS` (`sim_addr_char`, `addr_empty_r`,
+`addr_empty_l`, `postcode_prefix_eq`: zero gain for three versions) stay in their groups because
+saved models read them; `TwoStageConfig.drop_columns` leaves them out of stage 2 (08 §8). The
+experiment that measures all of this on the mock is v044 (prepared, run on request).
