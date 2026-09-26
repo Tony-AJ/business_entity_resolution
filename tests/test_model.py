@@ -83,8 +83,13 @@ def test_predict_proba_range_dtype_length(data, backend):
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_chunked_predict_equals_full(data, backend):
     matcher, Xt = fitted(data, backend), data[2]
-    assert np.array_equal(matcher.predict_proba(Xt, chunk_rows=7),
-                          matcher.predict_proba(Xt, chunk_rows=10**9))
+    chunked = matcher.predict_proba(Xt, chunk_rows=7)
+    full = matcher.predict_proba(Xt, chunk_rows=10**9)
+    if backend == "logreg":
+        # BLAS summation order depends on batch size, so float32 output drifts by a few ulp
+        np.testing.assert_allclose(chunked, full, rtol=2e-6, atol=1e-7)
+    else:
+        assert np.array_equal(chunked, full)  # tree and nanmax backends are bit-deterministic
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
