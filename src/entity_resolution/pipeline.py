@@ -38,7 +38,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from . import config as C
-from .blocking import BlockingConfig, block
+from .blocking import BlockingConfig, TopKSpec, block
 from .data import isin, load_source
 from .decision import (
     SCORED_COLUMNS,
@@ -91,6 +91,24 @@ class PipelineConfig:
     def record(self) -> dict:
         """JSON-ready dict of the configuration (metrics.json, artifacts/config.json)."""
         return json.loads(json.dumps(asdict(self), default=str))
+
+    @classmethod
+    def from_record(cls, d: dict) -> PipelineConfig:
+        """The configuration ``record`` wrote (``artifacts/config.json``), rebuilt exactly."""
+        def spec(s: dict | None) -> TopKSpec | None:
+            return None if s is None else TopKSpec(**{**s, "ngram": tuple(s["ngram"])})
+
+        b = d["blocking"]
+        blocking = BlockingConfig(**{**b, "exact_keys": tuple(b["exact_keys"]),
+                                     **{k: spec(b[k]) for k in ("name_char", "name_addr_word",
+                                                                "addr_char")}})
+        g = d["grid"]
+        grid = Grid(**{k: tuple(v) if isinstance(v, list) else v for k, v in g.items()})
+        return cls(normalise=NormaliseConfig(**d["normalise"]), blocking=blocking,
+                   feature_groups=tuple(d["feature_groups"]), model=MatcherParams(**d["model"]),
+                   grid=grid, **{k: d[k] for k in ("n_fit_s1", "n_stop_s1", "n_tune_s1",
+                                                   "tune_pool", "chunk_rows")},
+                   dataset_dir=Path(d["dataset_dir"]), cache_dir=Path(d["cache_dir"]))
 
 
 @dataclass

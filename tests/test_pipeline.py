@@ -183,3 +183,18 @@ def test_run_mock_scores_tunes_and_reports(dataset_dir: Path, tmp_path: Path) ->
     assert set(scores.index[1:]) == set(mock.part("val").s1[C.COUNTRY])
     assert scores.loc["all", "entities"] == len(mock.ids("val"))
     assert 0.0 <= scores.loc["all", "f_beta"] <= 1.0
+
+
+def test_config_record_round_trip(tmp_path: Path) -> None:
+    """from_record rebuilds exactly what record wrote, nested specs and tuples included."""
+    import json
+    from dataclasses import replace
+
+    from entity_resolution.blocking import TopKSpec
+    from entity_resolution.features import DEFAULT_GROUPS
+    cfg = replace(PipelineConfig(), feature_groups=(*DEFAULT_GROUPS, "frequency"),
+                  model=MatcherParams(backend="xgb", device="cuda", num_leaves=127))
+    cfg = replace(cfg, blocking=replace(cfg.blocking, cap_order="sim_first",
+                                        addr_char=TopKSpec("addr_norm", "word", (1, 2), 10)))
+    again = PipelineConfig.from_record(json.loads(json.dumps(cfg.record())))
+    assert again == cfg and again.blocking.key() == cfg.blocking.key()
