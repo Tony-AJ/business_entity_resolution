@@ -27,6 +27,7 @@ import xgboost as xgb
 
 from . import config as C
 from .data import isin
+from .evidence import TokenEvidence
 from .features import build_features, feature_names, iter_chunks, pool_stats
 from .mock import MockFold
 from .model import Matcher, MatcherParams, _tune_scores, xgb_params
@@ -54,13 +55,14 @@ def absent_from_mock(mock: MockFold, train: Fold) -> pd.Index:
 
 def write_chunks(cfg: PipelineConfig, train: Fold, ids: pd.Index, token_map: dict,
                  work_dir: Path, tag: str = "stage1train",
-                 timings: dict | None = None, fillers: list[str] | None = None) -> dict:
+                 timings: dict | None = None, fillers: list[str] | None = None,
+                 evidence: TokenEvidence | None = None) -> dict:
     """Features and labels of ``ids``' candidate pairs, one .npy pair per chunk in ``work_dir``.
 
     Each country's entities are blocked against the train-fold pool of that country (cached
     under ``tag``); frequencies count the whole train fold, as in ``pipeline.fit``. Returns the
     manifest (also written as ``manifest.json``): chunk files, rows, positives, features.
-    ``token_map`` and ``fillers`` are the base version's (``Fitted``).
+    ``token_map``, ``fillers`` and ``evidence`` are the base version's (``Fitted``).
     """
     timings = {} if timings is None else timings
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +87,7 @@ def write_chunks(cfg: PipelineConfig, train: Fold, ids: pd.Index, token_map: dic
         for k, sl in enumerate(iter_chunks(pairs, cfg.chunk_rows)):
             part = pairs.iloc[sl]
             X = build_features(part, s1n, pooln, groups=cfg.feature_groups,
-                               chunk_rows=cfg.chunk_rows, stats=stats)
+                               chunk_rows=cfg.chunk_rows, stats=stats, evidence=evidence)
             y = label_pairs(part, train.pairs)["label"].to_numpy(np.int8)
             stop = hash_unit(part[C.S1_ID], STOP_SEED)
             stem = work_dir / f"{country}_{k:04d}"
@@ -181,9 +183,11 @@ def fit_stage1(manifest: dict, params: MatcherParams, stop_frac: float = 0.05,
 
 
 def as_fitted(matcher: Matcher, base: Fitted, cfg: PipelineConfig) -> Fitted:
-    """A pipeline version that is ``base`` (token map, fillers, rule) with ``matcher``."""
+    """A pipeline version that is ``base`` (token map, fillers, evidence, rule) with
+    ``matcher``."""
     return Fitted(matcher, base.rule, base.tune_table, cfg, base.token_map,
-                  {"stage1": "xgb gpu", "fit_info": matcher.fit_info_}, base.fillers)
+                  {"stage1": "xgb gpu", "fit_info": matcher.fit_info_}, base.fillers,
+                  base.token_evidence)
 
 
 def clean(work_dir: Path) -> None:

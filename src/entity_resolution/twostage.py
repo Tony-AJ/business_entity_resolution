@@ -137,14 +137,15 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None  # once per partition
     for sl in iter_chunks(pairs, cfg.chunk_rows):
         X = build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows, stats=stats)
+                           chunk_rows=cfg.chunk_rows, stats=stats,
+                           evidence=stage1.token_evidence)
         p = stage1.matcher.predict_proba(X)
         k = keep_mask(pairs[C.S1_ID].iloc[sl], p, tcfg.floor, tcfg.max_cands)
         p1[sl], keep[sl] = p, k
         parts.append(X[k].reset_index(drop=True))
         del X
     X = pd.concat(parts, ignore_index=True) if parts else build_features(
-        pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups)
+        pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups, evidence=stage1.token_evidence)
     parts.clear()                                   # the concat is the only copy kept
     extra = [competition_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep)]
     kept = pairs.loc[keep, [C.S1_ID, C.ENTITY_ID]].reset_index(drop=True)
