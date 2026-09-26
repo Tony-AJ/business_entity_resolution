@@ -54,7 +54,7 @@ from .features import (
     pool_stats,
 )
 from .mock import MockFold
-from .model import Matcher, MatcherParams
+from .model import Matcher, MatcherParams, SeedMean  # noqa: F401  (SeedMean re-exported)
 from .pipeline import (
     Fitted,
     PipelineConfig,
@@ -162,14 +162,15 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     stats = pool_stats(pooln, cfg.feature_groups) if len(pairs) else None  # once per partition
     for sl in iter_chunks(pairs, cfg.chunk_rows):
         X = build_features(pairs.iloc[sl], s1n, pooln, groups=cfg.feature_groups,
-                           chunk_rows=cfg.chunk_rows, stats=stats)
+                           chunk_rows=cfg.chunk_rows, stats=stats,
+                           evidence=stage1.token_evidence)
         p = stage1.matcher.predict_proba(X)
         k = keep_mask(pairs[C.S1_ID].iloc[sl], p, tcfg.floor, tcfg.max_cands)
         p1[sl], keep[sl] = p, k
         parts.append(X[k].reset_index(drop=True))
         del X
     X = pd.concat(parts, ignore_index=True) if parts else build_features(
-        pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups)
+        pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups, evidence=stage1.token_evidence)
     parts.clear()                                   # the concat is the only copy kept
     extra = [competition_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep)]
     kept = pairs.loc[keep, [C.S1_ID, C.ENTITY_ID]].reset_index(drop=True)
@@ -183,7 +184,8 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
     if tcfg.extra_groups:  # kept pairs stay grouped by S1: the filter keeps their order
         extra.append(build_features(
             pairs[keep].reset_index(drop=True), s1n, pooln, groups=tcfg.extra_groups,
-            chunk_rows=cfg.chunk_rows, stats=pool_stats(pooln, tcfg.extra_groups)))
+            chunk_rows=cfg.chunk_rows, stats=pool_stats(pooln, tcfg.extra_groups),
+            evidence=stage1.token_evidence))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 
@@ -256,7 +258,8 @@ def mock_stage1(cfg: PipelineConfig, stage1: Fitted, mock: MockFold, tcfg: TwoSt
         t0 = time.perf_counter()
 
         def compute(country: str = country) -> Stage1Output:
-            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag)
+            s1c, poolc, pairs = mock_partition(cfg, mock, country, stage1.token_map, tag,
+                                               stage1.fillers)
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
 
@@ -408,7 +411,9 @@ class TwoStage:
                                  "extra_groups": tuple(tc.get("extra_groups", ())),
                                  "drop_columns": tuple(tc.get("drop_columns", ()))})
         rule = rule_from_json(json.loads((out / "rule.json").read_text()))
-        models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
+        # a part saved by SeedMean holds one folder per seed
+        models = [SeedMean.load(d) if (d / "seed0").exists() else Matcher.load(d)
+                  for d in (out / f"stage2_{k}" for k in range(tcfg.folds))]
         info_path = out / "fit_info.json"
         return cls(Fitted.load(out / "stage1", cfg), models, rule, tcfg,
                    pd.read_csv(out / "tune_table.csv"),
@@ -426,7 +431,8 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
     the stage-1 outputs are read from / written to it (``_cached_stage1``).
     """
     timings = {} if timings is None else timings
-    s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map)
+    s1n = load_normalised("test", (1,), cfg, token_map=ts.stage1.token_map,
+                          fillers=ts.stage1.fillers)
     matches, cands, summary = [], [], []
     for country in sorted(s1n[C.COUNTRY].unique()):
         t0 = time.perf_counter()
@@ -434,9 +440,10 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
         def compute(country: str = country) -> Stage1Output:
             s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
             poolc = load_normalised("test", (2, 3), cfg, token_map=ts.stage1.token_map,
-                                    country=country)
+                                    country=country, fillers=ts.stage1.fillers)
             s1c, poolc = _with_frequencies(cfg, s1c, poolc)
-            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map))
+            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map),
+                            fillers=ts.stage1.fillers)
             s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
             return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
 

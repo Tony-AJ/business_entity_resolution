@@ -1,0 +1,22 @@
+{
+  "version": "v121",
+  "date": "2026-09-26",
+  "group": "INT",
+  "change": "v110's rows for India and the US, v107's rows for France (diagnostic)",
+  "local_f05": "",
+  "mock_f05": "0.9817",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "a1c00d6",
+  "notes": "tests whether v110's flat public score (0.966 vs est 0.9731) comes from France",
+  "owner": "M1",
+  "parent": "v110",
+  "decision": "",
+  "metrics": {
+    "france_from": "v107",
+    "rest_from": "v110",
+    "matched_pairs": 5786367,
+    "candidate_pairs": 8795496,
+    "seconds": 114.5
+  }
+}
