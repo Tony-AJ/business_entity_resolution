@@ -38,7 +38,16 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
-## Submission 05: 2026-09-26 ~18:00 IST
+## Submission 06: 2026-09-26 (pending)
+- Version: v121_france_from_v107 (diagnostic: v110's rows for India and the US, v107's for France)
+- Commit: a1c00d6 (no model trained; files composed from submissions/v110 and submissions/v107)
+- Change vs previous submission (v110): the French rows (15 % of test S1) come from v107
+- Expected: above 0.969 if France is v110's problem (mock India +0.0102, US +0.0040); about
+  0.966 if the mock's India / US gain does not reach the test
+- Public F0.5: (fill in after upload)
+- Notes: files in submissions/v121/; both validators PASS.
+
+## Submission 05: 2026-09-26 18:10 IST
 - Version: v110_m3_features (on v107's two-stage)
 - Commit: c9ec108 (src/ as of 2c1a443); results in 031f767 `exp(v110)`
 - Change vs previous submission (v107): M3's four feature groups (idf, token_freq, ctx_idf,
@@ -49,7 +58,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 - Threshold / decision rule: expected-F0.5 decoding, gamma 1.5, expected misses 0.1, max 11, 1-to-1 (tuned for 1 - L_FN - 1.45 L_FP on the mock tune entities)
 - Mock F0.5 0.9817; est_public 0.9731 (v107: mock 0.9745, est 0.9659, public 0.966); pair
   recall 0.952 (v107 0.934), precision 0.997
-- Public F0.5: (fill in after upload)
+- Public F0.5: 0.966, flat on v107 although est_public was 0.9731: the first miss of the tight mock. v110 changes French rows far more than Indian or US ones (21 % vs 12-14 % differ from v107, 5.4 % lose matches), and the mock has no France: submission 06 tests that
 - Notes: files in submissions/v110/; both validators PASS; test candidates 4.8 (India), 5.0 (US),
   6.1 (France) per S1; matched share 94.1 / 94.3 / 94.8 %.
 
