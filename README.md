@@ -105,26 +105,30 @@ rules are tuned on its tune entities and **mock F0.5** is measured on its val en
 The V1 pipeline of the research plan is in place (`src/entity_resolution/`, tested) and
 `v001_base_model` is its first run. Progress per member: [TRACKER.md](TRACKER.md).
 
-## Reproducing the submission
+## Reproduce the final submission
 
-From a clean clone with the organisers' zip unzipped into `dataset/` (see Setup):
+The final version is `v110_m3_features`. From a clean clone with the organisers' zip
+unzipped into `dataset/` (see Setup), on Python 3.12, 12 CPU threads, 15 GB of RAM and a CUDA
+GPU for the XGBoost stages (a 4 GB RTX 2050 here):
 
 ```bash
 make setup                   # pinned environment (requirements.txt)
 make cache                   # raw TSVs -> Parquet, ~1 min
-make nb NB=experiments/v001_base_model/v001_base_model.ipynb
+make nb NB=experiments/v110_m3_features/v110_m3_features.ipynb
 make validate                # our checker + the organisers' validator on output/
+make package TEAM=<team> V=v110_m3_features OUT=submissions/v110   # the zip (Final package)
 ```
 
-The notebook runs every stage through `entity_resolution.pipeline`: normalisation (cached
-per split under `dataset/.cache/pipeline/norm/`), the transliteration map learned from the
-train fold's pairs, blocking per country (cached under `dataset/.cache/pipeline/pairs/`),
-features, LightGBM trained on the fit side of the train fold, the decision rule tuned on the
-tune side, one scoring of the validation fold, and test inference writing
-`output/matching_results.tsv` and `output/candidate_pairs.tsv`. Model, rule, token map and
-configuration are saved under `experiments/v001_base_model/artifacts/`. Seeds are fixed
-(split 42, inner split 4242, samples 7, LightGBM 42, deterministic mode), so a rerun
-reproduces the files.
+The notebook runs every stage through `entity_resolution`: normalisation and the token map
+learned from train-fold pairs, blocking per country, the GPU stage 1 trained on the train
+fold, the mock fold with the stage-1 filter, stage 2 and the rule tuned on it, then test
+inference. It writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`, copies
+both to `submissions/v110/` and runs both validators on them; its last cell prints the run
+time and peak RAM, and its scores go to `metrics.json` and `experiments/experiments.csv`.
+Models, rules and configuration are saved under `experiments/v110_m3_features/artifacts/`,
+caches under `dataset/.cache/`. Seeds are fixed (split 42, inner split 4242, samples 7, mock
+5151 / 5152, cross-fitting 6161, stage-1 early stopping 7171). Without a GPU, set
+`device="cpu"` in the notebook's setup cell.
 
 ## Final package
 
