@@ -8,7 +8,7 @@ Update your own rows when a task changes state and commit the change with your w
 Status: `todo` · `doing` · `done` · `blocked`. Owners: M1 lead / integration, M2
 normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision + errors.
 
-Last updated: 2026-09-25 18:26 IST (day 1).
+Last updated: 2026-09-26 11:55 IST (day 2).
 
 ## Day 1 — Fri 25 Sep
 
@@ -37,8 +37,9 @@ Last updated: 2026-09-25 18:26 IST (day 1).
 |---|---|---|---|---|---|
 | 14 | Blocking sweeps: `max_df`, `top_k`, P4 address char pass | M2 | A2–A5 | todo | v010–v039; keep ceiling F0.5 up at ≤ 40 candidates per S1 |
 | 15 | Learned address token map (cities, script tokens) | M2 | B4 | todo | |
-| 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | todo | v040–v059 |
-| 17 | Context features: name frequency, pool-side competition | M3 | C5 | todo | Top loss in the v001 dry run: exact-name pool records with empty addresses score ~0.05 because the model cannot tell a rare name from a common one |
+| 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | done | `idf` (8) + `ctx_idf` (5) groups, idf per country over the pool (`pool_stats`); v040 KEEP, val 0.9844 → 0.9870 with #17 and #17a |
+| 17 | Context features: name frequency, pool-side competition | M3 | C5 | done | `frequency` group (4): pool records of the country sharing the exact name / address; worth +0.0004 (v040 vs v041), all recall; in-degree stays opt-in (S1 sampling bias). Top loss in the v001 dry run: exact-name pool records with empty addresses score ~0.05 because the model cannot tell a rare name from a common one |
+| 17a | Extra address evidence: reverse containment, numbers, postcode prefix | M3 | C3–C4 | done | `address_extra` group (6); 5.6 % of v040's gain, `num_contain_l` #7 |
 | 18 | LightGBM coordinate search + 3-seed average | M4 | D3 | todo | v060–v079 |
 | 19 | XGBoost on the RTX 2050 (`device=cuda`) vs LightGBM | M4 | D4 | todo | |
 | 20 | Round-2 hard negatives from fit-side false positives | M4 | HN | todo | |
@@ -56,3 +57,5 @@ Last updated: 2026-09-25 18:26 IST (day 1).
 | Version | Owner | Plan | Change | Local F0.5 | Cand. recall | Public F0.5 | Status |
 |---|---|---|---|---|---|---|---|
 | v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | 0.9906 | – | logged |
+| v040 | M3 | C2 | v001 + idf, frequency, ctx_idf, address_extra groups (70 features) | 0.9870 | 0.9906 | – | kept |
+| v041 | M3 | C2 | v040 without frequency (ablation) | 0.9866 | 0.9906 | – | kept |
