@@ -1,7 +1,7 @@
 """v010 full-validation: top_k 25->35 on the COMPLETE val fold (India + US).
 
 Run from the repo root:
-    .venv\Scripts\python.exe v010_validate.py
+    .venv/Scripts/python.exe scripts/v010_validate.py
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import psutil
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from entity_resolution import config as C
 from entity_resolution.blocking import BlockingConfig, TopKSpec, block, PASS_BITS
