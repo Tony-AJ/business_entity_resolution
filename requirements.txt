@@ -2,8 +2,9 @@
 # the entity_resolution package plus headless notebook execution (nbconvert).
 # Top-level: numpy pandas pyarrow ipykernel nbconvert nbformat, and for the pipeline
 # anyascii (ISC) lightgbm (MIT) rapidfuzz (MIT) scikit-learn scipy (BSD-3)
-# sparse-dot-topn (Apache-2.0) xgboost (Apache-2.0; its wheel runs on CUDA GPUs); the rest are their dependencies. Add a new dependency here,
-# pinned, in the commit that first uses it. Dev tools (pytest, ruff, jupytext) live in
+# sparse-dot-topn (Apache-2.0) xgboost (Apache-2.0; its wheel runs on CUDA GPUs) jellyfish
+# (MIT) metaphone (BSD); the rest are their dependencies. Add a new dependency here, pinned,
+# in the commit that first uses it. Dev tools (pytest, ruff, jupytext) live in
 # pyproject.toml [dev].
 anyascii==0.3.3
 asttokens==3.0.2
@@ -20,6 +21,7 @@ ipykernel==7.3.0
 ipython-pygments-lexers==1.1.1
 ipython==9.17.1
 jedi==0.20.0
+jellyfish==1.2.1
 jinja2==3.1.6
 joblib==1.6.0
 jsonschema-specifications==2025.9.1
@@ -30,6 +32,7 @@ jupyterlab-pygments==0.3.0
 lightgbm==4.7.0
 markupsafe==3.0.3
 matplotlib-inline==0.2.2
+metaphone==0.6
 mistune==3.3.4
 narwhals==2.26.0
 nbclient==0.11.0
