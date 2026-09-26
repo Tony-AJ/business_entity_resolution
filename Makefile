@@ -4,7 +4,7 @@ PY := .venv/bin/python
 DATASET = $(shell $(PY) -c 'from entity_resolution.config import DATASET; print(DATASET)')
 OFFICIAL_VALIDATOR := dataset/student_resource/utils/validate_submission.py
 
-.PHONY: setup hooks cache lint test score validate experiment nb public
+.PHONY: setup hooks cache lint test score validate experiment nb public package
 
 setup:  ## .venv with pinned runtime deps + editable package + dev tools
 	$(PYTHON) -m venv .venv
@@ -39,3 +39,7 @@ validate:  ## output/*.tsv vs submission rules: our checker, then the organisers
 	$(PY) -m entity_resolution.submission --output-dir output
 	$(PY) $(OFFICIAL_VALIDATOR) --matching output/matching_results.tsv \
 		--candidate output/candidate_pairs.tsv --test-dir $(DATASET)/test
+
+package:  ## build/<TEAM>_submission.zip: make package TEAM=x V=v105_slug [OUT=submissions/v105] [ARGS=--dry-run]
+	bash scripts/package_submission.sh --team "$(TEAM)" --version "$(V)" \
+		$(if $(OUT),--outputs "$(OUT)") $(ARGS)
