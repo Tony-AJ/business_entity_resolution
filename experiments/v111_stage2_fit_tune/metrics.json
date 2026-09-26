@@ -1,0 +1,19 @@
+{
+  "version": "v111",
+  "date": "2026-09-26",
+  "group": "D3",
+  "change": "v110 with stage 2 on fit + tune entities, 127 leaves, 3 seeds (not run)",
+  "local_f05": "",
+  "mock_f05": "",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "1698ce9",
+  "notes": "not run: night-build strategy; its stage-2 settings go straight into v120",
+  "owner": "M1",
+  "parent": "v110",
+  "decision": "DROP",
+  "metrics": {
+    "status": "not run",
+    "folded_into": "v120"
+  }
+}
