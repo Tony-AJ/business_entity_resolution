@@ -36,6 +36,14 @@ from . import config as C
 from .data import isin, load_source
 from .split import Fold, hash_unit, pool_val_mask
 
+# Tight mock: calibrated on the leaderboard. v101 and v103 share one matcher and differ only
+# in the rule; public 0.955 / 0.961 against mock 0.9677 / 0.9704. Splitting each mock loss into
+# its false-merge and missed-match parts, public = 1 - L_FN - FP_WEIGHT * L_FP - PUBLIC_OFFSET
+# fits both points: a false merge costs 1.45x more on test (India 14 % denser than the mock,
+# France unseen), plus a fixed 0.0072. Rules are tuned on the tight score; est_public reports it.
+FP_WEIGHT = 1.45
+PUBLIC_OFFSET = 0.0072
+
 MOCK_SEED = 5151        # cluster sampling; independent of the split and inner-split seeds
 DROP_SEED = 5152        # order in which fit-side entities are dropped
 ROLES = ("val", "tune", "fit")

@@ -293,3 +293,12 @@ def test_tune_expected_scores_what_decide_expected_keeps(pairs_toy) -> None:
     pred = pairs_to_lists(decide_expected(scored, rule), s1_ids)
     ref = metrics.macro_fbeta(pred, pairs_to_lists(truth, s1_ids))
     assert table["f_beta"].max() == pytest.approx(ref, abs=1e-12)
+
+
+def test_tune_with_fp_weight_is_never_looser(pairs_toy) -> None:
+    """Weighting false merges more can only keep fewer or equal pairs on the chosen rule."""
+    scored, truth, s1_ids = pairs_toy
+    plain, _ = tune(scored, s1_ids, truth)
+    tight, table = tune(scored, s1_ids, truth, fp_weight=3.0)
+    assert len(decide(scored, tight)) <= len(decide(scored, plain))
+    assert table["f_beta"].max() <= 1.0

@@ -27,7 +27,7 @@ import pandas as pd
 
 from . import config as C
 from .data import isin
-from .evaluate import entity_f05_from_counts, positions
+from .evaluate import entity_tight_from_counts, positions
 from .trainset import label_pairs
 
 SCORED_COLUMNS = [C.S1_ID, C.ENTITY_ID, "prob"]
@@ -216,9 +216,11 @@ class _Scorer:
     c < 2**27, so both products are exact and fsum rounds exactly the per-entity sum, once.
     """
 
-    def __init__(self, n_true: np.ndarray, width: int) -> None:
-        """``n_true`` per entity; ``width`` exceeds every n_pred (so every tp) to be encoded."""
+    def __init__(self, n_true: np.ndarray, width: int, fp_weight: float = 1.0) -> None:
+        """``n_true`` per entity; ``width`` exceeds every n_pred (so every tp) to be encoded;
+        ``fp_weight`` weights false-merge losses (1.0 = macro F0.5, see ``evaluate``)."""
         self.n, self.width, self.square = len(n_true), width, width * width
+        self.fp_weight = fp_weight
         self.empty = n_true.astype(np.int64) * self.square      # code of an empty prediction
         self.dense = (int(n_true.max(initial=0)) + 1) * self.square <= 16 * self.n + (1 << 20)
 
@@ -238,7 +240,7 @@ class _Scorer:
             triple, count = code[start], np.diff(np.r_[start, len(code)])
         n_true, rest = np.divmod(triple, self.square)
         n_pred, tp = np.divmod(rest, self.width)
-        f = entity_f05_from_counts(tp, n_pred, n_true)
+        f = entity_tight_from_counts(tp, n_pred, n_true, self.fp_weight)
         t = SPLIT * f
         hi = t - (t - f)                            # f == hi + (f - hi) exactly
         c = count.astype(np.float64)
@@ -251,8 +253,9 @@ class _Tuning:
     """What every rule evaluation shares, prepared once per ``tune`` / ``evaluate_rules``."""
 
     def __init__(self, scored: pd.DataFrame, s1_ids: Iterable[str],
-                 truth_pairs: pd.DataFrame) -> None:
+                 truth_pairs: pd.DataFrame, fp_weight: float = 1.0) -> None:
         """Check the inputs; count every truth pair of ``s1_ids``; label the scored rows."""
+        self.fp_weight = fp_weight
         _check_scored(scored)
         self.ids = pd.Index(s1_ids)
         self.n = len(self.ids)
@@ -281,7 +284,7 @@ class _Tuning:
             width = int(np.bincount(s1, minlength=self.n).max()) + 1   # n_pred <= rows
             self._arrays[one_to_one] = _Arrays(-r.prob, r.prob, r.p_max, r.rank, s1,
                                                self.is_true[r.rows], pmax_ent,
-                                               _Scorer(self.n_true, width))
+                                               _Scorer(self.n_true, width, self.fp_weight))
         return self._arrays[one_to_one]
 
 
@@ -330,7 +333,8 @@ def _evaluate(data: _Tuning, rules: Sequence[DecisionRule], stage: str) -> pd.Da
 
 
 def evaluate_rules(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.DataFrame,
-                   rules: Iterable[DecisionRule], stage: str = "grid") -> pd.DataFrame:
+                   rules: Iterable[DecisionRule], stage: str = "grid",
+                   fp_weight: float = 1.0) -> pd.DataFrame:
     """Macro F0.5 and pair statistics of each rule on a scored sample (10 §4).
 
     Scored over ALL ``s1_ids``: ``n_true`` counts every truth pair of those entities, those
@@ -338,7 +342,7 @@ def evaluate_rules(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.
     ``metrics.macro_fbeta`` scores ``pairs_to_lists(decide(scored, rule), s1_ids)``. Every S1
     id of ``scored`` must be in ``s1_ids``. Columns ``TABLE_COLUMNS``, one row per rule, in order.
     """
-    return _evaluate(_Tuning(scored, s1_ids, truth_pairs), list(rules), stage)
+    return _evaluate(_Tuning(scored, s1_ids, truth_pairs, fp_weight), list(rules), stage)
 
 
 def _pick(table: pd.DataFrame, tie_tol: float) -> DecisionRule:
@@ -353,14 +357,16 @@ def _pick(table: pd.DataFrame, tie_tol: float) -> DecisionRule:
 
 
 def tune(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.DataFrame,
-         grid: Grid = DEFAULT_GRID) -> tuple[DecisionRule, pd.DataFrame]:
+         grid: Grid = DEFAULT_GRID, fp_weight: float = 1.0) -> tuple[DecisionRule, pd.DataFrame]:
     """Best ``DecisionRule`` on the tune sample by macro F0.5, plus every rule tried.
 
     Stage "grid" scores ``grid.rules(flag)`` for each ``one_to_one`` flag (3,906 by default);
     stage "refine" sweeps tau_abs around the best of them (13 more rules); the answer is
     ``_pick`` over both. Use the tune side of ``trainset.inner_split`` only, never val (10 §5).
+    ``fp_weight`` > 1 tunes for the tight mock (false merges cost more, ``evaluate``); the
+    table's ``f_beta`` column then holds that score.
     """
-    data = _Tuning(scored, s1_ids, truth_pairs)
+    data = _Tuning(scored, s1_ids, truth_pairs, fp_weight)
     table = _evaluate(data, [r for flag in grid.one_to_one for r in grid.rules(flag)], "grid")
     refine = _evaluate(data, grid.refine_rules(_pick(table, grid.tie_tol)), "refine")
     table = pd.concat([table, refine], ignore_index=True)
@@ -425,12 +431,14 @@ def decide_expected(scored: pd.DataFrame, rule: ExpectedRule) -> pd.DataFrame:
 def tune_expected(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.DataFrame,
                   gammas: Sequence[float] = (0.8, 1.0, 1.2, 1.5, 2.0),
                   misses: Sequence[float] = (0.0, 0.05, 0.1, 0.2, 0.4),
-                  max_matches: int = 11) -> tuple[ExpectedRule, pd.DataFrame]:
+                  max_matches: int = 11, fp_weight: float = 1.0
+                  ) -> tuple[ExpectedRule, pd.DataFrame]:
     """Best ``ExpectedRule`` by macro F0.5 on the tune sample, and every rule tried.
 
-    Scores exactly what ``decide_expected`` keeps (same ranked arrays), over all ``s1_ids``.
+    Scores exactly what ``decide_expected`` keeps (same ranked arrays), over all ``s1_ids``;
+    ``fp_weight`` as in ``tune``.
     """
-    data = _Tuning(scored, s1_ids, truth_pairs)
+    data = _Tuning(scored, s1_ids, truth_pairs, fp_weight)
     a = data.arrays(True)
     rows = []
     for g, m in itertools.product(gammas, misses):

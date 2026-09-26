@@ -50,9 +50,9 @@ from .decision import (
     one_to_one_filter,
     tune,
 )
-from .evaluate import blocking_report, score_pairs
+from .evaluate import blocking_report, entity_counts, entity_tight_from_counts, score_pairs
 from .features import DEFAULT_GROUPS, build_features, iter_chunks
-from .mock import MockFold
+from .mock import FP_WEIGHT, PUBLIC_OFFSET, MockFold
 from .model import Matcher, MatcherParams
 from .normalize import (
     RULES_VERSION,
@@ -552,8 +552,8 @@ def _rows_of(scored: pd.DataFrame, fold: Fold) -> pd.DataFrame:
     return scored[isin(scored[C.S1_ID], pd.Index(fold.s1[C.ENTITY_ID]))]
 
 
-def tune_mock(scored: pd.DataFrame, mock: MockFold,
-              grid: Grid) -> tuple[DecisionRule, pd.DataFrame]:
+def tune_mock(scored: pd.DataFrame, mock: MockFold, grid: Grid,
+              fp_weight: float = 1.0) -> tuple[DecisionRule, pd.DataFrame]:
     """``decision.tune`` on the mock's tune entities (``scored`` from ``run_mock``).
 
     ``scored`` already went through the 1-to-1, so the grid must keep it on: a rule without
@@ -562,22 +562,33 @@ def tune_mock(scored: pd.DataFrame, mock: MockFold,
     if not all(grid.one_to_one):
         raise ValueError("tune_mock needs grid.one_to_one == (True,): the mock is 1-to-1 filtered")
     part = mock.part("tune")
-    return tune(_rows_of(scored, part), part.s1[C.ENTITY_ID], part.pairs, grid)
+    return tune(_rows_of(scored, part), part.s1[C.ENTITY_ID], part.pairs, grid, fp_weight)
 
 
 def mock_scores(scored: pd.DataFrame, mock: MockFold, rule: DecisionRule | ExpectedRule,
                 role: str = "val") -> pd.DataFrame:
-    """``score_pairs`` of ``rule`` on the mock's ``role`` entities: all, then per country."""
+    """``score_pairs`` of ``rule`` on the mock's ``role`` entities: all, then per country.
+
+    Also ``f_tight`` (false merges weighted ``FP_WEIGHT``) and ``est_public`` (``f_tight``
+    minus ``PUBLIC_OFFSET``): the tight mock, calibrated to the leaderboard (``mock.py``).
+    """
     part = mock.part(role)
     matches = apply_rule(_rows_of(scored, part), rule)
-    rows = {"all": score_pairs(matches, part)}
+    rows = {"all": _with_tight(score_pairs(matches, part), matches, part)}
     for country in sorted(part.s1[C.COUNTRY].unique()):
         in_c = (part.s1[C.COUNTRY] == country).to_numpy()
         ids = pd.Index(part.s1[C.ENTITY_ID][in_c])
         sub = Fold(f"{part.name}_{country}", part.s1[in_c].reset_index(drop=True), part.s2,
                    part.s3, part.pairs[isin(part.pairs[C.S1_ID], ids)])
-        rows[country] = score_pairs(matches, sub)
+        rows[country] = _with_tight(score_pairs(matches, sub), matches, sub)
     return pd.DataFrame(rows).T
+
+
+def _with_tight(scores: dict, matches: pd.DataFrame, fold: Fold) -> dict:
+    """``scores`` plus the tight mock score and the public estimate of ``matches`` on ``fold``."""
+    tp, n_pred, n_true = entity_counts(matches, fold)
+    tight = float(entity_tight_from_counts(tp, n_pred, n_true, FP_WEIGHT).mean())
+    return {**scores, "f_tight": tight, "est_public": tight - PUBLIC_OFFSET}
 
 
 def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,
