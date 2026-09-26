@@ -10,7 +10,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from entity_resolution.model import BACKENDS, HEURISTIC_SIMS, Matcher, MatcherParams
+from entity_resolution.model import (
+    BACKENDS,
+    CALIBRATION_BINS,
+    HEURISTIC_SIMS,
+    Matcher,
+    MatcherParams,
+    reliability,
+)
 
 FAST = {"n_estimators": 60, "num_threads": 2}
 SAVED_FILES = {"lgbm": {"model.txt"}, "logreg": {"model.joblib"}, "heuristic": set()}
@@ -249,3 +256,30 @@ def test_unfitted_and_unknown_backend_raise(data):
         Matcher().predict_proba(data[2])
     with pytest.raises(ValueError, match="backend"):
         MatcherParams(backend="xgboost")
+
+
+def test_reliability_separates_calibrated_from_overconfident():
+    rng = np.random.default_rng(0)
+    p = rng.random(100_000)
+    ece, brier, table = reliability(p, rng.random(100_000) < p)  # calibrated by construction
+    assert ece < 0.02 and 0.0 < brier < 0.25
+    assert list(table.columns) == ["bin", "n", "p_mean", "y_rate", "gap", "p_lo", "p_hi"]
+    assert len(table) == CALIBRATION_BINS and table["n"].sum() == 100_000
+    assert table["p_mean"].is_monotonic_increasing
+    ece_bad, brier_bad, _ = reliability(np.full(1000, 0.9), np.zeros(1000))
+    assert ece_bad == pytest.approx(0.9) and brier_bad == pytest.approx(0.81)
+
+
+def test_reliability_by_hand():
+    # sorted: (0.1, 0) (0.2, 1) | (0.8, 1) (0.9, 1) -> gaps -0.35 and -0.15, two pairs each
+    ece, brier, table = reliability(np.array([0.1, 0.9, 0.2, 0.8]), np.array([0, 1, 1, 1]),
+                                    bins=2)
+    assert ece == pytest.approx(0.25) and brier == pytest.approx(0.175)
+    assert table["n"].tolist() == [2, 2]
+    assert table["gap"].tolist() == pytest.approx([-0.35, -0.15])
+    assert table[["p_lo", "p_hi"]].to_numpy().tolist() == [[0.1, 0.2], [0.8, 0.9]]
+    # fewer pairs than bins: empty bins are dropped, never divided by zero
+    ece, _, table = reliability(np.array([0.3, 0.7]), np.array([0, 1]), bins=5)
+    assert table["n"].tolist() == [1, 1] and ece == pytest.approx(0.3)
+    ece, brier, table = reliability(np.zeros(0), np.zeros(0))
+    assert np.isnan(ece) and np.isnan(brier) and table.empty

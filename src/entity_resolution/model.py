@@ -12,6 +12,10 @@ Blueprint: docs/plan/08_MODEL_SELECTION.md. ``Matcher`` takes the float32 featur
 The fitted column order is a contract: ``predict_proba`` refuses a frame whose columns
 are missing, unexpected or reordered, because two swapped similarity columns would
 otherwise score garbage without any error.
+
+``reliability`` measures calibration (08 §5) of any probabilities against 0/1 labels:
+ECE over equal-count bins, Brier score and the reliability table, because the decision
+layer's thresholds assume the probabilities mean what they say.
 """
 from __future__ import annotations
 
@@ -39,6 +43,7 @@ PARAMS_FILE = "params.json"
 FEATURES_FILE = "feature_names.json"
 MODEL_FILES = {"lgbm": "model.txt", "logreg": "model.joblib"}  # heuristic: JSON files only
 TUNE = "tune"  # name of the early-stopping set in LightGBM's evaluation log
+CALIBRATION_BINS = 20  # equal-count bins of the reliability table (08 §5)
 
 
 @dataclass
@@ -355,6 +360,33 @@ class Matcher:
         return self.feature_names_
 
 
+def reliability(prob: np.ndarray, label: np.ndarray,
+                bins: int = CALIBRATION_BINS) -> tuple[float, float, pd.DataFrame]:
+    """``(ece, brier, table)`` of probabilities against 0/1 labels (08 §5).
+
+    Equal-count bins: pairs sorted by ``prob`` (stable) and cut into ``bins`` runs of equal
+    size, so every bin has the same weight whatever the skew of the scores. ECE is the
+    bin-size-weighted mean |mean prob - positive rate|; Brier the mean squared error. NaN
+    and an empty table without rows.
+    """
+    p = np.asarray(prob, dtype=np.float64)
+    y = np.asarray(label, dtype=np.float64)
+    cols = ["bin", "n", "p_mean", "y_rate", "gap", "p_lo", "p_hi"]
+    if len(p) == 0:
+        return float("nan"), float("nan"), pd.DataFrame(columns=cols)
+    order = np.argsort(p, kind="stable")
+    ps, ys = p[order], y[order]
+    edges = np.linspace(0, len(p), bins + 1).round().astype(np.int64)
+    rows = []
+    for b in range(bins):   # 20 bins: a loop over bins, never over pairs
+        lo, hi = edges[b], edges[b + 1]
+        if hi > lo:
+            pm, yr = ps[lo:hi].mean(), ys[lo:hi].mean()
+            rows.append((b, int(hi - lo), pm, yr, pm - yr, ps[lo], ps[hi - 1]))
+    table = pd.DataFrame(rows, columns=cols)
+    ece = float((table["n"] * table["gap"].abs()).sum() / len(p))
+    brier = float(np.mean((p - y) ** 2))
+    return ece, brier, table
 
 
 def _feature_columns(X: pd.DataFrame, what: str) -> list[str]:
