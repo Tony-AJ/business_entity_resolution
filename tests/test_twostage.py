@@ -10,7 +10,7 @@ import pytest
 from entity_resolution import config as C
 from entity_resolution.decision import Grid, tune
 from entity_resolution.mock import build_mock
-from entity_resolution.model import MatcherParams
+from entity_resolution.model import Matcher, MatcherParams
 from entity_resolution.pipeline import fit
 from entity_resolution.split import load_fold
 from entity_resolution.stacking import (
@@ -23,6 +23,7 @@ from entity_resolution.stacking import (
 )
 from entity_resolution.submission import split_ids, validate
 from entity_resolution.twostage import (
+    SeedMean,
     TwoStage,
     TwoStageConfig,
     fit_stage2,
@@ -276,3 +277,23 @@ def test_train_roles_fit_and_tune(dataset_dir: Path, tmp_path: Path) -> None:
     assert len(models) == 2 and not scored[C.ENTITY_ID].duplicated().any()
     with pytest.raises(ValueError, match="val"):
         fit_stage2(outs, mock, TwoStageConfig(train_roles=("fit", "val")))
+
+
+def test_seed_mean_averages_and_round_trips(tmp_path: Path) -> None:
+    """SeedMean predicts the seeds' mean, refuses mixed features and survives save/load."""
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.random((300, 3), dtype=np.float32), columns=["a", "b", "c"])
+    y = (X["a"] + 0.3 * rng.random(300) > 0.7).astype(int)
+    seeds = [Matcher(MatcherParams(backend="xgb", device="cpu", n_estimators=20,
+                                   seed=s)).fit(X, y, X, y) for s in (1, 2)]
+    mean = SeedMean(seeds)
+    expected = np.mean([m.predict_proba(X) for m in seeds], axis=0)
+    assert np.allclose(mean.predict_proba(X), expected)
+    assert predict_stage2([mean, mean], X).tolist() == pytest.approx(expected.tolist())
+    again = SeedMean.load(mean.save(tmp_path / "seeds"))
+    assert len(again.models) == 2
+    assert np.allclose(again.predict_proba(X), expected, atol=1e-6)
+    other = Const(0.5)
+    other.feature_names_ = ["a", "b"]
+    with pytest.raises(ValueError, match="same features"):
+        SeedMean([seeds[0], other])

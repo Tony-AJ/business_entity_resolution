@@ -291,6 +291,43 @@ def predict_stage2(models: list[Matcher], X: pd.DataFrame,
     return out
 
 
+class SeedMean:
+    """Stage-2 models of one cross-fitting part trained with different seeds, averaged.
+
+    Stands in for a ``Matcher`` wherever stage 2 predicts (``predict_stage2``,
+    ``TwoStage``): same ``feature_names_``, ``predict_proba`` = the seeds' mean probability.
+    """
+
+    def __init__(self, models: list[Matcher]) -> None:
+        if not models:
+            raise ValueError("SeedMean needs at least one model")
+        names = list(models[0].feature_names_)
+        if any(list(m.feature_names_) != names for m in models):
+            raise ValueError("SeedMean models must read the same features")
+        self.models, self.feature_names_ = list(models), names
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Mean match probability of the seeds per row of ``X``, float32."""
+        return np.mean([m.predict_proba(X) for m in self.models], axis=0).astype(np.float32)
+
+    def importance(self) -> pd.Series:
+        """The seeds' mean gain share per feature, largest first."""
+        return (pd.concat([m.importance() for m in self.models], axis=1).mean(axis=1)
+                .sort_values(ascending=False))
+
+    def save(self, out: Path) -> Path:
+        """Each seed's model under ``out/seed<i>`` (``Matcher.save``)."""
+        for i, m in enumerate(self.models):
+            m.save(Path(out) / f"seed{i}")
+        return Path(out)
+
+    @classmethod
+    def load(cls, out: Path) -> SeedMean:
+        """Read back what ``save`` wrote, seeds in their saved order."""
+        dirs = sorted(Path(out).glob("seed*"), key=lambda d: int(d.name[len("seed"):]))
+        return cls([Matcher.load(d) for d in dirs])
+
+
 def mock_scored(outs: dict[str, Stage1Output], models: list[Matcher], mock: MockFold,
                 tcfg: TwoStageConfig, roles: tuple[str, ...] = ("tune", "val")
                 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -349,7 +386,9 @@ class TwoStage:
         tcfg = TwoStageConfig(**{**tc, "model": MatcherParams(**tc["model"]),
                                  "train_roles": tuple(tc.get("train_roles", ("fit",)))})
         rule = rule_from_json(json.loads((out / "rule.json").read_text()))
-        models = [Matcher.load(out / f"stage2_{k}") for k in range(tcfg.folds)]
+        # a part saved by SeedMean holds one folder per seed
+        models = [SeedMean.load(d) if (d / "seed0").exists() else Matcher.load(d)
+                  for d in (out / f"stage2_{k}" for k in range(tcfg.folds))]
         info_path = out / "fit_info.json"
         return cls(Fitted.load(out / "stage1", cfg), models, rule, tcfg,
                    pd.read_csv(out / "tune_table.csv"),
