@@ -53,7 +53,7 @@ from .decision import (
 from .evaluate import blocking_report, entity_counts, entity_tight_from_counts, score_pairs
 from .features import DEFAULT_GROUPS, build_features, iter_chunks, pool_stats
 from .mock import FP_WEIGHT, PUBLIC_OFFSET, MockFold
-from .model import Matcher, MatcherParams
+from .model import Matcher, MatcherParams, SeedMean
 from .normalize import (
     RULES_VERSION,
     NormaliseConfig,
@@ -115,7 +115,7 @@ class PipelineConfig:
 class Fitted:
     """A trained pipeline version: token map, matcher, frozen rule and the grid behind it."""
 
-    matcher: Matcher
+    matcher: Matcher | SeedMean
     rule: DecisionRule
     tune_table: pd.DataFrame
     config: PipelineConfig
@@ -142,7 +142,9 @@ class Fitted:
         rule.pop("tune_f_beta", None)
         info_path = out / "fit_info.json"
         info = json.loads(info_path.read_text()) if info_path.exists() else {}
-        return cls(Matcher.load(out / "model"), DecisionRule(**rule),
+        model = out / "model"               # a bagged stage 1 holds one folder per bag
+        matcher = SeedMean.load(model) if (model / "seed0").exists() else Matcher.load(model)
+        return cls(matcher, DecisionRule(**rule),
                    pd.read_csv(out / "tune_table.csv"), config,
                    json.loads((out / "token_map.json").read_text()), info)
 
