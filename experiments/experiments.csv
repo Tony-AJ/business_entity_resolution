@@ -11,3 +11,4 @@ v106,2026-09-26,D4,"two-stage with a GPU stage 1 (XGBoost, 360k entities), block
 v107,2026-09-26,E2,v104 two-stage; rule re-tuned for the tight mock (false merges x1.45),,0.9745,,0.9660,86da932,est_public 0.9659 (v104 plain rule 0.9654); f_tight 0.9731,M1,v104,DROP
 v108,2026-09-26,D3,"v106 variant: stage 2 on fit + tune entities, 127 leaves (not run)",,,,,db1807f,"never ran: it reads v106's stage-1 cache, which v106's failure never wrote",M1,v106,DROP
 v109,2026-09-26,A1,name + address-number exact key on top of B6 (sampled mock val entities),,,0.9829,,a241e40,"B6 recall 0.9780; adopted B6 + name+number, cap 120: 0.9829 at 69.3/S1",M1,v105,KEEP
+v110,2026-09-26,C2,"v107 two-stage + M3 feature groups (idf, token_freq, ctx_idf, address_extra), blocking B6 + name+number, GPU stage 1 (110,000 entities), rival features",,0.9817,0.9788,,c9ec108,est_public 0.9731; single stage est 0.9681; cands 4.4/S1; stage 2 without M3 columns -0.0005; blocking db1f33c4,M1,v107,KEEP
