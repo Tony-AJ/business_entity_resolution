@@ -11,7 +11,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 13:00 IST (day 2); M3's feature groups (PR #8) merged into main.
+Last updated: 2026-09-26 16:30 IST (day 2): night-build strategy below; v110 est_public 0.9731.
 
 ## Day 1 — Fri 25 Sep
 
@@ -89,14 +89,47 @@ explain the gap (test's same-name mix ≈ the mock's).
 | 58 | France test-side audit (read-only, agent): French S1 vs pool forms under rules v3 | M1 (agent) | B2 / B3 | 15:30 | done | Gaps: "N°" number marker (6.6 % of French pool addresses, 0 in S1), `et`/`+` for `&`, `bis`→`B`, leet legal forms (`5arl`), `compagnie`; most street abbreviations already mapped |
 | 59 | Rules v4 (France-only: N° marker, compagnie) and v5 (`+`/`et`→and, leet legal forms, frs, bis/crs/psg/appt, own-country word out of name_core) on `feat/rules-v4-france` | M1 (agent) | B2 / B3 | 16:00 | done | v4 `25e99e8`: all 10.0M US/India test records byte-identical to v3. v5: US +885, India +1,053 / −6 identical true-pair names; needs a full re-run (#62) |
 | 60 | v111: v110 stage 2 on fit + tune entities, 127 leaves, 3 seeds (`SeedMean`, `feat/seed-mean`); loss breakdown (never a candidate / 1-to-1 / below the rule) | M1 | D3 / E | 19:00 | todo | Stage 2 only, from v110's caches: ~25 min, GPU |
-| 61 | v112: best of v110/v111 + rules v4, France re-run only (India/US read from the parent's test cache) | M1 | B2 | 19:30 | todo | ~25 min; the upload measures France's gain (the mock has no France) |
-| 62 | v113: full re-run with rules v5 (mock + test); judged by est_public | M1 | B2–B4 | Day 3 08:00 | todo | ~4.5 h overnight: new normalisation re-blocks everything |
+| 61 | v112: best of v110/v111 + rules v4, France re-run only (India/US read from the parent's test cache) | M1 | B2 | 19:30 | dropped | Folded into the night build (#70): rules v5 include v4's French rules |
+| 62 | v113: full re-run with rules v5 (mock + test); judged by est_public | M1 | B2–B4 | Day 3 08:00 | dropped | Folded into the night build (#70) |
 | 50 | Tight mock: false merges ×1.45 + offset, calibrated on uploads #2–#3; `fp_weight` tuning | M1 | INT / E2 | 11:15 | done | est_public reproduces both public scores |
 | 51 | v107: v104's two-stage + rule tuned on the tight mock (+ expected-F0.5 candidate); **upload #4** | M1 | E2 / E5 | 12:15 | done | est_public **0.9659** (mock 0.9745); expected-F0.5 decoding won; 5 min from caches. **Public 0.966** (12:29): the tight mock was off by 0.0001 |
 | 52 | France: département names (Nord, Gironde, Loire-Atlantique, Pas-de-Calais: 27 % of French address components) mapped to region codes, rules v3 | M1 | B | 12:15 | done | Committed during v105; v106 is the first version with it |
 | 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | – | done | `idf` (8) + `ctx_idf` (5) groups, idf per country over the pool (`pool_stats`); v040 KEEP, val 0.9844 → 0.9870 with #17 and #17a |
 | 17 | Context features: name frequency, pool-side competition | M3 | C5 | – | done | `frequency` group (4; renamed `token_freq` on merge to main, where `frequency` is v101's core-name rates): pool records of the country sharing the exact name / address; worth +0.0004 (v040 vs v041), all recall; in-degree stays opt-in (S1 sampling bias). Top loss in the v001 dry run: exact-name pool records with empty addresses score ~0.05 because the model cannot tell a rare name from a common one |
 | 17a | Extra address evidence: reverse containment, numbers, postcode prefix | M3 | C3–C4 | – | done | `address_extra` group (6); 5.6 % of v040's gain, `num_contain_l` #7 |
+
+## Night build — from 16:30 IST day 2 (target: public ≥ 0.99)
+
+The leader has crossed 0.99; our best public is 0.966 (v107) and v110 (est_public 0.9731,
+upload #5, untouched) closes part of the gap. Waiting for one full test run per idea (~1.5–3.5 h
+each) no longer fits, so the strategy changes:
+
+1. **Implement every planned item now**, each behind an opt-in switch (feature group, config
+   field or flag) that defaults to today's behaviour, with tests and `make lint test` green.
+   No per-item test inference.
+2. **Integrate at 21:30.** Every member pushes their branch (opt-in, rebased or merged on
+   current main). M1 merges them with merge commits into `integration/night-build`, runs
+   `make lint test`, and fixes conflicts.
+3. **Night build at ~22:00:** one notebook (`v120_night_build`) with every switch on: stage-1
+   set, GPU stage 1, mock pass, stage 2, tight-mock rule, test inference, both validators
+   (~4 h, files ~02:00). The mock's est_public checks it before the upload.
+4. **Day 3:** upload the night build first; the public score verifies it. Stage-2 and rule
+   ablations then run from its caches in minutes (uploads #7–#10), and the final package is
+   built from the best upload.
+
+| # | Task | Owner | Plan | ETA | Status | Notes |
+|---|---|---|---|---|---|---|
+| 63 | Night-build plan, `integration/night-build` branch, merge gate | M1 | INT | 21:30 | doing | Members: push opt-in branches by 21:30 |
+| 64 | Rules v5 (France + `+`/`et`, leet legal forms, own-country word; #59) merged | M1 | B2–B4 | 18:30 | todo | After v111's run, so v111's commit stays reproducible |
+| 65 | Stage 2 on fit + tune entities, 127 leaves, 3 seeds (`SeedMean`) | M1 | D3 | 18:15 | doing | v111 decides it (starts itself when v110 ends) |
+| 66 | Stage 1 on every training row (CPU hist or GPU bagging) instead of the 7M-row GPU cap | M1 | D3 | 19:30 | todo | v110 used 49 % of its 14.9M rows |
+| 67 | Pool-sibling candidates: records near-identical to an entity's best candidate join its candidate set | M1 | A5 | 20:30 | todo | Targets the 2.1 % of true pairs lost before stage 2 |
+| 68 | Alias names (`dba`, `aka`, `fka`, `t/a`, S3 only) split into name + alias | M1 | B / C | 21:00 | todo | Found by the France audit, all countries |
+| 69 | Error-driven fixes from v111's loss breakdown (#31) | M1 | A–E | 21:00 | todo | |
+| 70 | v120 night build: every switch on, test inference, package | M1 | INT | Day 3 02:00 | todo | Replaces v112 (France-only) and v113 (rules v5) |
+| 71 | Day-3 uploads: night build first, then ablations from its caches | M1 | INT | Day 3 | todo | 5 uploads |
+| 72 | M3: stage-2 extra feature groups (`feat/m3-stage2-features`) | M3 | C5 | 21:30 | doing | Opt-in; merged at the gate |
+| 73 | M2: phonetic Soundex + Metaphone features, entity blocking (`newblocking`, `newfeatureblocking`) | M2 | A / C | 21:30 | doing | Branches start from v001-era main: rebase or merge current main, keep opt-in |
 
 ## Day 3 — Sun 27 Sep
 
