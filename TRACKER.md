@@ -124,7 +124,7 @@ each) no longer fits, so the strategy changes:
 | 65 | Stage 2 on fit + tune entities, 127 leaves, 3 seeds (`SeedMean`) | M1 | D3 | 18:15 | doing | v111 decides it (starts itself when v110 ends) |
 | 66 | Stage 1 on every training row (CPU hist or GPU bagging) instead of the 7M-row GPU cap | M1 | D3 | 19:30 | todo | v110 used 49 % of its 14.9M rows |
 | 67 | Pool-sibling candidates: records near-identical to an entity's best candidate join its candidate set | M1 | A5 | 20:30 | todo | Targets the 2.1 % of true pairs lost before stage 2 |
-| 68 | Alias names (`dba`, `aka`, `fka`, `t/a`, S3 only) split into name + alias | M1 | B / C | 21:00 | todo | Found by the France audit, all countries |
+| 68 | Alias names (`dba`, `aka`, `fka`, `t/a`, S3 only) split into name + alias | M1 | B / C | 21:00 | done | `feat/alias-names` (opt-in, off): aliases are 2–4 % of S3 names, S1 always matches the part after the marker, and v110 already finds 99.92 % of alias pairs (41 misses of 48k): upper bound +0.00006, so the night build leaves it off |
 | 69 | Error-driven fixes from v111's loss breakdown (#31) | M1 | A–E | 21:00 | todo | |
 | 70 | v120 night build: every switch on, test inference, package | M1 | INT | Day 3 02:00 | todo | Replaces v112 (France-only) and v113 (rules v5) |
 | 71 | Day-3 uploads: night build first, then ablations from its caches | M1 | INT | Day 3 | todo | 5 uploads |
