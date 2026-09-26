@@ -21,6 +21,7 @@ from entity_resolution.features import (
     NAN_FEATURES,
     REGISTRY,
     STATS_GROUPS,
+    ZERO_GAIN_COLUMNS,
     build_features,
     feature_names,
     iter_chunks,
@@ -490,3 +491,35 @@ def test_shared_stats_match_whole_build():
     parts = [build_features(pairs.iloc[sl], s1n, pooln, groups, stats=stats)
              for sl in iter_chunks(pairs, 1)]
     pd.testing.assert_frame_equal(pd.concat(parts), whole)
+
+
+# --------------------------------------------- interactions and missing flags (07 §1, §3) ----
+def test_interaction_flags_by_hand():
+    s1n = _records(_record("S1-1", "acme cafe", "", "12 main street dover"))
+    pooln = _records(_record("S2-1", "acme cafe", "", "12 main street dover"),   # the same
+                     _record("S2-2", "acme cafe", "", "99 oak lane austin"),     # decoy
+                     _record("S2-3", "zenith bakery", "", "12 main street dover"),  # rename
+                     _record("S2-4", "acme cafe"))                               # no address
+    pairs = _pairs(*[("S1-1", f"S2-{i}", 8, 0.5, NAN, NAN) for i in (1, 2, 3, 4)])
+    X = build_features(pairs, s1n, pooln, ("interactions",))
+    assert X["both_strong"].tolist() == [1, 0, 0, 0]
+    assert X["name_strong_addr_weak"].tolist() == [0, 1, 0, 0]   # empty address: no evidence
+    assert X["addr_strong_name_weak"].tolist() == [0, 0, 1, 0]
+    carried = build_features(pairs, s1n, pooln, ("name_fuzzy", "address", "interactions"))
+    pd.testing.assert_frame_equal(carried[FEATURE_COLUMNS["interactions"]], X)
+
+
+def test_missing_flags_by_hand():
+    s1n = _records(_record("S1-1", "a", "", "main street"), _record("S1-2", "b", "", "12 elm"))
+    pooln = _records(_record("S2-1", "a", "", "12 oak lane"), _record("S2-2", "b", "", "oak"))
+    pairs = _pairs(("S1-1", "S2-1", 8, 0.5, NAN, NAN), ("S1-2", "S2-2", 8, 0.5, NAN, NAN))
+    X = build_features(pairs, s1n, pooln, ("missing_flags",))
+    assert X["nums_empty_l"].tolist() == [1, 0] and X["nums_empty_r"].tolist() == [0, 1]
+
+
+def test_new_flags_are_binary_and_zero_gain_names_exist():
+    pairs, s1n, pooln = _toy()
+    X = build_features(pairs, s1n, pooln, ALL_GROUPS)
+    flags = [*FEATURE_COLUMNS["interactions"], *FEATURE_COLUMNS["missing_flags"]]
+    assert X[flags].isin([0.0, 1.0]).all().all()  # isin is False on NaN
+    assert set(ZERO_GAIN_COLUMNS) <= set(X.columns)
