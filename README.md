@@ -107,25 +107,25 @@ The V1 pipeline of the research plan is in place (`src/entity_resolution/`, test
 
 ## Reproduce the final submission
 
-The final version is `v110_m3_features`. From a clean clone with the organisers' zip
+The final version is `v120_night_build` (the night build). From a clean clone with the organisers' zip
 unzipped into `dataset/` (see Setup), on Python 3.12, 12 CPU threads, 15 GB of RAM and a CUDA
 GPU for the XGBoost stages (a 4 GB RTX 2050 here):
 
 ```bash
 make setup                   # pinned environment (requirements.txt)
 make cache                   # raw TSVs -> Parquet, ~1 min
-make nb NB=experiments/v110_m3_features/v110_m3_features.ipynb
+make nb NB=experiments/v120_night_build/v120_night_build.ipynb
 make validate                # our checker + the organisers' validator on output/
-make package TEAM=<team> V=v110_m3_features OUT=submissions/v110   # the zip (Final package)
+make package TEAM=<team> V=v120_night_build OUT=submissions/v120   # the zip (Final package)
 ```
 
 The notebook runs every stage through `entity_resolution`: normalisation and the token map
 learned from train-fold pairs, blocking per country, the GPU stage 1 trained on the train
 fold, the mock fold with the stage-1 filter, stage 2 and the rule tuned on it, then test
 inference. It writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`, copies
-both to `submissions/v110/` and runs both validators on them; its last cell prints the run
+both to `submissions/v120/` and runs both validators on them; its last cell prints the run
 time and peak RAM, and its scores go to `metrics.json` and `experiments/experiments.csv`.
-Models, rules and configuration are saved under `experiments/v110_m3_features/artifacts/`,
+Models, rules and configuration are saved under `experiments/v120_night_build/artifacts/`,
 caches under `dataset/.cache/`. Seeds are fixed (split 42, inner split 4242, samples 7, mock
 5151 / 5152, cross-fitting 6161, stage-1 early stopping 7171). Without a GPU, set
 `device="cpu"` in the notebook's setup cell.
