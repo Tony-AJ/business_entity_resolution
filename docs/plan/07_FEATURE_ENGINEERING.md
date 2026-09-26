@@ -218,3 +218,31 @@ Both are KEEP and tie on est_public. In stage 1 the groups take 14.2 % of the ga
 16 % and let the filter keep 4.37 candidates per S1 instead of 4.59 at the same recall. v042
 goes to test inference: fewer false merges, v101's public-proven stage 1 unchanged, and the
 M3 groups cost only the kept pairs at test scale.
+
+## 12. Remaining planned features, implemented (opt-in, day 2 evening)
+
+| Group (plan) | Feature | Definition | Missing |
+|---|---|---|---|
+| interactions (07 §3, C5) | `name_strong_addr_weak` | `core_token_set` ≥ 0.9 and `ad_jaccard` < 0.2: same name, another address (decoy) | 0 when a side is empty |
+| | `addr_strong_name_weak` | `ad_token_set` ≥ 0.9 and `core_token_set` < 0.5: same address, another name (rename, same building) | 0 when a side is empty |
+| | `both_strong` | `core_token_set` ≥ 0.9 and `ad_token_set` ≥ 0.9 | 0 when a side is empty |
+| missing_flags (07 §1, C4) | `nums_empty_l`, `nums_empty_r` | that side's address has no number (the numeric group is NaN then) | 0/1 |
+
+`interactions` reuses name_fuzzy's and address's similarities when they run in the same build
+(`_CARRY`), and computes them with the same scorers otherwise, so the flags never depend on
+which groups ran. `features.ZERO_GAIN_COLUMNS` (`sim_addr_char`, `addr_empty_r`,
+`addr_empty_l`, `postcode_prefix_eq`: zero gain for three versions) stay in their groups because
+saved models read them; `TwoStageConfig.drop_columns` leaves them out of stage 2 (08 §8). The
+experiment that measures all of this on the mock is v044 (four arms, one stage-1 pass):
+
+| Arm | est_public | Mock F0.5 | Singletons | False merges | Misses |
+|---|---|---|---|---|---|
+| A: v104 columns (= v107) | 0.96588 | 0.97451 | 0.98367 | 3,522 | 74,223 |
+| B: + M3's four groups (= v042) | 0.96788 | 0.97623 | 0.98655 | 2,744 | 69,866 |
+| D: + interactions + missing_flags (v044) | 0.96810 | 0.97647 | 0.98613 | 2,788 | 69,070 |
+| E: D without `ZERO_GAIN_COLUMNS` | 0.96803 | 0.97637 | 0.98676 | 2,721 | 69,611 |
+
++0.0002 for the new flags, a fifth of the KEEP margin: INVESTIGATE. They take 0.08 % of stage
+2's gain (`nums_empty_r` #56; the interaction flags near zero): the trees already combine
+`core_token_set`, `ad_jaccard` and `ad_token_set`, as 07 §3 expected. Pruning the zero-gain
+columns changes nothing. v042 remains M3's version.

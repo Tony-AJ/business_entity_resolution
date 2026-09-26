@@ -170,6 +170,7 @@ where expected-F0.5 decoding (γ 1.5, m 0.05, K 11) beat the best threshold rule
 | v040 | v001 + M3's four groups (70 features, single stage; M3) | 0.9870 | – | – | – |
 | v042 | v104 two-stage + M3's groups in stage 2 (M3) | – | 0.9762 | 0.9679 | – |
 | v043 | stage 1 = v101 + M3's groups; two-stage (M3) | 0.9876 (stage 1) | 0.9762 | 0.9678 | – |
+| v044 | v042 + interaction and missing-number flags in stage 2 (M3) | – | 0.9765 | 0.9681 | – |
 | final | TBD | TBD | TBD | TBD | TBD |
 
 Validation could not rank what mattered (v101: false merges −29 %, public +0.001; v103:

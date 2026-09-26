@@ -403,3 +403,28 @@ def test_stage1_cache_refuses_another_configuration(dataset_dir: Path, tmp_path:
     again = mock_stage1(cfg, stage1, mock, with_idf, cache_dir=tmp_path / "stage1")
     for c, o in first.items():
         pd.testing.assert_frame_equal(again[c].X, o.X)
+
+
+def test_drop_columns_leave_stage2_only(dataset_dir: Path, tmp_path: Path) -> None:
+    """Dropped columns stay in the stage-1 output but no stage-2 model reads them."""
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    stage1 = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "s1")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=[], drop_first=[], shape={})
+    drop = ("addr_empty_r", "legal_eq")
+    tcfg = TwoStageConfig(floor=0.0, max_cands=5, drop_columns=drop,
+                          model=MatcherParams(backend="heuristic"))
+    outs = mock_stage1(cfg, stage1, mock, tcfg)
+    assert all(set(drop) <= set(o.X.columns) for o in outs.values())
+    models, info = fit_stage2(outs, mock, tcfg)
+    assert all(not set(drop) & set(m.feature_names_) for m in models)
+    scored, _ = mock_scored(outs, models, mock, tcfg, roles=("val",))
+    assert not scored[C.ENTITY_ID].duplicated().any()
+    val_part = mock.part("val")
+    rule, table = tune(scored, val_part.s1[C.ENTITY_ID], val_part.pairs,
+                       Grid(tau_abs=(0.3, 0.7, 0.2), tau_rel=(0.0,), single_delta=(0.0,),
+                            max_matches=(11,)))
+    again = TwoStage.load(TwoStage(stage1, models, rule, tcfg, table, info).save(
+        tmp_path / "two"), cfg)
+    assert again.tcfg.drop_columns == drop

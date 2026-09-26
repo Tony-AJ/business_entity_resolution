@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import lru_cache, partial
 
 import jellyfish
 import numpy as np
@@ -81,6 +81,10 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     # learned log-odds of the words only one side's core name holds (evidence.py)
     "tok_evidence": [f"te_{side}_{stat}" for side in ("pool", "s1")
                      for stat in ("sum", "min", "max", "decoy", "filler", "unknown")],
+    # 07 §3: the decoy and rename signatures as explicit name-vs-address flags
+    "interactions": ["name_strong_addr_weak", "addr_strong_name_weak", "both_strong"],
+    # 07 §1: explicit flags where missingness is informative (the numeric group is NaN then)
+    "missing_flags": ["nums_empty_l", "nums_empty_r"],
     "phonetic": ["phonetic_exact_match", "phonetic_jaccard", "phonetic_token_overlap_ratio",
                 "addr_phonetic_exact_match", "addr_phonetic_jaccard",
                 "addr_phonetic_token_overlap_ratio"],
@@ -121,6 +125,8 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "address_extra": ("addr_norm", "addr_nums", "postcode"),
     "nofill": ("name_core", "name_core_nofill"),  # the column pipeline.load_normalised adds
     "tok_evidence": ("name_core",),
+    "interactions": ("name_core", "addr_norm"),  # nothing when name_fuzzy and address run
+    "missing_flags": ("addr_nums",),
     "phonetic": ("name_core", "addr_norm", "non_latin", "addr_non_latin"),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
@@ -128,20 +134,28 @@ _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 # The order build_features computes groups in (the output order is feature_names'): address
 # before context and idf before ctx_idf, which reuse their similarities, and the address-side
 # groups before the name-side ones, so fewer aligned string columns are alive at the same time.
-_COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "address_extra", "context", "idf",
-                  "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "nofill",
-                  "tok_evidence", "phonetic", "meta", "pool_context", "frequency")
+_COMPUTE_ORDER = ("blocking", "legal", "numeric", "missing_flags", "address", "address_extra",
+                  "context", "idf", "ctx_idf", "token_freq", "name_fuzzy", "interactions",
+                  "name_tokens", "nofill", "tok_evidence", "phonetic", "meta", "pool_context",
+                  "frequency")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
-# groups rank candidates on the address group's ad_token_set and the idf group's cosines).
+# groups rank candidates on the address group's ad_token_set and the idf group's cosines;
+# the interaction flags read name_fuzzy's and address's similarities).
 _INDEGREE = "ctx_pool_indegree"
-_AD_TOKEN_SET = "ad_token_set"
+_AD_TOKEN_SET, _AD_JACCARD, _CORE_TOKEN_SET = "ad_token_set", "ad_jaccard", "core_token_set"
 _IDF_NAME, _IDF_ADDR = "idf_name_cos", "idf_addr_cos"
-_CARRY: dict[str, tuple[str, tuple[str, ...]]] = {  # group -> (consumer group, columns)
-    "address": ("context", (_AD_TOKEN_SET,)),
-    "idf": ("ctx_idf", (_IDF_NAME, _IDF_ADDR)),
-}
+_CARRY: tuple[tuple[str, str, tuple[str, ...]], ...] = (  # (producer, consumer, columns)
+    ("address", "context", (_AD_TOKEN_SET,)),
+    ("idf", "ctx_idf", (_IDF_NAME, _IDF_ADDR)),
+    ("address", "interactions", (_AD_TOKEN_SET, _AD_JACCARD)),
+    ("name_fuzzy", "interactions", (_CORE_TOKEN_SET,)),
+)
+
+# 07 §3 thresholds of the interaction flags: a "strong" similarity, a "weak" address
+# (token Jaccard) and a "weak" name (token-set ratio)
+_STRONG, _WEAK_ADDR, _WEAK_NAME = 0.9, 0.2, 0.5
 
 # Pool statistics each group reads, as (normalised column, kind): "tokens" counts in how many
 # pool records each token occurs (document frequency), "values" how many records hold each
@@ -336,18 +350,19 @@ def _lookup(values: pa.Array, table: tuple[pa.Array, np.ndarray]) -> np.ndarray:
     return np.append(counts, 0)[pos]  # -1 picks the appended 0
 
 
-def _idf_overlap(left: pa.Array, right: pa.Array, df: tuple[pa.Array, np.ndarray],
+def _idf_overlap(left: pa.Array, right: pa.Array, df: Callable[[pa.Array], np.ndarray],
                  n_docs: int) -> tuple[np.ndarray, ...]:
     """IDF-weighted token agreement of aligned space-separated strings, one float32 per pair.
 
     Tokens weigh idf = ln((1 + N) / (1 + df)) + 1 (binary term weights, set semantics), with
-    df the number of the N pool records holding the token (``pool_stats``). Returns
+    df the number of the N pool records holding the token: ``df(tokens)`` gives it (e.g.
+    ``CountryStats.count`` of the column's token table, ``pool_stats``). Returns
     ``(cosine, top, cover_left, cover_right)``: the cosine of the two idf vectors, the largest
     shared idf over the largest possible one (0 when nothing is shared), and the share of each
     side's idf mass found on the other side. All four are NaN when either string is empty.
     """
     mat, vocab, rows_l, rows_r, _ = _token_matrix(left, right)
-    idf = np.log((1.0 + n_docs) / (1.0 + _lookup(vocab, df))) + 1.0
+    idf = np.log((1.0 + n_docs) / (1.0 + df(vocab))) + 1.0
     doc = np.repeat(np.arange(mat.shape[0]), np.diff(mat.indptr))
     weight = idf[mat.indices]
     mass = np.bincount(doc, weights=weight, minlength=mat.shape[0])
@@ -374,6 +389,9 @@ def _idf_overlap(left: pa.Array, right: pa.Array, df: tuple[pa.Array, np.ndarray
 
 # ---------------------------------------------------------- pool statistics ----
 _NO_TABLE = (pa.array([], pa.large_string()), np.zeros(0, dtype=np.int64))
+# token tables from this size up keep a hash index (CountryStats.count): Arrow's index_in
+# rebuilds its hash of the whole table on every call, i.e. for every chunk and side
+_INDEX_MIN_KEYS = 50_000
 
 
 @dataclass(frozen=True)
@@ -387,10 +405,28 @@ class CountryStats:
 
     n_docs: int
     tables: dict[tuple[str, str], tuple[pa.Array, np.ndarray]] = field(default_factory=dict)
+    # hash indexes of the large token tables, built on first use (F-11); not part of equality
+    _indexes: dict = field(default_factory=dict, init=False, compare=False, repr=False)
 
     def table(self, column: str, kind: str) -> tuple[pa.Array, np.ndarray]:
         """The (values, counts) table of ``column``/``kind``; empty when not computed."""
         return self.tables.get((column, kind), _NO_TABLE)
+
+    def count(self, values: pa.Array, column: str, kind: str) -> np.ndarray:
+        """How many records the (column, kind) table gives each of ``values``; 0 if absent.
+
+        A token table answers one small query per chunk and side (the chunk's vocabulary) but
+        is large, so its hash index is built once and kept (``_INDEX_MIN_KEYS``); the value
+        tables, queried with a chunk's worth of mostly distinct strings, go through
+        ``_lookup``, which needs no memory beyond the call. Both give identical counts.
+        """
+        keys, counts = self.table(column, kind)
+        if kind != "tokens" or len(keys) < _INDEX_MIN_KEYS:
+            return _lookup(values, (keys, counts))
+        index = self._indexes.get((column, kind))
+        if index is None:
+            index = self._indexes[(column, kind)] = pd.Index(keys.to_pandas())
+        return np.append(counts, 0)[index.get_indexer(values.to_pandas())]
 
 
 PoolStats = dict[str, CountryStats]  # country -> statistics of its pool records
@@ -735,7 +771,8 @@ def _idf(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
         for column, prefix in (("name_core", "idf_name"), ("addr_norm", "idf_addr")):
             col_l, col_r = fields[column]
             scores = _idf_overlap(col_l.take(at), col_r.take(at),
-                                  country.table(column, "tokens"), country.n_docs)
+                                  partial(country.count, column=column, kind="tokens"),
+                                  country.n_docs)
             for suffix, values in zip(("cos", "top", "cover_l", "cover_r"), scores,
                                       strict=True):
                 out[f"{prefix}_{suffix}"][rows] = values
@@ -762,11 +799,12 @@ def _token_freq(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
     for rows, country in _by_country(left, stats, "token_freq"):
         at = pa.array(rows)
         for column, prefix in (("name_core", "freq_name"), ("addr_norm", "freq_addr")):
-            table = country.table(column, "values")
             for side, values in zip(("l", "r"), fields[column], strict=True):
                 values = values.take(at)
-                out[f"{prefix}_{side}"][rows] = np.where(_empty(values), np.nan,
-                                                         _lookup(values, table))
+                # the S1 record repeats once per candidate: look each run up once (F-11)
+                runs, run = _runs(values, repeats=side == "l")
+                counts = country.count(runs, column, "values")[run]
+                out[f"{prefix}_{side}"][rows] = np.where(_empty(values), np.nan, counts)
     return _frame(pairs.index, out)
 
 
@@ -929,6 +967,54 @@ def _tok_evidence(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, 
     return _frame(pairs.index, out)
 
 
+def _interactions(pairs: pd.DataFrame, left: pd.DataFrame,
+                  right: pd.DataFrame) -> pd.DataFrame:
+    """Name-against-address agreement as the flags of 07 §3 (C5).
+
+    name_strong_addr_weak  core_token_set >= 0.9 and ad_jaccard < 0.2: same name, another
+                           address, the same-name decoy signature
+    addr_strong_name_weak  ad_token_set >= 0.9 and core_token_set < 0.5: same address,
+                           another name, a rename or a neighbour in the same building
+    both_strong            core_token_set >= 0.9 and ad_token_set >= 0.9
+    A flag is 0 when a similarity it reads is undefined (an empty name or address): no
+    evidence is not a signature. The similarities come from the chunk when build_features
+    already computed name_fuzzy / address, else from here with the same scorers.
+    """
+    if _CORE_TOKEN_SET in pairs.columns:
+        core = pairs[_CORE_TOKEN_SET].to_numpy(dtype=np.float32)
+    else:
+        (core,) = _fuzzy(_arrow(left["name_core"]), _arrow(right["name_core"]), (_TOKEN_SET,))
+    if _AD_TOKEN_SET in pairs.columns and _AD_JACCARD in pairs.columns:
+        ad_set = pairs[_AD_TOKEN_SET].to_numpy(dtype=np.float32)
+        ad_jac = pairs[_AD_JACCARD].to_numpy(dtype=np.float32)
+    else:
+        addr_l, addr_r = _arrow(left["addr_norm"]), _arrow(right["addr_norm"])
+        (ad_set,) = _fuzzy(addr_l, addr_r, (_TOKEN_SET,))
+        common, n_l, n_r, _, _ = _token_sets(addr_l, addr_r)
+        ad_jac = _ratio(common, n_l + n_r - common, (n_l > 0) & (n_r > 0))
+    with np.errstate(invalid="ignore"):  # NaN compares False
+        name_strong, addr_strong = core >= _STRONG, ad_set >= _STRONG
+        return _frame(pairs.index, {
+            "name_strong_addr_weak": name_strong & (ad_jac < _WEAK_ADDR),
+            "addr_strong_name_weak": addr_strong & (core < _WEAK_NAME),
+            "both_strong": name_strong & addr_strong,
+        })
+
+
+def _missing_flags(pairs: pd.DataFrame, left: pd.DataFrame,
+                   right: pd.DataFrame) -> pd.DataFrame:
+    """Explicit flags where missingness is informative (07 §1, C4).
+
+    nums_empty_l, nums_empty_r  that side's address carries no number (``addr_nums`` empty):
+                                the numeric group's scores are NaN then without saying which
+                                side has none, as addr_empty_l / addr_empty_r do for addresses
+    """
+    return _frame(pairs.index, {
+        "nums_empty_l": _empty(_arrow(left["addr_nums"])),
+        "nums_empty_r": _empty(_arrow(right["addr_nums"])),
+    })
+
+
 # Both token codes are pure functions, and the same tokens come back on both sides, in both
 # columns and in every chunk: a bounded cache (~50 MB at most) codes each of them about once
 @lru_cache(maxsize=1 << 18)
@@ -1041,6 +1127,8 @@ REGISTRY: dict[str, FeatureGroup] = {
     "address_extra": _address_extra,
     "nofill": _nofill,  # needs name_core_nofill: a version that learns fillers loads it
     "tok_evidence": _tok_evidence,  # EVIDENCE_GROUPS: needs build_features(evidence=)
+    "interactions": _interactions,  # after name_fuzzy and address, whose scores it reads
+    "missing_flags": _missing_flags,
     "phonetic": _phonetic,  # Soundex / Double Metaphone codes (jellyfish, metaphone)
 }
 
@@ -1054,6 +1142,14 @@ REGISTRY: dict[str, FeatureGroup] = {
 # (jellyfish / metaphone) awaiting a shortlist decision (project rule 3).
 DEFAULT_GROUPS: tuple[str, ...] = ("blocking", "name_fuzzy", "name_tokens", "legal", "numeric",
                                    "address", "context", "meta")
+
+# Columns at (near) zero gain in at least three consecutive versions (08 §8): sim_addr_char
+# and addr_empty_r in v001, v040 and v041 (the address char pass never runs, so the first is
+# always NaN); addr_empty_l and postcode_prefix_eq in v040, v042 and v043 (both stages).
+# Their groups keep them, because saved models (v101, v104, v107, v040-v043) read them; a new
+# two-stage version can leave them out of stage 2 with TwoStageConfig.drop_columns.
+ZERO_GAIN_COLUMNS: tuple[str, ...] = ("sim_addr_char", "addr_empty_r", "addr_empty_l",
+                                      "postcode_prefix_eq")
 
 
 def pool_stats(pooln: pd.DataFrame, groups: Sequence[str] = tuple(REGISTRY)
@@ -1137,6 +1233,9 @@ def _inputs(group: str, groups: tuple[str, ...]) -> tuple[str, ...]:
         return ()  # ad_token_set comes from the address group
     if group == "ctx_idf" and "idf" in groups:
         return ("name_core",)  # the cosines come from the idf group
+    if group == "interactions":  # only the similarities no earlier group hands over
+        return tuple(c for c, source in (("name_core", "name_fuzzy"), ("addr_norm", "address"))
+                     if source not in groups)
     return _INPUTS.get(group, _ALL_INPUTS)
 
 
@@ -1232,9 +1331,9 @@ def _fill(out: np.ndarray, pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.Dat
                 raise RuntimeError(f"group {g!r} returned {list(feats.columns)}, "
                                    f"expected {FEATURE_COLUMNS[g]}")
             out[sl, where[g]] = feats.to_numpy(dtype=np.float32)
-            consumer, handed = _CARRY.get(g, ("", ()))
-            if consumer in groups:  # a later group of this chunk reuses these columns
-                chunk = chunk.assign(**{c: feats[c].to_numpy() for c in handed})
+            for producer, consumer, handed in _CARRY:
+                if producer == g and consumer in groups:  # a later group reuses these
+                    chunk = chunk.assign(**{c: feats[c].to_numpy() for c in handed})
             for c in inputs[g]:
                 if last[c] == i:  # no later group reads it
                     del live_l[c], live_r[c]
