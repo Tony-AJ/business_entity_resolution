@@ -23,7 +23,7 @@ from entity_resolution import snapshot as snapshot_module
 from entity_resolution.decision import Grid
 from entity_resolution.evaluate import error_samples, harder_fold
 from entity_resolution.features import DEFAULT_GROUPS, build_features
-from entity_resolution.model import MatcherParams, SeedEnsemble
+from entity_resolution.model import MatcherParams, SeedEnsemble, fit_matcher
 from entity_resolution.pipeline import (
     PipelineConfig,
     fit,
@@ -295,6 +295,25 @@ def test_weight_fn_and_feature_subset(generated) -> None:
     assert "harder_f_beta" not in metrics
     with pytest.raises(ValueError, match="unknown feature columns"):
         load_snapshot(generated["path"], columns=["nope"])
+
+
+def test_weighted_seed_fits_equal_direct_fits(generated) -> None:
+    """With weight_fn and seeds the fit frame weight_fn saw goes to the first fit and is read
+    again for the next: the ensemble equals fit_matcher on the snapshot's frames."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+
+    def weigh(meta: pd.DataFrame, X: pd.DataFrame) -> np.ndarray:
+        """Double weight on negatives."""
+        return np.where(meta["label"].to_numpy() == 0, 2.0, 1.0)
+
+    _, ens, _ = evaluate_params(snap, cfg.model, grid=cfg.grid, weight_fn=weigh, seeds=(1, 2),
+                                harder=False)
+    X = snap.features("fit")
+    direct = fit_matcher(cfg.model, X, snap.labels("fit"), snap.features("stop"),
+                         snap.labels("stop"), weigh(snap.meta("fit"), X), seeds=(1, 2))
+    val = snap.features("val")
+    np.testing.assert_array_equal(ens.predict_proba(val), direct.predict_proba(val))
 
 
 def test_calibration_metrics_are_sane(generated) -> None:
