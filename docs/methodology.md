@@ -113,6 +113,13 @@ sparse top-k (`sparse_dot_topn`).
   entity and per pool record: rank, best rival, gap, p1 sum, likely count; the record's
   degree) and 5 anchor features comparing each candidate with its entity's best other
   candidate: one business's records resemble each other, a same-name decoy does not.
+- M3's groups (23; v042 adds them to stage 2 on the kept pairs, v043 to stage 1):
+  IDF-weighted name and address agreement for every pair (cosine, rarest shared token,
+  coverage per side; document frequencies counted per country over the pool), pool counts of
+  the exact name and address (decoy risk), ranks of the IDF cosines among the entity's
+  candidates and its number of exact-name candidates, reverse address and house-number
+  containment, postcode prefix and address-length ratio. On the mock they raise est_public by
+  0.0020 (v042: false merges −22 %); in stage 1 they carry 14 % of the gain (v043).
 
 **Model type:** Stage 1 is LightGBM (63 leaves, learning rate 0.05, deterministic, 1,666
 rounds by early stopping) on 6.72M candidate pairs of 200k sampled fit-side entities (tune
@@ -142,6 +149,9 @@ decoding is implemented as an alternative (adopted: TBD).
 | v101 | + core-name frequencies | 0.9858 | TBD | 0.9906 / TBD | 0.955 |
 | v103 | v101 matcher, rule tuned on the mock | TBD | TBD | 0.9906 / TBD | TBD |
 | v104 | two-stage: top-16 filter + stage 2 on the mock | – | TBD | – / TBD | TBD |
+| v040 | v001 + M3's four groups (70 features, single stage) | 0.9870 | – | 0.9906 / – | – |
+| v042 | v104 two-stage + M3's groups in stage 2 | – | 0.9762 | – / 0.9644 | TBD |
+| v043 | stage 1 = v101 + M3's groups; two-stage | 0.9876 (stage 1) | 0.9762 | 0.9906 / 0.9643 | – |
 | final | TBD | TBD | TBD | TBD | TBD |
 
 v101 cut validation false merges by 29 % but gained only 0.001 public, so mock F0.5 decides
