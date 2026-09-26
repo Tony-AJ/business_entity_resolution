@@ -19,9 +19,10 @@ import pandas as pd
 import pytest
 
 from entity_resolution import config as C
+from entity_resolution import snapshot as snapshot_module
 from entity_resolution.decision import Grid
 from entity_resolution.evaluate import error_samples, harder_fold
-from entity_resolution.features import build_features
+from entity_resolution.features import DEFAULT_GROUPS, build_features
 from entity_resolution.model import MatcherParams, SeedEnsemble
 from entity_resolution.pipeline import (
     PipelineConfig,
@@ -51,6 +52,7 @@ FAST_LGBM = MatcherParams(num_leaves=7, learning_rate=0.1, n_estimators=80, earl
                           min_data_in_leaf=5, num_threads=2)
 SMALL_GRID = Grid(tau_abs=(0.1, 0.9, 0.1), tau_rel=(0.0, 0.7), single_delta=(0.0, 0.1),
                   max_matches=(3, 11))
+STATS_EXTRA = (*DEFAULT_GROUPS, "idf", "token_freq", "ctx_idf", "address_extra")
 
 
 def without_timings(metrics: dict) -> str:
@@ -325,3 +327,57 @@ def test_to_fitted_runs_test_inference(dataset_dir: Path, tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="differ from the snapshot"):
         snap.to_fitted(replace(cfg, feature_groups=("blocking",)), matcher, rule,
                        artifacts["tune_table"])
+
+
+@pytest.mark.parametrize("groups", [STATS_EXTRA, (*STATS_EXTRA, "frequency")],
+                         ids=["stats_groups", "with_frequency"])
+def test_extra_groups_equal_pipeline(generated, groups, monkeypatch) -> None:
+    """Pool-statistics groups and the frequency group: evaluation = pipeline.fit + run_fold,
+    with pool_stats counted once per side (tune / val / harder span several chunks)."""
+    cfg = replace(generated["cfg"], feature_groups=groups)
+    train, val = generated["train"], generated["val"]
+    fitted = fit(cfg, train)
+    pipe_metrics, _, scored, matches = run_fold(cfg, fitted, val)
+    harder = run_fold(cfg, fitted, harder_fold(val), tag="harder")[0]
+    calls = []
+    real = snapshot_module.pool_stats
+
+    def counted(pooln, stat_groups):
+        """pool_stats, counting its calls."""
+        calls.append(len(pooln))
+        return real(pooln, stat_groups)
+
+    monkeypatch.setattr(snapshot_module, "pool_stats", counted)
+    path = build_snapshot(cfg, train, val, out_dir=generated["base"] / f"m4_{len(groups)}")
+    snap = load_snapshot(path)
+    assert len(calls) == len(SIDES) and snap.rows("val") > 2 * cfg.chunk_rows
+    names = snap.manifest["feature_names"]
+    assert "idf_name_cos" in names and ("fq_s1_l" in names) == ("frequency" in groups)
+    artifacts: dict = {}
+    metrics, _, rule = evaluate_params(snap, cfg.model, grid=cfg.grid, artifacts=artifacts)
+    assert_same_as_pipeline(metrics, pipe_metrics, fitted, rule, artifacts, scored, matches)
+    assert metrics["harder_f_beta"] == harder["f_beta"]
+
+
+def test_dense_tune_pool_equals_pipeline(generated, tmp_path: Path) -> None:
+    """tune_pool="train" blocks the tune side against the whole train pool, as
+    pipeline._tune_rule does: same rule and val scores; its own key; unknown pools refused."""
+    base_cfg, train, val = generated["cfg"], generated["train"], generated["val"]
+    cfg = replace(base_cfg, tune_pool="train")
+    key, parts = snapshot_key(base_cfg, train, val, {})
+    dense_key, dense_parts = snapshot_key(cfg, train, val, {})
+    assert "tune_pool" not in parts and dense_parts["tune_pool"] == "train"
+    assert dense_key != key
+    fitted = fit(cfg, train)
+    pipe_metrics, _, scored, matches = run_fold(cfg, fitted, val)
+    path = build_snapshot(cfg, train, val, out_dir=generated["base"] / "m4_dense",
+                          sides=("fit", "stop", "tune", "val"))
+    snap = load_snapshot(path)
+    assert snap.blocking("tune") is not None
+    assert snap.rows("tune") > load_snapshot(generated["path"]).rows("tune")
+    artifacts: dict = {}
+    metrics, _, rule = evaluate_params(snap, cfg.model, grid=cfg.grid, artifacts=artifacts)
+    assert_same_as_pipeline(metrics, pipe_metrics, fitted, rule, artifacts, scored, matches)
+    with pytest.raises(ValueError, match="tune_pool"):
+        build_snapshot(replace(cfg, tune_pool="everything"), train, val, out_dir=tmp_path)
+    assert not any(tmp_path.iterdir())   # refused before anything is written
