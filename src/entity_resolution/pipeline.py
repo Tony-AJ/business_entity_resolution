@@ -428,11 +428,13 @@ def sort_matches(matches: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
 
 # -------------------------------------------------------------------- fit ----
 def _side(name: str, s1: pd.DataFrame, fold: Fold, cfg: PipelineConfig, token_map: dict,
-          info: dict, timings: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+          info: dict, timings: dict, fillers: list[str] | None = None
+          ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Normalised S1 / pool records and candidate pairs of one side of the inner split."""
     t0 = time.perf_counter()
-    s1n = load_normalised("train", (1,), cfg, s1[C.ENTITY_ID], token_map)
-    pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], token_map)
+    s1n = load_normalised("train", (1,), cfg, s1[C.ENTITY_ID], token_map, fillers=fillers)
+    pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], token_map,
+                            fillers=fillers)
     if "frequency" in cfg.feature_groups:  # frequencies over the whole fold, not the sample
         s1_all = load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID],
                                  columns=[C.COUNTRY, "name_core", "name_first"])
@@ -440,7 +442,7 @@ def _side(name: str, s1: pd.DataFrame, fold: Fold, cfg: PipelineConfig, token_ma
         del s1_all
     timings[f"{name}_load_seconds"] = round(time.perf_counter() - t0, 2)
     t0 = time.perf_counter()
-    pairs = prepare(s1n, pooln, cfg, _tag(name, s1n, pooln, token_map))
+    pairs = prepare(s1n, pooln, cfg, _tag(name, s1n, pooln, token_map), fillers=fillers)
     timings[f"{name}_blocking_seconds"] = round(time.perf_counter() - t0, 2)
     truth = fold.pairs[isin(fold.pairs[C.S1_ID], pd.Index(s1[C.ENTITY_ID]))]
     if len(s1):  # an empty side (tiny fixtures) has no report
@@ -460,13 +462,16 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     t0 = time.perf_counter()
     normalise_split("train", cfg)
     token_map = learn_token_map(cfg, train)
+    fillers = learn_fillers(cfg, train)
     timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
     info["token_map_size"] = len(token_map)
+    if fillers is not None:  # logged with the version (fit_info.json)
+        info["fillers"] = fillers
     fit_fold, tune_fold = inner_split(train)
 
     # fit side: features in memory for LightGBM
     fit_s1 = sample_s1(fit_fold.s1, cfg.n_fit_s1)
-    s1n, pooln, pairs = _side("fit", fit_s1, fit_fold, cfg, token_map, info, timings)
+    s1n, pooln, pairs = _side("fit", fit_s1, fit_fold, cfg, token_map, info, timings, fillers)
     t0 = time.perf_counter()
     X_fit = build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
                            chunk_rows=cfg.chunk_rows)
@@ -476,7 +481,8 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
 
     # early-stopping sample of the tune side
     stop_s1 = sample_s1(tune_fold.s1, cfg.n_stop_s1)
-    s1n, pooln, pairs = _side("stop", stop_s1, tune_fold, cfg, token_map, info, timings)
+    s1n, pooln, pairs = _side("stop", stop_s1, tune_fold, cfg, token_map, info, timings,
+                              fillers)
     X_stop = build_features(pairs, s1n, pooln, groups=cfg.feature_groups,
                             chunk_rows=cfg.chunk_rows)
     y_stop = label_pairs(pairs, tune_fold.pairs)["label"].to_numpy(np.int8)
@@ -493,8 +499,9 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
     del X_fit, y_fit, X_stop, y_stop
     mem_guard("matcher fit")
 
-    rule, table = _tune_rule(cfg, matcher, train, tune_fold, token_map, info, timings)
-    fitted = Fitted(matcher, rule, table, cfg, token_map, {**info, "timings": dict(timings)})
+    rule, table = _tune_rule(cfg, matcher, train, tune_fold, token_map, info, timings, fillers)
+    fitted = Fitted(matcher, rule, table, cfg, token_map, {**info, "timings": dict(timings)},
+                    fillers)
     if out is not None:
         fitted.save(out)
     mem_guard("fit done")
@@ -502,7 +509,8 @@ def fit(cfg: PipelineConfig, train: Fold, out: Path | None = None,
 
 
 def _tune_rule(cfg: PipelineConfig, matcher: Matcher, train: Fold, tune_fold: Fold,
-               token_map: dict, info: dict, timings: dict) -> tuple[DecisionRule, pd.DataFrame]:
+               token_map: dict, info: dict, timings: dict,
+               fillers: list[str] | None = None) -> tuple[DecisionRule, pd.DataFrame]:
     """Decision rule on the tune side (all S1 unless n_tune_s1), scored chunk by chunk."""
     tune_s1 = tune_fold.s1 if cfg.n_tune_s1 is None else sample_s1(tune_fold.s1, cfg.n_tune_s1)
     if cfg.tune_pool not in ("fold", "train"):
@@ -510,7 +518,7 @@ def _tune_rule(cfg: PipelineConfig, matcher: Matcher, train: Fold, tune_fold: Fo
     rule_fold = tune_fold if cfg.tune_pool == "fold" else Fold(  # every train S1 exists
         "tune", train.s1, train.s2, train.s3, tune_fold.pairs)
     name = "tune" if cfg.tune_pool == "fold" else "tunedense"
-    s1n, pooln, pairs = _side(name, tune_s1, rule_fold, cfg, token_map, info, timings)
+    s1n, pooln, pairs = _side(name, tune_s1, rule_fold, cfg, token_map, info, timings, fillers)
     t0 = time.perf_counter()
     scored = score(pairs, s1n, pooln, matcher, cfg)
     timings["score_seconds"] = round(time.perf_counter() - t0, 2)
@@ -533,9 +541,10 @@ def retune(cfg: PipelineConfig, fitted: Fitted, train: Fold, out: Path | None = 
     info = {k: v for k, v in fitted.info.items() if k != "timings"}
     _, tune_fold = inner_split(train)
     rule, table = _tune_rule(cfg, fitted.matcher, train, tune_fold, fitted.token_map, info,
-                             timings)
+                             timings, fitted.fillers)
     out_fitted = Fitted(fitted.matcher, rule, table, cfg, fitted.token_map,
-                        {**info, "timings": dict(timings), "retuned_from": asdict(fitted.rule)})
+                        {**info, "timings": dict(timings), "retuned_from": asdict(fitted.rule)},
+                        fitted.fillers)
     if out is not None:
         out_fitted.save(out)
     mem_guard("retune done")
@@ -553,11 +562,14 @@ def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = 
     timings: dict = {}
     tag = tag or fold.name
     t0 = time.perf_counter()
-    s1n = load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID], fitted.token_map)
-    pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], fitted.token_map)
+    s1n = load_normalised("train", (1,), cfg, fold.s1[C.ENTITY_ID], fitted.token_map,
+                          fillers=fitted.fillers)
+    pooln = load_normalised("train", (2, 3), cfg, pool_of(fold)[C.ENTITY_ID], fitted.token_map,
+                            fillers=fitted.fillers)
     s1n, pooln = _with_frequencies(cfg, s1n, pooln)  # s1n is the whole fold here
     timings["normalise_seconds"] = round(time.perf_counter() - t0, 2)
-    pairs = prepare(s1n, pooln, cfg, _tag(tag, s1n, pooln, fitted.token_map), timings)
+    pairs = prepare(s1n, pooln, cfg, _tag(tag, s1n, pooln, fitted.token_map), timings,
+                    fitted.fillers)
     t0 = time.perf_counter()
     scored = score(pairs, s1n, pooln, fitted.matcher, cfg)
     timings["score_seconds"] = round(time.perf_counter() - t0, 2)
@@ -578,19 +590,20 @@ def run_fold(cfg: PipelineConfig, fitted: Fitted, fold: Fold, tag: str | None = 
 
 # ------------------------------------------------------------ mock test ----
 def mock_partition(cfg: PipelineConfig, mock: MockFold, country: str, token_map: dict,
-                   tag: str = "mock") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+                   tag: str = "mock", fillers: list[str] | None = None
+                   ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Normalised present S1, kept pool and candidate pairs of one mock country (cached).
 
     Frequencies are counted over the country's whole mock fold, as ``run_test`` counts them
-    over the whole test country.
+    over the whole test country. ``fillers``: the version's learned fillers (``Fitted``).
     """
     s1 = mock.fold.s1
     s1_ids = s1[C.ENTITY_ID][(s1[C.COUNTRY] == country).to_numpy()]
-    s1c = load_normalised("train", (1,), cfg, s1_ids, token_map)
+    s1c = load_normalised("train", (1,), cfg, s1_ids, token_map, fillers=fillers)
     poolc = load_normalised("train", (2, 3), cfg, pool_of(mock.fold)[C.ENTITY_ID], token_map,
-                            country=country)
+                            country=country, fillers=fillers)
     s1c, poolc = _with_frequencies(cfg, s1c, poolc)
-    pairs = prepare(s1c, poolc, cfg, _tag(tag, s1c, poolc, token_map))
+    pairs = prepare(s1c, poolc, cfg, _tag(tag, s1c, poolc, token_map), fillers=fillers)
     return s1c, poolc, pairs
 
 
@@ -612,7 +625,8 @@ def run_mock(cfg: PipelineConfig, fitted: Fitted, mock: MockFold, tag: str = "mo
     out, cands = [], []
     for country in sorted(mock.fold.s1[C.COUNTRY].unique()):
         t0 = time.perf_counter()
-        s1c, poolc, pairs = mock_partition(cfg, mock, country, fitted.token_map, tag)
+        s1c, poolc, pairs = mock_partition(cfg, mock, country, fitted.token_map, tag,
+                                           fitted.fillers)
         timings["blocking_seconds"] += round(time.perf_counter() - t0, 2)
         t0 = time.perf_counter()
         scored = score(pairs, s1c, poolc, fitted.matcher, cfg)
@@ -689,18 +703,19 @@ def run_test(cfg: PipelineConfig, fitted: Fitted, out_dir: Path = C.OUTPUT,
     for k in ("normalise_seconds", "blocking_seconds", "score_seconds", "decide_seconds"):
         timings[k] = 0.0
     t0 = time.perf_counter()
-    s1n = load_normalised("test", (1,), cfg, token_map=fitted.token_map)
+    s1n = load_normalised("test", (1,), cfg, token_map=fitted.token_map, fillers=fitted.fillers)
     timings["normalise_seconds"] += round(time.perf_counter() - t0, 2)
     matches, cands, p_max = [], [], []
     for country in sorted(s1n[C.COUNTRY].unique()):
         t0 = time.perf_counter()
         s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
         poolc = load_normalised("test", (2, 3), cfg, token_map=fitted.token_map,
-                                country=country)
+                                country=country, fillers=fitted.fillers)
         s1c, poolc = _with_frequencies(cfg, s1c, poolc)  # the whole test S1 of the country
         timings["normalise_seconds"] += round(time.perf_counter() - t0, 2)
         t0 = time.perf_counter()
-        pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, fitted.token_map))
+        pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, fitted.token_map),
+                        fillers=fitted.fillers)
         timings["blocking_seconds"] += round(time.perf_counter() - t0, 2)
         t0 = time.perf_counter()
         scored = score(pairs, s1c, poolc, fitted.matcher, cfg)

@@ -276,3 +276,32 @@ def test_learn_fillers_and_the_nofill_pass(filler_dir: Path, tmp_path: Path) -> 
     with pytest.raises(ValueError, match="fillers"):
         prepare(s1n, pooln, on, "t")                             # the pass needs the fillers
 
+
+def test_filler_switches_end_to_end(filler_dir: Path, tmp_path: Path) -> None:
+    """Every filler switch on: fit, save / load, run_fold, run_mock and valid test files."""
+    import json
+
+    from entity_resolution.mock import build_mock
+    from entity_resolution.normalize import NormaliseConfig
+    from entity_resolution.pipeline import run_mock
+    base = tiny_cfg(tmp_path, filler_dir)
+    cfg = replace(base, normalise=NormaliseConfig(learn_fillers=True),
+                  blocking=replace(base.blocking, nofill_max_group=50),
+                  feature_groups=(*DEFAULT_GROUPS, "nofill"))
+    assert PipelineConfig.from_record(json.loads(json.dumps(cfg.record()))) == cfg
+    train = load_fold("train", filler_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    assert fitted.fillers == ["center"] == fitted.info["fillers"]   # "services": a val pair
+    assert Fitted.load(tmp_path / "art", cfg).fillers == fitted.fillers
+    metrics, pairs, scored, _ = run_fold(cfg, fitted, load_fold("val", filler_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0 and len(scored) == len(pairs)
+    assert metrics["cand_recall"] == 1.0
+    tr = load_fold("train", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    va = load_fold("val", filler_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(tr, va, tune_ids=tr.s1[C.ENTITY_ID], drop_first=[], shape={})
+    mock_scored, report = run_mock(cfg, fitted, mock)
+    assert not mock_scored[C.ENTITY_ID].duplicated().any() and set(report.index) == {
+        "tune", "val"}
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", filler_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
