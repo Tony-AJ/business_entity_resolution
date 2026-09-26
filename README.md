@@ -142,7 +142,7 @@ build/<team>_submission.zip            these three at the zip root, no wrapping 
 ├── output/                            both TSVs from OUT (default output/)
 ├── code/business_entity_resolution/   git archive HEAD: tracked files only
 │   └── src/notebooks/                 vNNN_<slug>.ipynb + metrics.json, copied from HEAD
-└── Documentation_template.md          docs/methodology.md (ARGS="--doc <path>" for another)
+└── Documentation_template.md          docs/Documentation_template.md (or ARGS="--doc <path>")
 ```
 
 | Stage | What it does |
