@@ -31,12 +31,13 @@ NAN = np.nan
 ALL_GROUPS = tuple(REGISTRY)
 FLAGS = ["pass_exact", "pass_name_char", "pass_name_addr", "first_eq", "sorted_eq",
          "prefix4_eq", "legal_eq", "legal_missing_l", "legal_missing_r", "region_eq", "last_eq",
-         "addr_empty_r", "is_s3", "non_latin_r"]
+         "addr_empty_r", "is_s3", "non_latin_r", "addr_empty_l"]
 TRISTATE = ["num_shared_any", "num_first_eq", "postcode_eq"]  # 1 / 0, NaN when a side has none
 NAME_SIMS = [*FEATURE_COLUMNS["name_fuzzy"], "tok_jaccard", "tok_dice", "len_ratio_name"]
 ADDR_SIMS = ["ad_token_set", "ad_partial", "ad_ratio", "ad_jaccard", "ad_contain"]
 UNIT_RANGE = [*FEATURE_COLUMNS["blocking"][3:], *NAME_SIMS, "num_jaccard", *ADDR_SIMS,
-              "ctx_gap_name", "ctx_gap_addr"]
+              "ctx_gap_name", "ctx_gap_addr", "ad_contain_r", "num_contain_l", "num_contain_r",
+              "addr_len_ratio"]
 # 12 §5: equal under an L/R swap; nm_partial, ad_partial and ad_contain are asymmetric by
 # design, and ctx_*, *_l / *_r and addr_empty_r are one-sided
 SYMMETRIC = [c for c in [*FEATURE_COLUMNS["name_fuzzy"], *FEATURE_COLUMNS["name_tokens"],
@@ -157,6 +158,36 @@ def test_known_values():
     assert np.isnan(X.loc[2, "postcode_eq"])  # S1-3 has no postcode
 
 
+def test_address_extra_values():
+    addresses = [("12 main street pune 411001", "12 main street pune 411001"),  # identical
+                 ("main street dover", "main street dover near main gate"),  # pool adds words
+                 ("12 park road 411001", "12 park road 411999 gate 7"),  # same postal area
+                 ("1 hill lane 411001", "1 hill lane 560001"),  # another postal area
+                 ("3 elm road 411001", "3 elm road"),  # the pool has no postcode
+                 ("", "9 elm road 411001")]  # the S1 address is empty
+    s1n = _records(*[_record(f"S1-{i}", "acme", "", a) for i, (a, _) in enumerate(addresses)])
+    pooln = _records(*[_record(f"S2-{i}", "acme", "", b) for i, (_, b) in enumerate(addresses)])
+    pairs = _pairs(*[(f"S1-{i}", f"S2-{i}", 8, 0.5, NAN, NAN) for i in range(len(addresses))])
+    X = build_features(pairs, s1n, pooln, ("numeric", "address", "address_extra"))
+    shares = [c for c in FEATURE_COLUMNS["address_extra"] if c != "addr_empty_l"]  # NaN-able
+    assert (X.loc[0, shares] == 1).all() and X.loc[0, "addr_empty_l"] == 0
+    # {main, street, dover} in {main, street, dover, near, gate}: the repeated main counts once
+    assert X.loc[1, "ad_contain"] == 1 and X.loc[1, "ad_contain_r"] == pytest.approx(3 / 5)
+    assert X.loc[1, "addr_len_ratio"] == pytest.approx(3 / 5)
+    assert X.loc[1, ["num_contain_l", "num_contain_r", "postcode_prefix_eq"]].isna().all()
+    # numbers {12, 411001} vs {12, 411999, 7}; 3 of the pool's 6 address tokens are in S1's 4
+    assert X.loc[2, "num_contain_l"] == pytest.approx(1 / 2)
+    assert X.loc[2, "num_contain_r"] == pytest.approx(1 / 3)
+    assert X.loc[2, "ad_contain_r"] == pytest.approx(3 / 6)
+    assert X.loc[2, "addr_len_ratio"] == pytest.approx(4 / 6)
+    assert X.loc[2, "postcode_prefix_eq"] == 1 and X.loc[2, "postcode_eq"] == 0  # 411 area
+    assert X.loc[3, "postcode_prefix_eq"] == 0  # 411001 vs 560001
+    assert X.loc[4, "num_contain_l"] == pytest.approx(1 / 2) and X.loc[4, "num_contain_r"] == 1
+    assert np.isnan(X.loc[4, "postcode_prefix_eq"])
+    assert X["addr_empty_l"].tolist() == [0, 0, 0, 0, 0, 1]
+    assert X.loc[5, shares].isna().all()  # no S1 address: no tokens, numbers or postcode
+
+
 def test_token_sets_ignore_stray_spaces():
     s1n = _records(_record("S1-1", "a b", "", "12 main street"))
     pooln = _records(_record("S2-1", "b c", "", "12 main road"))
@@ -176,7 +207,7 @@ def test_nan_policy():
     assert {"sim_addr_char", "nm_ratio", "tok_jaccard", "ad_token_set", "postcode_eq",
             "ctx_gap_name", "len_ratio_name"} <= with_nan  # the toy exercises the NaN cases
     assert X[FLAGS].isin([0.0, 1.0]).all().all()  # isin is False on NaN
-    tri = X[TRISTATE]
+    tri = X[[*TRISTATE, "postcode_prefix_eq"]]  # opt-in: default-group tests read TRISTATE
     assert (tri.isin([0.0, 1.0]) | tri.isna()).all().all()
     unit = X[UNIT_RANGE]
     assert (((unit >= 0) & (unit <= 1)) | unit.isna()).all().all()
@@ -273,6 +304,21 @@ def test_symmetric_similarities():
     Y = build_features(swapped, pooln, s1n).loc[X.index]  # pool records play S1, and back
     pd.testing.assert_frame_equal(Y[SYMMETRIC], X[SYMMETRIC])
     assert Y["tok_len_l"].equals(X["tok_len_r"]) and Y["tok_len_r"].equals(X["tok_len_l"])
+
+
+def test_address_extra_mirrors_under_swap():
+    pairs, s1n, pooln = _toy()
+    groups = ("address", "address_extra")
+    X = build_features(pairs, s1n, pooln, groups)
+    swapped = pairs.rename(columns={C.S1_ID: C.ENTITY_ID, C.ENTITY_ID: C.S1_ID})[PAIR_COLUMNS]
+    swapped = swapped.sort_values(C.S1_ID, kind="stable")  # regroup by the new S1 side
+    Y = build_features(swapped, pooln, s1n, groups).loc[X.index]
+    # the one-sided columns trade places under an L/R swap: *_r is the reverse of *_l
+    for a, b in (("ad_contain", "ad_contain_r"), ("num_contain_l", "num_contain_r"),
+                 ("addr_empty_l", "addr_empty_r")):
+        assert Y[a].equals(X[b]) and Y[b].equals(X[a])
+    both = ["postcode_prefix_eq", "addr_len_ratio"]
+    pd.testing.assert_frame_equal(Y[both], X[both])
 
 
 def test_groups_alone_match_full_build():

@@ -64,6 +64,8 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     "frequency": ["freq_name_l", "freq_name_r", "freq_addr_l", "freq_addr_r"],
     "ctx_idf": ["ctx_rank_idf_name", "ctx_gap_idf_name", "ctx_rank_idf_addr",
                 "ctx_gap_idf_addr", "ctx_n_same_name"],
+    "address_extra": ["ad_contain_r", "addr_empty_l", "num_contain_l", "num_contain_r",
+                      "postcode_prefix_eq", "addr_len_ratio"],
 }
 
 # The only columns allowed to hold NaN (07 §2 "Missing"); every other column is always set.
@@ -73,6 +75,7 @@ NAN_FEATURES = frozenset({
     "ad_contain", "ctx_gap_name", "ctx_gap_addr", "len_ratio_name",
     *FEATURE_COLUMNS["idf"], *FEATURE_COLUMNS["frequency"], "ctx_gap_idf_name",
     "ctx_gap_idf_addr",
+    "ad_contain_r", "num_contain_l", "num_contain_r", "postcode_prefix_eq", "addr_len_ratio",
 })
 
 # Normalised columns each group reads: build_features aligns only these to the pairs.
@@ -89,14 +92,15 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "idf": ("name_core", "addr_norm", C.COUNTRY),
     "frequency": ("name_core", "addr_norm", C.COUNTRY),
     "ctx_idf": ("name_core", "addr_norm", C.COUNTRY),  # name_core only after the idf group
+    "address_extra": ("addr_norm", "addr_nums", "postcode"),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
 # The order build_features computes groups in (the output order is feature_names'): address
 # before context and idf before ctx_idf, which reuse their similarities, and the address-side
 # groups before the name-side ones, so fewer aligned string columns are alive at the same time.
-_COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "context", "idf", "ctx_idf",
-                  "frequency", "name_fuzzy", "name_tokens", "meta", "pool_context")
+_COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "address_extra", "context", "idf",
+                  "ctx_idf", "frequency", "name_fuzzy", "name_tokens", "meta", "pool_context")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
@@ -745,6 +749,43 @@ def _ctx_idf(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame, *,
     })
 
 
+def _address_extra(pairs: pd.DataFrame, left: pd.DataFrame,
+                   right: pd.DataFrame) -> pd.DataFrame:
+    """Address evidence the address and numeric groups leave out (plan groups C3, C4).
+
+    ad_contain_r        share of the pool address tokens found in the S1 address: the reverse
+                        of ad_contain, so components only the pool has (a suite, a landmark)
+                        show up
+    addr_empty_l        the S1 address is empty: name-only evidence (mirrors addr_empty_r)
+    num_contain_l       share of the S1 address numbers found among the pool's: a number one
+                        side drops keeps a pair plausible, a changed number does not
+    num_contain_r       share of the pool address numbers found among the S1's
+    postcode_prefix_eq  equal first 3 postcode characters: the same postal area even when a
+                        typo in the last digits or a neighbouring code breaks postcode_eq
+    addr_len_ratio      fewer / more distinct addr_norm tokens (a bare city against a full
+                        street address)
+    Tokens are counted once (sets, as in ad_contain). Each share and postcode_prefix_eq is NaN
+    when either side lacks the field (no address, no number, no postcode); the flag is 0/1.
+    """
+    addr_l, addr_r = _arrow(left["addr_norm"]), _arrow(right["addr_norm"])
+    common, n_l, n_r, _, _ = _token_sets(addr_l, addr_r)
+    both = (n_l > 0) & (n_r > 0)
+    num_common, num_l, num_r, _, _ = _token_sets(_arrow(left["addr_nums"]),
+                                                 _arrow(right["addr_nums"]))
+    nums_both = (num_l > 0) & (num_r > 0)
+    # a slice of a non-empty postcode is non-empty, so _eq's "both" is "both have a postcode"
+    prefix_eq, prefix_both = _eq(pc.utf8_slice_codeunits(_arrow(left["postcode"]), 0, 3),
+                                 pc.utf8_slice_codeunits(_arrow(right["postcode"]), 0, 3))
+    return _frame(pairs.index, {
+        "ad_contain_r": _ratio(common, n_r, both),
+        "addr_empty_l": _empty(addr_l),
+        "num_contain_l": _ratio(num_common, num_l, nums_both),
+        "num_contain_r": _ratio(num_common, num_r, nums_both),
+        "postcode_prefix_eq": _tristate(prefix_eq, prefix_both),
+        "addr_len_ratio": _ratio(np.minimum(n_l, n_r), np.maximum(n_l, n_r), both),
+    })
+
+
 REGISTRY: dict[str, FeatureGroup] = {
     "blocking": _blocking,
     "name_fuzzy": _name_fuzzy,
@@ -758,6 +799,7 @@ REGISTRY: dict[str, FeatureGroup] = {
     "idf": _idf,  # STATS_GROUPS also take stats=, the partition's pool statistics
     "frequency": _frequency,
     "ctx_idf": _ctx_idf,  # computed after idf, whose cosines it ranks
+    "address_extra": _address_extra,
 }
 
 # The v001 feature set (47 features), kept fixed so logged versions stay reproducible; a
