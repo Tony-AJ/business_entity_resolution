@@ -69,6 +69,7 @@ def _records(*records: dict) -> pd.DataFrame:
         {**text, "non_latin": bool, "addr_tokens": "int16"})
     for i, col in enumerate(FREQ_COLUMNS):  # rates pipeline.add_frequencies adds in real runs
         df[col] = np.arange(len(df), dtype=np.float32) * (i + 1)
+    df["name_core_nofill"] = df["name_core"]  # load_normalised adds it; no filler learned here
     return df
 
 
@@ -490,3 +491,27 @@ def test_shared_stats_match_whole_build():
     parts = [build_features(pairs.iloc[sl], s1n, pooln, groups, stats=stats)
              for sl in iter_chunks(pairs, 1)]
     pd.testing.assert_frame_equal(pd.concat(parts), whole)
+
+
+def test_nofill_group_values():
+    """Similarities of the filler-free core names, word-set equality, fillers removed."""
+    s1n = _records(_record("S1-1", "acme center"), _record("S1-2", "globex"), _record("S1-3"))
+    s1n["name_core_nofill"] = ["acme", "globex", ""]
+    pooln = _records(_record("S2-1", "center acme services"), _record("S2-2", "globex initech"),
+                     _record("S2-3", "hooli"))
+    pooln["name_core_nofill"] = ["acme", "globex initech", "hooli"]
+    pairs = _pairs(("S1-1", "S2-1", 128, NAN, NAN, NAN), ("S1-2", "S2-2", 16, NAN, 0.5, NAN),
+                   ("S1-3", "S2-3", 16, NAN, 0.3, NAN))
+    X = build_features(pairs, s1n, pooln, ("nofill",))
+    assert list(X.columns) == FEATURE_COLUMNS["nofill"]
+    assert X.iloc[0].tolist() == [1.0, 1.0, 1.0, 1.0, 1.0, 2.0]    # "acme" both sides
+    row = X.iloc[1]                                                # globex vs globex initech
+    assert row["nofill_ratio"] == pytest.approx(fuzz.ratio("globex", "globex initech") / 100)
+    assert row["nofill_token_set"] == 1.0 and row["nofill_jaccard"] == 0.5
+    assert row["nofill_eq"] == row["fill_n_l"] == row["fill_n_r"] == 0
+    empty = X.iloc[2]                                              # empty S1 name
+    assert empty[["nofill_ratio", "nofill_token_set", "nofill_jaccard"]].isna().all()
+    assert empty["nofill_eq"] == empty["fill_n_l"] == empty["fill_n_r"] == 0
+    assert "nofill" not in DEFAULT_GROUPS
+    with pytest.raises(ValueError, match="name_core_nofill"):
+        build_features(pairs, s1n.drop(columns="name_core_nofill"), pooln, ("nofill",))

@@ -69,6 +69,9 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
                 "ctx_gap_idf_addr", "ctx_n_same_name"],
     "address_extra": ["ad_contain_r", "addr_empty_l", "num_contain_l", "num_contain_r",
                       "postcode_prefix_eq", "addr_len_ratio"],
+    # the core names without the learned filler tokens (normalize.fit_fillers)
+    "nofill": ["nofill_ratio", "nofill_token_set", "nofill_jaccard", "nofill_eq", "fill_n_l",
+               "fill_n_r"],
 }
 # Per-record columns the frequency group reads; pipeline.add_frequencies adds them to the
 # normalised frames from the whole fold (never from a training sample).
@@ -83,6 +86,7 @@ NAN_FEATURES = frozenset({
     *FEATURE_COLUMNS["idf"], *FEATURE_COLUMNS["token_freq"], "ctx_gap_idf_name",
     "ctx_gap_idf_addr",
     "ad_contain_r", "num_contain_l", "num_contain_r", "postcode_prefix_eq", "addr_len_ratio",
+    "nofill_ratio", "nofill_token_set", "nofill_jaccard",
 })
 
 # Normalised columns each group reads: build_features aligns only these to the pairs.
@@ -101,6 +105,7 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "token_freq": ("name_core", "addr_norm", C.COUNTRY),
     "ctx_idf": ("name_core", "addr_norm", C.COUNTRY),  # name_core only after the idf group
     "address_extra": ("addr_norm", "addr_nums", "postcode"),
+    "nofill": ("name_core", "name_core_nofill"),  # the column pipeline.load_normalised adds
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
@@ -108,8 +113,8 @@ _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 # before context and idf before ctx_idf, which reuse their similarities, and the address-side
 # groups before the name-side ones, so fewer aligned string columns are alive at the same time.
 _COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "address_extra", "context", "idf",
-                  "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "meta", "pool_context",
-                  "frequency")
+                  "ctx_idf", "token_freq", "name_fuzzy", "name_tokens", "nofill", "meta",
+                  "pool_context", "frequency")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
@@ -175,6 +180,11 @@ def _np(arr: pa.Array | pa.ChunkedArray) -> np.ndarray:
 def _empty(arr: pa.Array) -> np.ndarray:
     """True where the string is empty."""
     return pc.binary_length(arr).to_numpy() == 0
+
+
+def _n_words(arr: pa.Array) -> np.ndarray:
+    """Whitespace-separated words of each string, repeats counted (0 for "")."""
+    return pc.count_substring_regex(arr, r"\S+").to_numpy()
 
 
 def _eq(left: pa.Array, right: pa.Array) -> tuple[np.ndarray, np.ndarray]:
@@ -819,6 +829,36 @@ def _address_extra(pairs: pd.DataFrame, left: pd.DataFrame,
     })
 
 
+def _nofill(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """The core names without the learned filler tokens (``name_core_nofill``, B4).
+
+    The pool writes words into true matches' names ("center", "services", "dba ...", "id
+    <n>"), so "acme" and "acme center" read as different names to the name groups; here
+    they are equal. The same words also name decoys ("Acme Services", another business), so
+    the removed counts tell the model how much each side lost.
+
+    nofill_ratio        rapidfuzz ratio of the filler-free core names
+    nofill_token_set    token_set_ratio of them (1 when one side's words are all on the other)
+    nofill_jaccard      Jaccard of their word sets
+    nofill_eq           the same set of words once the fillers are out (both non-empty)
+    fill_n_l, fill_n_r  filler words removed from each side's name_core
+    The similarities are NaN when either filler-free name is empty.
+    """
+    core_l, core_r = _arrow(left["name_core"]), _arrow(right["name_core"])
+    bare_l, bare_r = _arrow(left["name_core_nofill"]), _arrow(right["name_core_nofill"])
+    ratio, token_set = _fuzzy(bare_l, bare_r, (_RATIO, _TOKEN_SET))
+    common, n_l, n_r, _, _ = _token_sets(bare_l, bare_r)
+    both = (n_l > 0) & (n_r > 0)
+    return _frame(pairs.index, {
+        "nofill_ratio": ratio,
+        "nofill_token_set": token_set,
+        "nofill_jaccard": _ratio(common, n_l + n_r - common, both),
+        "nofill_eq": both & (common == n_l) & (common == n_r),  # equal distinct-word sets
+        "fill_n_l": _n_words(core_l) - _n_words(bare_l),
+        "fill_n_r": _n_words(core_r) - _n_words(bare_r),
+    })
+
+
 REGISTRY: dict[str, FeatureGroup] = {
     "blocking": _blocking,
     "name_fuzzy": _name_fuzzy,
@@ -834,13 +874,15 @@ REGISTRY: dict[str, FeatureGroup] = {
     "token_freq": _token_freq,
     "ctx_idf": _ctx_idf,  # computed after idf, whose cosines it ranks
     "address_extra": _address_extra,
+    "nofill": _nofill,  # needs name_core_nofill: a version that learns fillers loads it
 }
 
 # The v001 feature set (47 features), kept fixed so logged versions stay reproducible; a
 # version adds groups explicitly (PipelineConfig.feature_groups). pool_context is opt-in:
 # training pairs come from sampled S1 entities (07 §5), so an in-degree counted on them is
 # biased low against val and test, where every S1 competes; frequency is opt-in because it
-# needs the FREQ_COLUMNS that pipeline.add_frequencies adds.
+# needs the FREQ_COLUMNS that pipeline.add_frequencies adds, nofill because it needs the
+# name_core_nofill column (NormaliseConfig.learn_fillers).
 DEFAULT_GROUPS: tuple[str, ...] = ("blocking", "name_fuzzy", "name_tokens", "legal", "numeric",
                                    "address", "context", "meta")
 
