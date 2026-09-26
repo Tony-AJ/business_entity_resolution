@@ -76,6 +76,11 @@ class TwoStageConfig:
     anchors: bool = True         # add stacking.ANCHOR_COLUMNS to the stage-2 frame
     model: MatcherParams = field(default_factory=lambda: MatcherParams(n_estimators=4000))
 
+    def __post_init__(self) -> None:
+        """Cross-fitting needs two parts: with one, fit entities would be scored in-sample."""
+        if self.folds < 2:
+            raise ValueError(f"folds must be >= 2 (out-of-fold scores), got {self.folds}")
+
     def record(self) -> dict:
         """JSON-ready dict (metrics.json, artifacts)."""
         return json.loads(json.dumps(asdict(self), default=str))
@@ -115,13 +120,13 @@ def stage1_partition(pairs: pd.DataFrame, s1n: pd.DataFrame, pooln: pd.DataFrame
         p1[sl], keep[sl] = p, k
         parts.append(X[k].reset_index(drop=True))
         del X
-    comp = competition_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1)
     X = pd.concat(parts, ignore_index=True) if parts else build_features(
         pairs.iloc[:0], s1n, pooln, groups=cfg.feature_groups)
+    parts.clear()                                   # the concat is the only copy kept
+    extra = [competition_features(pairs[[C.S1_ID, C.ENTITY_ID]], p1, keep)]
     kept = pairs.loc[keep, [C.S1_ID, C.ENTITY_ID]].reset_index(drop=True)
-    extra = [comp[keep].reset_index(drop=True)]
     if tcfg.anchors:
-        extra.append(anchor_features(kept, p1[keep], pooln))
+        extra.append(anchor_features(kept, p1[keep], pooln).reset_index(drop=True))
     X = pd.concat([X, *extra], axis=1)
     return Stage1Output(kept, X, len(pairs))
 
@@ -203,30 +208,38 @@ def fit_stage2(outs: dict[str, Stage1Output], mock: MockFold, tcfg: TwoStageConf
     tuned on all tune entities, as in ``pipeline.fit``). ``columns`` restricts the features
     (ablations); None = every column of the stage-1 output.
     """
-    fit_ids = mock.ids("fit")
-    pairs, X = _rows(outs, fit_ids, columns)
-    y = label_pairs(pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
-    part = fold_of(pairs[C.S1_ID], tcfg.folds, tcfg.seed)
+    fit_ids = pd.Series(mock.ids("fit"))
+    part_of_id = fold_of(fit_ids, tcfg.folds, tcfg.seed)
     stop_ids = pd.Index(sample_s1(mock.part("tune").s1, tcfg.n_stop_s1)[C.ENTITY_ID])
     stop_pairs, X_stop = _rows(outs, stop_ids, columns)
     y_stop = label_pairs(stop_pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
-    models, info = [], {"rows": len(X), "positive_rate": float(y.mean()) if len(y) else None}
+    del stop_pairs
+    models, info, rows, positives = [], {}, 0, 0
     for f in range(tcfg.folds):
-        train = part != f if tcfg.folds > 1 else np.ones(len(X), dtype=bool)
-        m = Matcher(tcfg.model).fit(X[train], y[train], X_stop, y_stop)
+        # one copy per model: the frame of the entities outside part f, built directly
+        pairs, X = _rows(outs, pd.Index(fit_ids[part_of_id != f]), columns)
+        y = label_pairs(pairs, mock.fold.pairs)["label"].to_numpy(np.int8)
+        del pairs
+        m = Matcher(tcfg.model).fit(X, y, X_stop, y_stop)
         models.append(m)
         info[f"fold{f}"] = m.fit_info_
+        rows, positives = rows + len(y), positives + int(y.sum())
+        del X, y
         mem_guard(f"fit_stage2 fold {f}")
+    info["rows"] = rows // max(tcfg.folds - 1, 1)          # each fit row trains folds-1 models
+    info["positive_rate"] = positives / rows if rows else None
     return models, info
 
 
 def predict_stage2(models: list[Matcher], X: pd.DataFrame,
                    part: np.ndarray | None = None) -> np.ndarray:
     """Stage-2 probability per row: the held-out model where ``part >= 0``, else the mean."""
-    mean = np.mean([m.predict_proba(X) for m in models], axis=0).astype(np.float32)
-    if part is None or len(models) == 1:
-        return mean
-    out = mean.copy()
+    if part is None:
+        return np.mean([m.predict_proba(X) for m in models], axis=0).astype(np.float32)
+    out = np.empty(len(X), dtype=np.float32)
+    rest = np.flatnonzero(part < 0)
+    if len(rest):
+        out[rest] = np.mean([m.predict_proba(X.iloc[rest]) for m in models], axis=0)
     for f, m in enumerate(models):
         rows = np.flatnonzero(part == f)
         if len(rows):
@@ -323,7 +336,10 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
             return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
 
         o = _cached_stage1(cache_dir, f"test_{country}", compute)
-        scored = o.pairs.assign(prob=predict_stage2(ts.models, o.X))[SCORED_COLUMNS]
+        names = ts.models[0].feature_names_
+        X = o.X if list(o.X.columns) == names else o.X[names]
+        scored = o.pairs.assign(prob=predict_stage2(ts.models, X))[SCORED_COLUMNS]
+        del X
         matches.append(sort_matches(apply_rule(scored, ts.rule), scored))
         summary.append(scored.groupby(C.S1_ID, sort=False)["prob"].agg(p_max="max",
                                                                       n_cands="size"))
