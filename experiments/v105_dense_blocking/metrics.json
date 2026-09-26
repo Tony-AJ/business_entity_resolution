@@ -1,0 +1,322 @@
+{
+ "version": "v105",
+ "date": "2026-09-26",
+ "group": "A5",
+ "change": "blocking budgets at mock density (sampled val entities): word top-k, cap, exact groups, P4",
+ "local_f05": "",
+ "mock_f05": "",
+ "cand_recall": "0.9780",
+ "public_f05": "",
+ "commit": "aa9bd9a",
+ "notes": "B0 recall 0.9677; adopted B6 B4 + sim-first cap: 0.9780 at 65.5/S1",
+ "owner": "M1",
+ "parent": "v101",
+ "decision": "KEEP",
+ "metrics": {
+  "hypothesis": "candidate recall drops at test density; larger word top-k and caps buy it back",
+  "configs": {
+   "B0 current": "66540dae",
+   "B1 word top50, cap100": "2ce7b7f2",
+   "B2 + exact groups 200": "be1a6cf4",
+   "B4 + address word pass": "fe96bbe4",
+   "B5 B1 + sim-first cap": "38a5cd73",
+   "B6 B4 + sim-first cap": "b54f2a3d",
+   "B7 word50 + addr, groups 50, sim-first": "5deaf634",
+   "B8 B6 with cap 80": "422fb384",
+   "B9 B0 + sim-first cap": "dacd63e0",
+   "SUPER": "560c480b"
+  },
+  "config_keys": {
+   "B0 current": "66540dae",
+   "B1 word top50, cap100": "2ce7b7f2",
+   "B2 + exact groups 200": "be1a6cf4",
+   "B4 + address word pass": "fe96bbe4",
+   "B5 B1 + sim-first cap": "38a5cd73",
+   "B6 B4 + sim-first cap": "b54f2a3d",
+   "B7 word50 + addr, groups 50, sim-first": "5deaf634",
+   "B8 B6 with cap 80": "422fb384",
+   "B9 B0 + sim-first cap": "dacd63e0",
+   "SUPER": "560c480b"
+  },
+  "report": [
+   {
+    "country": "India",
+    "config": "B0 current",
+    "pair_recall": 0.95614,
+    "entity_recall": 0.99545,
+    "ceiling_f_beta": 0.98443,
+    "candidates_mean": 34.94106,
+    "candidates_p95": 44.0
+   },
+   {
+    "country": "India",
+    "config": "B1 word top50, cap100",
+    "pair_recall": 0.96723,
+    "entity_recall": 0.99688,
+    "ceiling_f_beta": 0.98857,
+    "candidates_mean": 58.35306,
+    "candidates_p95": 68.0
+   },
+   {
+    "country": "India",
+    "config": "B2 + exact groups 200",
+    "pair_recall": 0.94041,
+    "entity_recall": 0.99423,
+    "ceiling_f_beta": 0.9793,
+    "candidates_mean": 67.2862,
+    "candidates_p95": 100.0
+   },
+   {
+    "country": "India",
+    "config": "B4 + address word pass",
+    "pair_recall": 0.94056,
+    "entity_recall": 0.99423,
+    "ceiling_f_beta": 0.97934,
+    "candidates_mean": 67.75468,
+    "candidates_p95": 100.0
+   },
+   {
+    "country": "India",
+    "config": "B5 B1 + sim-first cap",
+    "pair_recall": 0.96722,
+    "entity_recall": 0.99688,
+    "ceiling_f_beta": 0.98856,
+    "candidates_mean": 58.35306,
+    "candidates_p95": 68.0
+   },
+   {
+    "country": "India",
+    "config": "B6 B4 + sim-first cap",
+    "pair_recall": 0.96884,
+    "entity_recall": 0.99725,
+    "ceiling_f_beta": 0.98933,
+    "candidates_mean": 67.75468,
+    "candidates_p95": 100.0
+   },
+   {
+    "country": "India",
+    "config": "B7 word50 + addr, groups 50, sim-first",
+    "pair_recall": 0.96731,
+    "entity_recall": 0.99688,
+    "ceiling_f_beta": 0.98858,
+    "candidates_mean": 58.93961,
+    "candidates_p95": 68.0
+   },
+   {
+    "country": "India",
+    "config": "B8 B6 with cap 80",
+    "pair_recall": 0.96775,
+    "entity_recall": 0.99698,
+    "ceiling_f_beta": 0.98879,
+    "candidates_mean": 63.50484,
+    "candidates_p95": 80.0
+   },
+   {
+    "country": "India",
+    "config": "B9 B0 + sim-first cap",
+    "pair_recall": 0.95601,
+    "entity_recall": 0.99545,
+    "ceiling_f_beta": 0.9844,
+    "candidates_mean": 34.94106,
+    "candidates_p95": 44.0
+   },
+   {
+    "country": "US",
+    "config": "B0 current",
+    "pair_recall": 0.97917,
+    "entity_recall": 0.99776,
+    "ceiling_f_beta": 0.99268,
+    "candidates_mean": 33.76896,
+    "candidates_p95": 44.0
+   },
+   {
+    "country": "US",
+    "config": "B1 word top50, cap100",
+    "pair_recall": 0.98619,
+    "entity_recall": 0.99865,
+    "ceiling_f_beta": 0.99526,
+    "candidates_mean": 57.93886,
+    "candidates_p95": 67.0
+   },
+   {
+    "country": "US",
+    "config": "B2 + exact groups 200",
+    "pair_recall": 0.96964,
+    "entity_recall": 0.99584,
+    "ceiling_f_beta": 0.9882,
+    "candidates_mean": 62.15827,
+    "candidates_p95": 100.0
+   },
+   {
+    "country": "US",
+    "config": "B4 + address word pass",
+    "pair_recall": 0.97004,
+    "entity_recall": 0.99584,
+    "ceiling_f_beta": 0.98832,
+    "candidates_mean": 63.3047,
+    "candidates_p95": 100.0
+   },
+   {
+    "country": "US",
+    "config": "B5 B1 + sim-first cap",
+    "pair_recall": 0.98622,
+    "entity_recall": 0.99865,
+    "ceiling_f_beta": 0.99527,
+    "candidates_mean": 57.93886,
+    "candidates_p95": 67.0
+   },
+   {
+    "country": "US",
+    "config": "B6 B4 + sim-first cap",
+    "pair_recall": 0.98704,
+    "entity_recall": 0.99886,
+    "ceiling_f_beta": 0.99565,
+    "candidates_mean": 63.3047,
+    "candidates_p95": 100.0
+   },
+   {
+    "country": "US",
+    "config": "B7 word50 + addr, groups 50, sim-first",
+    "pair_recall": 0.98659,
+    "entity_recall": 0.9987,
+    "ceiling_f_beta": 0.99541,
+    "candidates_mean": 59.25918,
+    "candidates_p95": 68.0
+   },
+   {
+    "country": "US",
+    "config": "B8 B6 with cap 80",
+    "pair_recall": 0.98679,
+    "entity_recall": 0.9988,
+    "ceiling_f_beta": 0.99553,
+    "candidates_mean": 61.2224,
+    "candidates_p95": 80.0
+   },
+   {
+    "country": "US",
+    "config": "B9 B0 + sim-first cap",
+    "pair_recall": 0.97954,
+    "entity_recall": 0.99797,
+    "ceiling_f_beta": 0.99296,
+    "candidates_mean": 33.76896,
+    "candidates_p95": 44.0
+   }
+  ],
+  "overall": {
+   "B0 current": {
+    "pair_recall": 0.967708775133169,
+    "cands_per_s1": 34.34880027790874,
+    "missed_pairs": 4492.0
+   },
+   "B1 word top50, cap100": {
+    "pair_recall": 0.9767592319691752,
+    "cands_per_s1": 58.143768144711046,
+    "missed_pairs": 3233.0
+   },
+   "B2 + exact groups 200": {
+    "pair_recall": 0.955092768979721,
+    "cands_per_s1": 64.6950696012506,
+    "missed_pairs": 6247.0
+   },
+   "B4 + address word pass": {
+    "pair_recall": 0.9553731246720197,
+    "cands_per_s1": 65.50611647353664,
+    "missed_pairs": 6208.0
+   },
+   "B5 B1 + sim-first cap": {
+    "pair_recall": 0.9767664205766701,
+    "cands_per_s1": 58.143768144711046,
+    "missed_pairs": 3232.0
+   },
+   "B6 B4 + sim-first cap": {
+    "pair_recall": 0.9779812952432985,
+    "cands_per_s1": 65.50611647353664,
+    "missed_pairs": 3063.0
+   },
+   "B7 word50 + addr, groups 50, sim-first": {
+    "pair_recall": 0.9769964560165051,
+    "cands_per_s1": 59.101089302994964,
+    "missed_pairs": 3200.0
+   },
+   "B8 B6 with cap 80": {
+    "pair_recall": 0.9773199433537729,
+    "cands_per_s1": 62.35152973871616,
+    "missed_pairs": 3155.0
+   },
+   "B9 B0 + sim-first cap": {
+    "pair_recall": 0.9678309814605812,
+    "cands_per_s1": 34.34880027790874,
+    "missed_pairs": 4475.0
+   }
+  },
+  "decision": {
+   "B0 current": {
+    "pair_recall": 0.967708775133169,
+    "cands_per_s1": 34.34880027790874,
+    "missed_pairs": 4492.0,
+    "recall_gain": 0.0,
+    "time_ratio": 1.0
+   },
+   "B1 word top50, cap100": {
+    "pair_recall": 0.9767592319691752,
+    "cands_per_s1": 58.143768144711046,
+    "missed_pairs": 3233.0,
+    "recall_gain": 0.009050456836006249,
+    "time_ratio": 1.6927452392596642
+   },
+   "B2 + exact groups 200": {
+    "pair_recall": 0.955092768979721,
+    "cands_per_s1": 64.6950696012506,
+    "missed_pairs": 6247.0,
+    "recall_gain": -0.012616006153448045,
+    "time_ratio": 1.8834739227517916
+   },
+   "B4 + address word pass": {
+    "pair_recall": 0.9553731246720197,
+    "cands_per_s1": 65.50611647353664,
+    "missed_pairs": 6208.0,
+    "recall_gain": -0.012335650461149261,
+    "time_ratio": 1.9070860100946982
+   },
+   "B5 B1 + sim-first cap": {
+    "pair_recall": 0.9767664205766701,
+    "cands_per_s1": 58.143768144711046,
+    "missed_pairs": 3232.0,
+    "recall_gain": 0.009057645443501072,
+    "time_ratio": 1.6927452392596642
+   },
+   "B6 B4 + sim-first cap": {
+    "pair_recall": 0.9779812952432985,
+    "cands_per_s1": 65.50611647353664,
+    "missed_pairs": 3063.0,
+    "recall_gain": 0.010272520110129468,
+    "time_ratio": 1.9070860100946982
+   },
+   "B7 word50 + addr, groups 50, sim-first": {
+    "pair_recall": 0.9769964560165051,
+    "cands_per_s1": 59.101089302994964,
+    "missed_pairs": 3200.0,
+    "recall_gain": 0.009287680883336091,
+    "time_ratio": 1.7206158242739424
+   },
+   "B8 B6 with cap 80": {
+    "pair_recall": 0.9773199433537729,
+    "cands_per_s1": 62.35152973871616,
+    "missed_pairs": 3155.0,
+    "recall_gain": 0.009611168220603927,
+    "time_ratio": 1.8152462162941174
+   },
+   "B9 B0 + sim-first cap": {
+    "pair_recall": 0.9678309814605812,
+    "cands_per_s1": 34.34880027790874,
+    "missed_pairs": 4475.0,
+    "recall_gain": 0.00012220632741222204,
+    "time_ratio": 1.0
+   }
+  },
+  "adopted": "B6 B4 + sim-first cap",
+  "load_seconds": 81.61,
+  "superset_India_seconds": 179.5,
+  "superset_US_seconds": 116.7
+ }
+}

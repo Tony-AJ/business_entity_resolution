@@ -17,6 +17,7 @@ from entity_resolution.blocking import PAIR_COLUMNS
 from entity_resolution.features import (
     DEFAULT_GROUPS,
     FEATURE_COLUMNS,
+    FREQ_COLUMNS,
     NAN_FEATURES,
     REGISTRY,
     build_features,
@@ -61,8 +62,11 @@ def _record(entity_id: str, core: str = "", legal: str = "", addr: str = "", reg
 def _records(*records: dict) -> pd.DataFrame:
     """Normalised frame: NORM_COLUMNS with their dtypes (str, bool non_latin, int16)."""
     text = {c: "str" for c in NORM_COLUMNS if c not in ("non_latin", "addr_tokens")}
-    return pd.DataFrame(list(records), columns=NORM_COLUMNS).astype(
+    df = pd.DataFrame(list(records), columns=NORM_COLUMNS).astype(
         {**text, "non_latin": bool, "addr_tokens": "int16"})
+    for i, col in enumerate(FREQ_COLUMNS):  # rates pipeline.add_frequencies adds in real runs
+        df[col] = np.arange(len(df), dtype=np.float32) * (i + 1)
+    return df
 
 
 def _pairs(*rows: tuple) -> pd.DataFrame:
@@ -103,7 +107,7 @@ def _toy() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def test_registry_names_unique_and_count():
     every = feature_names(ALL_GROUPS)
-    assert len(every) == len(set(every)) == 48
+    assert len(every) == len(set(every)) == 54
     assert feature_names() == [c for g in DEFAULT_GROUPS for c in FEATURE_COLUMNS[g]]
     assert len(feature_names()) == 47 and "pool_context" not in DEFAULT_GROUPS
     assert set(FEATURE_COLUMNS) == set(REGISTRY) and NAN_FEATURES <= set(every)
@@ -300,3 +304,18 @@ def test_bad_input_raises():
         build_features(pairs.iloc[[0, 3, 1]], s1n, pooln)
     with pytest.raises(ValueError, match="lack"):
         build_features(pairs.drop(columns="pass"), s1n, pooln)
+
+
+def test_frequency_group_passes_rates_and_core_eq() -> None:
+    """The frequency group copies the side rates and flags equal non-empty core names."""
+    from entity_resolution.features import REGISTRY
+    pairs = pd.DataFrame({"source1_entity_id": ["S1-1", "S1-1"], "entity_id": ["S2-1", "S2-2"]})
+    left = pd.DataFrame({"name_core": ["acme", "acme"], "freq_same": [2.0, 2.0],
+                         "freq_other": [5.0, 5.0], "freq_first_other": [7.0, 7.0]})
+    right = pd.DataFrame({"name_core": ["acme", ""], "freq_same": [3.0, np.nan],
+                          "freq_other": [4.0, np.nan], "freq_first_other": [1.0, 1.0]})
+    out = REGISTRY["frequency"](pairs, left.astype({"name_core": "str"}),
+                                right.astype({"name_core": "str"}))
+    assert out["core_eq"].tolist() == [1.0, 0.0]
+    assert out["fq_s1_l"].tolist() == [2.0, 2.0] and out["fq_pool_r"].iloc[0] == 3.0
+    assert np.isnan(out["fq_s1_r"].iloc[1])

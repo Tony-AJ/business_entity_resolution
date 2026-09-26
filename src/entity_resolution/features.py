@@ -53,13 +53,18 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     "context": ["ctx_rank_name", "ctx_gap_name", "ctx_rank_addr", "ctx_gap_addr", "ctx_n_cands"],
     "meta": ["is_s3", "non_latin_r", "len_ratio_name"],
     "pool_context": ["ctx_pool_indegree"],
+    "frequency": ["fq_s1_l", "fq_pool_l", "fq_first_pool_l", "fq_pool_r", "fq_s1_r", "core_eq"],
 }
+# Per-record columns the frequency group reads; pipeline.add_frequencies adds them to the
+# normalised frames from the whole fold (never from a training sample).
+FREQ_COLUMNS = ("freq_same", "freq_other", "freq_first_other")
 
 # The only columns allowed to hold NaN (07 §2 "Missing"); every other column is always set.
 NAN_FEATURES = frozenset({
     *SIM_COLUMNS, *FEATURE_COLUMNS["name_fuzzy"], "tok_jaccard", "tok_dice",
     *FEATURE_COLUMNS["numeric"], "ad_token_set", "ad_partial", "ad_ratio", "ad_jaccard",
     "ad_contain", "ctx_gap_name", "ctx_gap_addr", "len_ratio_name",
+    "fq_s1_l", "fq_pool_l", "fq_first_pool_l", "fq_pool_r", "fq_s1_r",
 })
 
 # Normalised columns each group reads: build_features aligns only these to the pairs.
@@ -73,6 +78,7 @@ _INPUTS: dict[str, tuple[str, ...]] = {
     "context": ("addr_norm",),  # only when the address group does not run
     "meta": ("name_core", "non_latin"),
     "pool_context": (),
+    "frequency": ("name_core", *FREQ_COLUMNS),
 }
 _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 
@@ -80,7 +86,7 @@ _ALL_INPUTS = tuple(dict.fromkeys(c for cols in _INPUTS.values() for c in cols))
 # before context, which reuses its ad_token_set, and the address-side groups before the
 # name-side ones, so fewer aligned string columns are alive at the same time.
 _COMPUTE_ORDER = ("blocking", "legal", "numeric", "address", "context", "name_fuzzy",
-                  "name_tokens", "meta", "pool_context")
+                  "name_tokens", "meta", "pool_context", "frequency")
 
 # Columns build_features adds to each pairs chunk: values that need more than the chunk (the
 # partition-wide in-degree) or that one group already computed for another (the context
@@ -483,6 +489,30 @@ def _pool_context(pairs: pd.DataFrame, left: pd.DataFrame,
     return _frame(pairs.index, {_INDEGREE: degree})
 
 
+def _frequency(pairs: pd.DataFrame, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    """How common each side's core name is (C5): a rare exact name needs less address evidence.
+
+    fq_s1_l          other S1 records sharing the S1 record's name_core, per million S1
+                     records of its country (whole fold, not a training sample; 0 = unique)
+    fq_pool_l        pool records carrying the S1 record's name_core, per million pool records
+    fq_first_pool_l  pool records whose first core token is the S1 record's, per million
+    fq_pool_r        other pool records sharing the pool record's name_core, per million
+    fq_s1_r          S1 records carrying the pool record's name_core, per million
+    core_eq          name_core equal and non-empty
+    Rates are NaN where the name_core is empty. Per-million rates keep folds of different
+    sizes (fit, val, test) on one scale.
+    """
+    eq, _ = _eq(_arrow(left["name_core"]), _arrow(right["name_core"]))
+    return _frame(pairs.index, {
+        "fq_s1_l": left["freq_same"].to_numpy(dtype=np.float32),
+        "fq_pool_l": left["freq_other"].to_numpy(dtype=np.float32),
+        "fq_first_pool_l": left["freq_first_other"].to_numpy(dtype=np.float32),
+        "fq_pool_r": right["freq_same"].to_numpy(dtype=np.float32),
+        "fq_s1_r": right["freq_other"].to_numpy(dtype=np.float32),
+        "core_eq": eq,
+    })
+
+
 REGISTRY: dict[str, FeatureGroup] = {
     "blocking": _blocking,
     "name_fuzzy": _name_fuzzy,
@@ -493,11 +523,14 @@ REGISTRY: dict[str, FeatureGroup] = {
     "context": _context,
     "meta": _meta,
     "pool_context": _pool_context,
+    "frequency": _frequency,
 }
 
 # pool_context is opt-in: training pairs come from sampled S1 entities (07 §5), so an
 # in-degree counted on them is biased low against val and test, where every S1 competes.
-DEFAULT_GROUPS: tuple[str, ...] = tuple(g for g in REGISTRY if g != "pool_context")
+# frequency is opt-in because it needs the FREQ_COLUMNS that pipeline.add_frequencies adds.
+DEFAULT_GROUPS: tuple[str, ...] = tuple(g for g in REGISTRY
+                                        if g not in ("pool_context", "frequency"))
 
 
 # ----------------------------------------------------------------- building ----

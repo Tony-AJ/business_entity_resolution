@@ -60,6 +60,20 @@ def entity_f05_from_counts(tp, n_pred, n_true) -> np.ndarray:
     return np.where(n_true == 0, (n_pred == 0) * 1.0, np.where(tp == 0, 0.0, f))
 
 
+def entity_tight_from_counts(tp, n_pred, n_true, fp_weight: float = 1.0) -> np.ndarray:
+    """Per-entity F0.5 with its false-merge loss weighted ``fp_weight`` times (tight mock).
+
+    The loss of an entity splits into what its false positives cost, F(tp, tp, n_true) - F,
+    and the rest; the tight score is ``F - (fp_weight - 1) * (F(tp, tp, n_true) - F)``. With
+    ``fp_weight == 1`` it is F0.5 itself (bitwise); a false merge on a singleton costs
+    ``fp_weight`` instead of 1.
+    """
+    f = entity_f05_from_counts(tp, n_pred, n_true)
+    if fp_weight == 1.0:
+        return f
+    return f - (fp_weight - 1.0) * (entity_f05_from_counts(tp, tp, n_true) - f)
+
+
 def macro_f05_from_counts(tp, n_pred, n_true) -> float:
     """Mean per-entity F0.5 over ALL the entities given (one element each, singletons too).
 

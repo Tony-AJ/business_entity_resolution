@@ -95,3 +95,106 @@ def test_end_to_end_on_synthetic_dataset(dataset_dir: Path, tmp_path: Path) -> N
         assert all(i.startswith(("S2-", "S3-")) for i in ids)
         assert set(ids) <= set(cands[s1])
     assert cands["S1-00010"], "the France entity gets candidates without any country list"
+
+
+def test_add_frequencies_rates_per_country() -> None:
+    """Core-name rates count the whole fold per country, per million; empty names are NaN."""
+    from entity_resolution.pipeline import add_frequencies
+    s1_all = pd.DataFrame({C.COUNTRY: ["US", "US", "US", "US", "India"],
+                           "name_core": ["acme", "acme", "globex", "", "acme"],
+                           "name_first": ["acme", "acme", "globex", "", "acme"]}).astype("str")
+    s1n = s1_all.iloc[[0, 3]].reset_index(drop=True)  # a sample of the fold
+    pooln = pd.DataFrame({C.COUNTRY: ["US", "US", "India", "India"],
+                          "name_core": ["acme", "initech", "acme", "acme"],
+                          "name_first": ["acme", "initech", "acme", "acme"]}).astype("str")
+    s1f, poolf = add_frequencies(s1n, pooln, s1_all)
+    assert s1f["freq_same"].iloc[0] == np.float32(1 / 3 * 1e6)       # 1 other of 3 US S1
+    assert s1f["freq_other"].iloc[0] == np.float32(1 / 2 * 1e6)      # 1 of 2 US pool records
+    assert np.isnan(s1f["freq_same"].iloc[1])                        # empty core name
+    assert poolf["freq_same"].iloc[0] == 0.0                         # a unique name reads 0
+    assert poolf["freq_same"].tolist()[2:] == [1e6, 1e6]             # India pool: 1 other of 1
+    assert poolf["freq_other"].iloc[1] == 0.0                        # no S1 initech
+    assert poolf["freq_other"].iloc[2] == np.float32(1e6)            # the one India S1 is acme
+
+
+def test_frequency_group_end_to_end(dataset_dir: Path, tmp_path: Path) -> None:
+    """With the opt-in frequency group the pipeline still fits, scores and writes valid files."""
+    from dataclasses import replace
+
+    from entity_resolution.features import DEFAULT_GROUPS
+    cfg = replace(tiny_cfg(tmp_path, dataset_dir),
+                  feature_groups=(*DEFAULT_GROUPS, "frequency"))
+    fitted = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "art")
+    metrics, *_ = run_fold(cfg, fitted, load_fold("val", dataset_dir, frac=0.5))
+    assert 0.0 <= metrics["f_beta"] <= 1.0
+    matching, candidates, *_ = run_test(cfg, fitted, out_dir=tmp_path / "output")
+    s1_ids, valid = split_ids("test", dataset_dir, check_ids=True)
+    assert validate(matching, candidates, s1_ids, valid) == ([], [])
+
+
+def test_dense_tune_pool_fits(dataset_dir: Path, tmp_path: Path) -> None:
+    """tune_pool='train' blocks the tune side against the whole train pool and still fits."""
+    from dataclasses import replace
+    cfg = replace(tiny_cfg(tmp_path, dataset_dir), tune_pool="train")
+    train = load_fold("train", dataset_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    assert 0.0 <= fitted.tune_table["f_beta"].max() <= 1.0
+    bad = replace(cfg, tune_pool="everything")
+    try:
+        fit(bad, train)
+    except ValueError as e:
+        assert "tune_pool" in str(e)
+    else:
+        raise AssertionError("an unknown tune_pool must be refused")
+
+
+def test_retune_keeps_matcher_and_saves(dataset_dir: Path, tmp_path: Path) -> None:
+    """retune re-runs only the rule grid (here against the whole train pool)."""
+    from dataclasses import replace
+
+    from entity_resolution.pipeline import retune
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    train = load_fold("train", dataset_dir, frac=0.5)
+    fitted = fit(cfg, train, tmp_path / "art")
+    again = retune(replace(cfg, tune_pool="train"), fitted, train, tmp_path / "art2")
+    assert again.matcher is fitted.matcher and again.token_map == fitted.token_map
+    assert (tmp_path / "art2" / "rule.json").exists()
+    assert "retuned_from" in again.info
+
+
+def test_run_mock_scores_tunes_and_reports(dataset_dir: Path, tmp_path: Path) -> None:
+    """The mock path: every present S1 scored per country, 1-to-1 across them, per-role use."""
+    from entity_resolution.decision import DecisionRule
+    from entity_resolution.mock import build_mock
+    from entity_resolution.pipeline import mock_scores, run_mock, tune_mock
+    cfg = tiny_cfg(tmp_path, dataset_dir)
+    fitted = fit(cfg, load_fold("train", dataset_dir, frac=0.5), tmp_path / "art")
+    train = load_fold("train", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    val = load_fold("val", dataset_dir, columns=[C.COUNTRY], frac=0.5)
+    mock = build_mock(train, val, tune_ids=train.s1[C.ENTITY_ID], drop_first=[], shape={})
+    assert len(mock.fold.s1) == len(train.s1) + len(val.s1)       # no shape: all present
+    scored, report = run_mock(cfg, fitted, mock)
+    assert not scored[C.ENTITY_ID].duplicated().any()               # 1-to-1 across roles
+    assert set(report.index) == {"tune", "val"}
+    rule, table = tune_mock(scored, mock, cfg.grid)
+    assert isinstance(rule, DecisionRule) and len(table)
+    scores = mock_scores(scored, mock, rule)
+    assert scores.index[0] == "all"
+    assert set(scores.index[1:]) == set(mock.part("val").s1[C.COUNTRY])
+    assert scores.loc["all", "entities"] == len(mock.ids("val"))
+    assert 0.0 <= scores.loc["all", "f_beta"] <= 1.0
+
+
+def test_config_record_round_trip(tmp_path: Path) -> None:
+    """from_record rebuilds exactly what record wrote, nested specs and tuples included."""
+    import json
+    from dataclasses import replace
+
+    from entity_resolution.blocking import TopKSpec
+    from entity_resolution.features import DEFAULT_GROUPS
+    cfg = replace(PipelineConfig(), feature_groups=(*DEFAULT_GROUPS, "frequency"),
+                  model=MatcherParams(backend="xgb", device="cuda", num_leaves=127))
+    cfg = replace(cfg, blocking=replace(cfg.blocking, cap_order="sim_first",
+                                        addr_char=TopKSpec("addr_norm", "word", (1, 2), 10)))
+    again = PipelineConfig.from_record(json.loads(json.dumps(cfg.record())))
+    assert again == cfg and again.blocking.key() == cfg.blocking.key()

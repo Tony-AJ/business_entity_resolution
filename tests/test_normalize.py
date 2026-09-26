@@ -304,3 +304,16 @@ def test_apply_token_map_changes_only_non_latin_rows():
     direct = normalise_names(pool[C.NAME], token_map=token_map)
     pd.testing.assert_frame_equal(out[NAME_COLS], direct[NAME_COLS])
     pd.testing.assert_frame_equal(apply_token_map(pooln, {}), pooln)
+
+
+def test_french_departements_map_to_their_region() -> None:
+    """A département in the state slot reads as its region's code, like the region itself."""
+    import pandas as pd
+
+    from entity_resolution.normalize import normalise_addresses
+    out = normalise_addresses(pd.Series(["5 Rue Lafayette, Lille, Nord",
+                                         "5 Rue Lafayette, Lille, Hauts-de-France",
+                                         "3 Rue Racine, Bordeaux, Gironde",
+                                         "1 Quai, Nantes, Loire-Atlantique",
+                                         "2 Rue, Calais, Pas-de-Calais"]))
+    assert out["region"].tolist() == ["hdf", "hdf", "naq", "pdl", "hdf"]

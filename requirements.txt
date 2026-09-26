@@ -2,7 +2,7 @@
 # the entity_resolution package plus headless notebook execution (nbconvert).
 # Top-level: numpy pandas pyarrow ipykernel nbconvert nbformat, and for the pipeline
 # anyascii (ISC) lightgbm (MIT) rapidfuzz (MIT) scikit-learn scipy (BSD-3)
-# sparse-dot-topn (Apache-2.0); the rest are their dependencies. Add a new dependency here,
+# sparse-dot-topn (Apache-2.0) xgboost (Apache-2.0; its wheel runs on CUDA GPUs); the rest are their dependencies. Add a new dependency here,
 # pinned, in the commit that first uses it. Dev tools (pytest, ruff, jupytext) live in
 # pyproject.toml [dev].
 anyascii==0.3.3
@@ -37,6 +37,7 @@ nbconvert==7.17.1
 nbformat==5.11.1
 nest-asyncio2==1.7.3
 numpy==2.5.3
+nvidia-nccl-cu12==2.32.3
 packaging==26.3
 pandas==3.0.6
 pandocfilters==1.5.1
@@ -67,3 +68,4 @@ traitlets==5.16.1
 typing-extensions==4.16.0
 wcwidth==0.9.1
 webencodings==0.6.1
+xgboost==3.1.1
