@@ -338,3 +338,21 @@ def test_v4_compagnie_is_a_legal_form_like_cie():
     assert out["name_core"].tolist() == ["bordeaux france", "bordeaux france", "meta"]
     assert out["legal_form"].tolist() == ["co", "co", "co sa"]
     assert out["name_norm"].iloc[0] == "bordeaux france compagnie"
+
+
+# ------------------------------------------------------------------- rules v5 ----
+def test_v5_et_and_plus_read_as_and():
+    """S1's "&", the French pool's "et" and a standalone "+" give one name_norm and core."""
+    out = _names("Aero & Cie", "Aero et Cie EURL", "AERO + CIE", "Production +",
+                 "B+ Retail", "ET Solutions")
+    assert out["name_norm"].tolist() == ["aero and cie", "aero and cie eurl", "aero and cie",
+                                         "production and", "b+ retail", "et solutions"]
+    assert out["name_core"].tolist() == ["aero", "aero", "aero", "production", "b+ retail",
+                                         "et solutions"]  # a glued "+" or a leading "ET" stays
+
+
+def test_v5_frs_reads_as_freres():
+    """The French pool's "Frs" is "Frères"."""
+    out = _names("Jumelage & Frères SAS", "Jumelage & Frs SAS", "JUMELAGE ET FRS")
+    assert out["name_core"].tolist() == ["jumelage and freres"] * 3
+    assert out["name_squash"].tolist() == ["jumelageandfreres"] * 3

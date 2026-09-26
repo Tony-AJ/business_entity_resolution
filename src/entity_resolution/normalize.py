@@ -13,6 +13,10 @@ Rules v4 (French forms measured on the test pool; they change no US or India rec
 the pool's ``N°`` / ``Nº`` number marker leaves addresses before folding, and ``Compagnie``
 is a legal form like ``Cie``.
 
+Rules v5 (they change US and India records too; measured on train true pairs): the pool's
+``&`` written ``et`` (France) or as a standalone ``+`` (every country) reads as ``and``, and
+``Frs`` as ``Freres``.
+
 Everything is vectorised on Arrow strings. Regexes run in pyarrow (RE2 syntax, so no
 look-arounds); token maps run once per *distinct* token through a dictionary encoding;
 the only Python loops are ``anyascii`` on rows that still hold non-ASCII characters and
@@ -39,7 +43,8 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
 # 4: French number marker and "compagnie" (US and India output byte-identical to 3).
-RULES_VERSION = 4
+# 5: "et" / "+" -> "and" and "frs" -> "freres" in names (US and India records change too).
+RULES_VERSION = 5
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
 NON_LATIN_RE = r"[\x{0370}-\x{1DBF}\x{2C00}-\x{2DFF}\x{3000}-\x{D7FF}]"
@@ -52,6 +57,7 @@ from .token_maps import (  # noqa: E402  (re-exported: tests and features import
     HONORIFIC_RE,
     LEET,
     LEGAL_FORMS,
+    NAME_TOKENS,
     REGION_ABBREV,
     TRANSLIT_LEGAL,
 )
@@ -186,6 +192,13 @@ def _join_initials(arr: pa.Array) -> pa.Array:
     return pa.array(vals.tolist(), type=pa.string())
 
 
+def _name_tokens(arr: pa.Array) -> pa.Array:
+    """Name spellings of one word (v5): the French "et" and a standalone "+" are the "&" that
+    S1 writes (``Aero et Cie`` / ``ARC + CIE`` -> ``and``), ``frs`` is ``freres``."""
+    arr = pc.replace_substring_regex(arr, r" et( |$)", r" and\1")  # after a word: "ET Ltd" stays
+    return map_tokens(arr, _dict_fn(NAME_TOKENS))  # "+" -> "and", "frs" -> "freres"
+
+
 # ------------------------------------------------------------------- names ----
 def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
                     token_map: Mapping[str, str] | None = None) -> pd.DataFrame:
@@ -209,6 +222,7 @@ def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
     # a long single glued token ending in "com" is a domain written without its dot
     # ("orthopedichealthcom"); short words keep it ("intercom", "telecom")
     norm = pc.replace_substring_regex(norm, r"^([a-z0-9]{7,})com$", r"\1")
+    norm = _name_tokens(norm)  # v5: "et" / "+" -> "and", "frs" -> "freres"
     out = _name_columns(norm, non_latin, cfg, token_map)
     out.insert(1, "domain_form", raw_domain.to_numpy(zero_copy_only=False))
     out.index = names.index

@@ -35,6 +35,10 @@ TRANSLIT_LEGAL = {
 HONORIFIC_RE = r"^(?:(?:mr|mrs|ms|dr|smt|shri|sri|messrs|the)\s+)+"
 # Leet digits folded to letters inside tokens that also hold letters ("f0rman", "5tar").
 LEET = str.maketrans("0134578", "oleastb")
+# Name tokens -> canonical form (v5), applied to name_norm: the pool writes "&" as a standalone
+# "+" in every country (never in S1 names, 300-500 per 100k pool names) and "Frères" as "Frs"
+# (France). The French "et" is a regex in normalize, so a leading "ET" acronym stays.
+NAME_TOKENS = {"+": "and", "frs": "freres"}
 
 # Address tokens -> canonical short form. Both spellings of a pair map to the same token
 # (the direction does not matter). The generator writes "Saint" for "St" (Government
