@@ -1,0 +1,50 @@
+{
+  "version": "v010",
+  "date": "2026-09-26",
+  "group": "A2",
+  "change": "blocking top_k 25->35 (name_addr_word pass)",
+  "local_f05": "",
+  "cand_recall": "0.9915",
+  "public_f05": "",
+  "commit": "b2cac13",
+  "notes": "pair_recall=0.9915; entity_recall=0.9994; ceiling_f05=0.9974; cands_mean=39.13/S1; cands_p95=60; cands_max=60; runtime=550s; peak_rss=3.88GB; delta_recall=+0.0009 vs v001",
+  "owner": "M2",
+  "parent": "v001",
+  "decision": "KEEP",
+  "metrics": {
+    "pair_recall": 0.991482784895641,
+    "entity_recall": 0.9994143751695072,
+    "ceiling_f_beta": 0.9973729457176697,
+    "candidates_mean": 39.12564662057902,
+    "candidates_p95": 60.0,
+    "candidates_max": 60,
+    "candidate_pairs": 17267439,
+    "reduction_ratio": 0.9999810443728174,
+    "blocking_config_key": "e3a18488",
+    "blocking_config_desc": "top_k=35 name_addr_word; all else v001 defaults",
+    "baseline_pair_recall": 0.9905702495136199,
+    "baseline_cands_mean": 32.970534720947676,
+    "baseline_ceiling_f05": 0.9970672416366552,
+    "per_country_pair_recall": {
+      "India": 0.9881030880266768,
+      "US": 0.9937366672304394
+    },
+    "per_pass_recall": {
+      "exact_core": 0.5645818440808268,
+      "exact_sorted": 0.5958437090046426,
+      "exact_squash": 0.5944637774513424,
+      "name_char": 0.04552399431269197,
+      "name_addr_word": 0.9848515198885581,
+      "addr_char": 0.0
+    },
+    "blocking_seconds": 550.21,
+    "blocking_minutes": 9.17,
+    "peak_rss_gb": 3.88,
+    "target_pair_recall_pass": true,
+    "target_cands_pass": true,
+    "target_runtime_pass": true,
+    "target_ram_pass": false,
+    "decision": "KEEP",
+    "decision_reason": "all primary targets met (recall, candidates, runtime)"
+  }
+}

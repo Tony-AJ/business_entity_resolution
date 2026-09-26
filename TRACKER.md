@@ -35,8 +35,8 @@ Last updated: 2026-09-25 18:26 IST (day 1).
 
 | # | Task | Owner | Plan | Status | Notes |
 |---|---|---|---|---|---|
-| 14 | Blocking sweeps: `max_df`, `top_k`, P4 address char pass | M2 | A2–A5 | todo | v010–v039; keep ceiling F0.5 up at ≤ 40 candidates per S1 |
-| 15 | Learned address token map (cities, script tokens) | M2 | B4 | todo | |
+| 14 | Blocking sweeps: `max_df`, `top_k`, P4 address char pass | M2 | A2–A5 | done | v010 (top_k=35) selected; pair recall 0.9915 at 39 cands/S1 |
+| 15 | Learned address token map (cities, script tokens) | M2 | B4 | done | b2cac13; wired in normalise.py, waiting for M1 to integrate into pipeline.fit |
 | 16 | IDF-weighted name/address similarities for every pair | M3 | C2 | todo | v040–v059 |
 | 17 | Context features: name frequency, pool-side competition | M3 | C5 | todo | Top loss in the v001 dry run: exact-name pool records with empty addresses score ~0.05 because the model cannot tell a rare name from a common one |
 | 18 | LightGBM coordinate search + 3-seed average | M4 | D3 | todo | v060–v079 |
@@ -56,3 +56,4 @@ Last updated: 2026-09-25 18:26 IST (day 1).
 | Version | Owner | Plan | Change | Local F0.5 | Cand. recall | Public F0.5 | Status |
 |---|---|---|---|---|---|---|---|
 | v001 | M1 | INT | Base model: normalise + learned map, multi-pass blocking, 47 features, LightGBM, tuned 1-to-1 rule | 0.9844 | 0.9906 | – | logged |
+| v010 | M2 | A2 | blocking top_k 25->35 (name_addr_word pass) | – | 0.9915 | – | logged |
