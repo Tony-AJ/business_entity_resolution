@@ -34,7 +34,7 @@ NORM_COLUMNS = [C.ENTITY_ID, C.COUNTRY, "non_latin", "name_norm", "name_core", "
                 "region", "addr_last", "addr_tokens", "name_addr"]
 EXTRA_COLUMNS = ["domain_form", "addr_non_latin"]  # added after NORM_COLUMNS (05 §11)
 # Bump when a rule changes the output: the pipeline's normalisation cache key includes it.
-RULES_VERSION = 2
+RULES_VERSION = 3
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
 NON_LATIN_RE = r"[\x{0370}-\x{1DBF}\x{2C00}-\x{2DFF}\x{3000}-\x{D7FF}]"
