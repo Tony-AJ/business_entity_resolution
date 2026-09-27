@@ -1,6 +1,7 @@
 # Challenge data and generated submissions stay local (regenerable, large)
 dataset/
 output/
+6ab10eb3b23ba_student_resource
 # one folder per uploaded version: the exact files sent to the portal
 submissions/
 *.zip
