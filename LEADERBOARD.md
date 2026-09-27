@@ -38,6 +38,23 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
+## Submission 09: 2026-09-27 ~18:30 IST
+- Version: v126_decoy_groups (x3 arm, `submissions/v126/`, also in `output/`)
+- Commit: 3db87ac (results), b84d0fe (script)
+- Change vs previous submission (v123): v110's stage 1 and candidates; stage 2 refitted with
+  the decoy-signature columns: house-number relation (containment, one-digit change, gap),
+  candidate groups of the same S1 (who else holds the pair's number, name, address) and
+  v125's unmatched-token IDF; fit + tune entities, 127 leaves; isotonic calibration and the
+  tight decoder (w 4, miss 0.4) selected by tight@3 on tune
+- Threshold / decision rule: tight-objective expected decode, w 4.0, miss 0.4, max 11, 1-to-1
+- Mock F0.5 0.9828, tight@3 0.9802 (v123 x3: 0.9824 / 0.9787; v110 control 0.9805 / 0.9767);
+  false merges on mock val 1,259 (v123 1,904), missed 56,205 (v123 57,220)
+- Test: 5,686,273 pairs (v123 fp3 5,723,885): France 819,245, India 2,652,987, US 2,214,041;
+  1,629,743 S1 matched
+- Public F0.5: pending
+- Notes: both checkers PASS. If public rises, the decoy features transfer; the x6 arm
+  (`submissions/v126_fp6/`, 5,621,515 pairs, mock false merges 839) tests stricter decoding.
+
 ## Submission 08: 2026-09-27 10:41 IST
 - Version: v123_tight_rule (weight-3 arm, `submissions/v123_fp3/`)
 - Commit: 8b2485f (files), 4408d7e (script)
