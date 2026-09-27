@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from entity_resolution import config as C
+from entity_resolution import hardneg
 from entity_resolution import snapshot as snapshot_module
 from entity_resolution.decision import Grid
 from entity_resolution.evaluate import error_samples, harder_fold
@@ -38,6 +39,7 @@ from entity_resolution.snapshot import (
     build_snapshot,
     error_counts,
     evaluate_params,
+    fit_snapshot,
     load_snapshot,
     snapshot_key,
 )
@@ -400,3 +402,77 @@ def test_dense_tune_pool_equals_pipeline(generated, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="tune_pool"):
         build_snapshot(replace(cfg, tune_pool="everything"), train, val, out_dir=tmp_path)
     assert not any(tmp_path.iterdir())   # refused before anything is written
+
+
+def test_prefit_model_equals_fitting_inside(generated) -> None:
+    """evaluate_params(model=fit_snapshot(...)) gives the metrics of fitting inside it; the
+    given model's params are logged and fit_rows counts every fit row."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    inside = evaluate_params(snap, cfg.model, grid=cfg.grid, harder=False)[0]
+    model, timings = fit_snapshot(snap, cfg.model)
+    given, same, _ = evaluate_params(snap, MatcherParams(num_leaves=3), grid=cfg.grid,
+                                     harder=False, model=model)
+    assert same is model and timings["fit_rows"] == snap.rows("fit") == given["fit_rows"]
+    assert given["model_params"] == inside["model_params"] and not given["weighted"]
+    for key in (*BREAKDOWN, "tune_f_beta", "rule", "errors"):
+        assert given[key] == inside[key], key
+
+
+def test_zero_weight_rows_are_left_out(generated) -> None:
+    """A weight of 0 drops the row: the fit equals fit_matcher on the kept rows alone."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    meta = snap.meta("fit")
+    drop = (meta["label"].to_numpy() == 0) & (np.arange(len(meta)) % 3 == 0)
+
+    def weigh(meta: pd.DataFrame, X: pd.DataFrame) -> np.ndarray:
+        """0 on every third negative, 1.5 on the rest."""
+        return np.where(drop, 0.0, 1.5)
+
+    model, timings = fit_snapshot(snap, cfg.model, weight_fn=weigh)
+    assert timings["fit_rows"] == int((~drop).sum()) == model.fit_info_["rows"]
+    X = snap.features("fit")
+    direct = fit_matcher(cfg.model, X[~drop].reset_index(drop=True),
+                         snap.labels("fit")[~drop], snap.features("stop"), snap.labels("stop"),
+                         np.full(int((~drop).sum()), 1.5))
+    val = snap.features("val")
+    np.testing.assert_array_equal(model.predict_proba(val), direct.predict_proba(val))
+    with pytest.raises(ValueError, match="negative or non-finite"):
+        fit_snapshot(snap, cfg.model, weight_fn=lambda meta, X: np.full(len(X), -1.0))
+
+
+def test_hard_negative_weights_on_a_snapshot(generated) -> None:
+    """hardneg.weight_fn plugs into evaluate_params: counts filled, fit_rows = kept rows."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    hn = hardneg.HardNegConfig(easy_neg_keep=0.0, singleton_weight=2.0,
+                               rule_kinds=("top_cosine_nonmatch",), rule_weight=1.5)
+    counts: dict = {}
+    metrics = evaluate_params(snap, cfg.model, grid=cfg.grid, harder=False,
+                              weight_fn=hardneg.weight_fn(hn, snap.truth("fit"), counts=counts))[0]
+    assert metrics["weighted"] and metrics["fit_rows"] == counts["kept_rows"]
+    assert counts["rows"] == snap.rows("fit") and counts["positives"] == int(
+        snap.labels("fit").sum())
+    assert counts["kept_rows"] == counts["rows"] - counts["easy_dropped"]
+
+
+def test_round2_on_a_snapshot(generated) -> None:
+    """hardneg.round2 mines the fit side in sample, refits, and keeps the refit only for a
+    tune gain of ROUND2_MARGIN; the chosen model evaluates like any other; deterministic."""
+    snap = load_snapshot(generated["path"])
+    cfg = generated["cfg"]
+    hn = hardneg.HardNegConfig(round2=True, fp_weight=3.0, round2_threshold=0.3)
+    model, info = hardneg.round2(snap, cfg.model, hn, grid=cfg.grid)
+    f1, f2 = info["tune_f_beta_round1"], info["tune_f_beta_round2"]
+    assert info["round2_kept"] == (f2 >= f1 + hardneg.ROUND2_MARGIN)
+    counts2 = info["hn_counts_round2"]
+    assert counts2["fps"] >= 0 and counts2["fns"] >= 0 and counts2["rows"] == snap.rows("fit")
+    assert counts2["weight_sum"] == pytest.approx(
+        counts2["rows"] + 2.0 * counts2["fps"] + counts2["fns"])
+    metrics = evaluate_params(snap, grid=cfg.grid, harder=False, model=model)[0]
+    assert metrics["tune_f_beta"] == (f2 if info["round2_kept"] else f1)
+    again, info2 = hardneg.round2(snap, cfg.model, hn, grid=cfg.grid)
+    assert info2["hn_counts_round2"] == counts2
+    val = snap.features("val")
+    np.testing.assert_array_equal(again.predict_proba(val), model.predict_proba(val))
