@@ -1,0 +1,227 @@
+{
+  "version": "v123",
+  "date": "2026-09-27",
+  "group": "E2",
+  "change": "v122 matcher, rule tuned for false merges x3 (v122: x1.45); no retraining",
+  "local_f05": "",
+  "mock_f05": "0.9823",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "4408d7e",
+  "notes": "mock F0.5 0.9823 (v122 0.9831); false merges 1904 vs 2827; est_public(x1.45) 0.9743; judged by the public upload, since v107-v122 left public at 0.966",
+  "owner": "M3",
+  "parent": "v122",
+  "decision": "INVESTIGATE",
+  "metrics": {
+    "hypothesis": "v122 decoded for costlier false merges raises the public score: precision gains reached the leaderboard, recall gains did not",
+    "stage1_stage2": "v122 (no retraining)",
+    "weights": [
+      1.45,
+      2.0,
+      3.0,
+      4.0,
+      6.0
+    ],
+    "upload_weight": 3.0,
+    "arms": {
+      "1.45": {
+        "rule": {
+          "kind": "expected",
+          "gamma": 1.5,
+          "miss": 0.2,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "f_beta": 0.9830557846175545,
+        "f_tight": 0.9818585566502098,
+        "est_public": 0.9746585566502098,
+        "f_beta_singletons": 0.9852425558637291,
+        "f_beta_matched": 0.9829255968716455,
+        "pair_precision": 0.9972019097653615,
+        "pair_recall": 0.9550613653362344,
+        "mock_India": 0.9816976810415807,
+        "mock_US": 0.9845214988998329,
+        "errors_mock": {
+          "false_merge": 2827,
+          "singleton_merge": 326,
+          "missed": 51412,
+          "false_singleton": 1461
+        },
+        "test_pairs": 5796330,
+        "test_pairs_by_country": {
+          "France": 865209,
+          "India": 2669236,
+          "US": 2261885
+        },
+        "test_s1_matched": 1633541,
+        "test_pairs_removed_vs_v122": 0,
+        "test_pairs_added_vs_v122": 0
+      },
+      "2.0": {
+        "rule": {
+          "kind": "expected",
+          "gamma": 2.1,
+          "miss": 0.4,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "f_beta": 0.9828084877670722,
+        "f_tight": 0.9818135204161124,
+        "est_public": 0.9746135204161124,
+        "f_beta_singletons": 0.9880161180595531,
+        "f_beta_matched": 0.9824984554989546,
+        "pair_precision": 0.9976923357602521,
+        "pair_recall": 0.9528234854151084,
+        "mock_India": 0.9814884423805007,
+        "mock_US": 0.9842331282809347,
+        "errors_mock": {
+          "false_merge": 2335,
+          "singleton_merge": 258,
+          "missed": 53956,
+          "false_singleton": 1550
+        },
+        "test_pairs": 5761497,
+        "test_pairs_by_country": {
+          "France": 851953,
+          "India": 2660614,
+          "US": 2248930
+        },
+        "test_s1_matched": 1632568,
+        "test_pairs_removed_vs_v122": 34833,
+        "test_pairs_added_vs_v122": 0
+      },
+      "3.0": {
+        "rule": {
+          "kind": "expected",
+          "gamma": 3.0,
+          "miss": 0.6,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "f_beta": 0.9823459653548922,
+        "f_tight": 0.9815197489033329,
+        "est_public": 0.974319748903333,
+        "f_beta_singletons": 0.9898477157360406,
+        "f_beta_matched": 0.9818993544100106,
+        "pair_precision": 0.9981068402896535,
+        "pair_recall": 0.9499736520024478,
+        "mock_India": 0.9810117730813392,
+        "mock_US": 0.9837858736985915,
+        "errors_mock": {
+          "false_merge": 1904,
+          "singleton_merge": 216,
+          "missed": 57220,
+          "false_singleton": 1639
+        },
+        "test_pairs": 5723885,
+        "test_pairs_by_country": {
+          "France": 838594,
+          "India": 2650701,
+          "US": 2234590
+        },
+        "test_s1_matched": 1631567,
+        "test_pairs_removed_vs_v122": 72445,
+        "test_pairs_added_vs_v122": 0
+      },
+      "4.0": {
+        "rule": {
+          "kind": "threshold",
+          "tau_abs": 0.875,
+          "tau_rel": 0.9,
+          "tau_single": 0.875,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "f_beta": 0.9814263559347662,
+        "f_tight": 0.9807574868714551,
+        "est_public": 0.9735574868714552,
+        "f_beta_singletons": 0.9947668637814643,
+        "f_beta_matched": 0.9806321390504527,
+        "pair_precision": 0.9982493907719034,
+        "pair_recall": 0.9494458421159991,
+        "mock_India": 0.9800275291629538,
+        "mock_US": 0.9829360201563696,
+        "errors_mock": {
+          "false_merge": 1847,
+          "singleton_merge": 112,
+          "missed": 57321,
+          "false_singleton": 2159
+        },
+        "test_pairs": 5715063,
+        "test_pairs_by_country": {
+          "France": 834270,
+          "India": 2648379,
+          "US": 2232414
+        },
+        "test_s1_matched": 1627959,
+        "test_pairs_removed_vs_v122": 81267,
+        "test_pairs_added_vs_v122": 0
+      },
+      "6.0": {
+        "rule": {
+          "kind": "threshold",
+          "tau_abs": 0.905,
+          "tau_rel": 0.95,
+          "tau_single": 0.905,
+          "max_matches": 11,
+          "one_to_one": true
+        },
+        "f_beta": 0.9793817507094289,
+        "f_tight": 0.9789362813832667,
+        "est_public": 0.9717362813832667,
+        "f_beta_singletons": 0.99560416557643,
+        "f_beta_matched": 0.9784159617050094,
+        "pair_precision": 0.9988812652529108,
+        "pair_recall": 0.9410102332222751,
+        "mock_India": 0.9778581699686826,
+        "mock_US": 0.9810260539064919,
+        "errors_mock": {
+          "false_merge": 1147,
+          "singleton_merge": 93,
+          "missed": 67036,
+          "false_singleton": 2369
+        },
+        "test_pairs": 5628939,
+        "test_pairs_by_country": {
+          "France": 809369,
+          "India": 2622537,
+          "US": 2197033
+        },
+        "test_s1_matched": 1626884,
+        "test_pairs_removed_vs_v122": 167391,
+        "test_pairs_added_vs_v122": 0
+      }
+    },
+    "rule": {
+      "kind": "expected",
+      "gamma": 3.0,
+      "miss": 0.6,
+      "max_matches": 11,
+      "one_to_one": true
+    },
+    "f_beta": 0.9823459653548922,
+    "f_tight": 0.9815197489033329,
+    "est_public": 0.974319748903333,
+    "f_beta_singletons": 0.9898477157360406,
+    "f_beta_matched": 0.9818993544100106,
+    "pair_precision": 0.9981068402896535,
+    "pair_recall": 0.9499736520024478,
+    "v122_est_public": 0.9746585566502098,
+    "v122_f_beta": 0.9830557846175545,
+    "reproduces_v122": true,
+    "evidence_test_harder": {
+      "uncertain_cands_per_s1": {
+        "mock_val": 0.1527,
+        "India": 0.1927,
+        "US": 0.3673,
+        "France": 0.8015
+      },
+      "self_expected_f05": {
+        "mock_val": 0.99212,
+        "India": 0.99076,
+        "US": 0.98517,
+        "France": 0.96438
+      }
+    }
+  }
+}
