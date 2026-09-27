@@ -1,0 +1,59 @@
+[22:26:54 +   0.0 min] v122_full_stack: rules v5, blocking 8e915447, 94 stage-1 features, extras ('interactions', 'missing_flags', 'phonetic'); est_public to beat (v110) 0.97313
+[22:28:46 +   1.9 min] mock built:   country  s1_train  pool_train  ...  present_val  present_tune  present_fit
+0   India    883188     4133346  ...       176522        176208       356948
+1      US   1323633     6186873  ...       163562        163325       336162
+
+[2 rows x 12 columns]
+[22:37:33 +  10.7 min] token map 536 tokens; fillers 23; evidence on
+[22:37:34 +  10.7 min] stage 1: 732,845 train entities absent from the mock, 212,941 sampled
+[22:57:19 +  30.4 min] stage-1 set: 14,980,114 pairs of 212,941 entities, 94 features, positive rate 0.0483
+[23:07:46 +  40.9 min] stage-1 fit 628 s: {'rows': 11296101, 'positive_rate': 0.048259913108805445, 'best_iteration': [424, 303], 'tune_logloss': 0.005065661768402728, 'tune_auc': 0.9998743515446986, 'fit_seconds': 627.61, 'entity_share_used': 0.79239, 'bags': 2, 'rows_per_bag': [5645840, 5650261]}
+C:\Users\user\OneDrive\Documents\projects\business_entity_resolution\.venv\Lib\site-packages\xgboost\core.py:774: UserWarning: [23:41:46] WARNING: C:\actions-runner\_work\xgboost\xgboost\src\common\error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+[00:38:00 + 131.1 min] mock stage-1 pass 5400 s; pairs 96,233,103; frame (3107336, 125)
+      pair_recall  entity_recall  ceiling_f_beta  candidates_mean
+tune     0.979021       0.998394        0.993328         4.293011
+val      0.979298       0.998489        0.993474         4.293192
+[00:38:40 + 131.8 min] stage 1 alone: est_public 0.96986, F0.5 0.97866
+[00:49:13 + 142.3 min] stage 2 seed 42: 634 s; best iterations [1141, 1299]
+[01:00:18 + 153.4 min] stage 2 seed 43: 664 s; best iterations [1240, 1348]
+[01:10:02 + 163.1 min] stage 2 seed 44: 584 s; best iterations [1126, 1019]
+[01:22:17 + 175.4 min] two-stage: est_public 0.97466 (v110 0.97313, delta +0.00153); rule ExpectedRule(gamma=1.5, miss=0.2, max_matches=11, one_to_one=True)
+         f_beta   f_tight  ...  pair_precision  pair_recall
+all    0.983056  0.981859  ...        0.997202     0.955061
+India  0.981698  0.980431  ...        0.997098     0.950775
+US     0.984521  0.983400  ...        0.997313     0.959695
+
+[3 rows x 7 columns]
+[01:27:05 + 180.2 min] seed 42 alone: est_public 0.97467
+[01:27:19 + 180.4 min] errors {'false_merge': 2827, 'missed': 51412, 'false_singleton': 1461, 'singleton_merge': 326}; extras' gain share 0.00358; top
+feature
+pool_gap              0.731866
+p1                    0.153635
+pool_n_likely         0.015458
+s1_gap                0.010064
+pool_best_other       0.007714
+pool_p1_sum           0.006780
+pool_rank             0.005680
+s1_p1_sum             0.003961
+sim_name_addr_word    0.002209
+anc_p1                0.001882
+s1_best_other         0.001748
+fq_first_pool_l       0.001720
+dtype: float64
+[01:27:19 + 180.4 min] logged {'version': 'v122', 'date': '2026-09-27', 'group': 'INT', 'change': 'v110 + rules v5, learned fillers (nofill pass + group), token evidence, 2 stage-1 bags, stage-2 extras (interactions, missing_flags, phonetic), stage 2 on fit + tune, 127 leaves, 3 seeds', 'local_f05': '', 'mock_f05': '0.9831', 'cand_recall': '0.9793', 'public_f05': '', 'commit': 'cbf0e5e', 'notes': 'est_public 0.9747 (v110 0.9731, +0.0015); stage 1 alone 0.9699; one seed 0.9747; cands 4.3/S1; blocking 8e915447', 'owner': 'M3', 'parent': 'v110', 'decision': 'KEEP'}
+[03:42:58 + 316.1 min] test files 8139 s in C:\Users\user\OneDrive\Documents\projects\business_entity_resolution\submissions\v122
+[03:43:03 + 316.2 min] test by country:
+            s1  cands_per_s1  matched_share  matches_per_s1
+France  259452      6.170463       0.950403        3.334756
+India   809986      4.428786       0.940771        3.295410
+US      663106      4.573678       0.942453        3.411046
+[03:43:49 + 316.9 min] checker (submissions/v122): PASS
+[03:44:31 + 317.6 min] copied to C:\Users\user\OneDrive\Documents\projects\business_entity_resolution\output; checker: PASS
+[03:44:31 + 317.6 min] done: total 19058 s, peak RSS 4.32 GB

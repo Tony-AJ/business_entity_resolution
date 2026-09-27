@@ -1,0 +1,17 @@
+C:\Users\user\OneDrive\Documents\projects\business_entity_resolution\.venv\Lib\site-packages\xgboost\core.py:774: UserWarning: [03:50:21] WARNING: C:\actions-runner\_work\xgboost\xgboost\src\common\error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+A: v110 stage 2 (fit, 63 leaves, no extras)    est_public 0.97424  F0.5 0.98268  718 s  ExpectedRule(gamma=1.5, miss=0.1, max_matches=11, one_to_one=True)
+B: A on fit + tune                             est_public 0.97457  F0.5 0.98291  926 s  ExpectedRule(gamma=1.5, miss=0.0, max_matches=11, one_to_one=True)
+C: B with 127 leaves                           est_public 0.97452  F0.5 0.98290  773 s  ExpectedRule(gamma=1.5, miss=0.05, max_matches=11, one_to_one=True)
+D: C + extras (v122, one seed)                 est_public 0.97467  F0.5 0.98305  894 s  ExpectedRule(gamma=1.5, miss=0.1, max_matches=11, one_to_one=True)
+                                            est_public    f_beta pair_precision pair_recall
+A: v110 stage 2 (fit, 63 leaves, no extras)   0.974244  0.982677       0.997075    0.954212
+B: A on fit + tune                             0.97457   0.98291       0.997281    0.954391
+C: B with 127 leaves                          0.974521  0.982903       0.997201    0.954609
+D: C + extras (v122, one seed)                0.974665  0.983047       0.997233    0.954947
