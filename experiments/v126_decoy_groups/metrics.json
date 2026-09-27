@@ -1,0 +1,213 @@
+{
+  "version": "v126",
+  "date": "2026-09-27",
+  "group": "C4",
+  "change": "v110 caches; stage 2 + house-number relation, candidate-group and unmatched-IDF features; isotonic + tight decode (x3)",
+  "local_f05": "",
+  "mock_f05": "0.9828",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "d4f0fc8",
+  "notes": "val tight@3 0.9802 (v110 control 0.9767); F0.5 0.9828; false merges 1259 (control 1928); x6 arm in submissions/v126_fp6",
+  "owner": "M1",
+  "parent": "v110",
+  "decision": "INVESTIGATE",
+  "metrics": {
+    "hypothesis": "house-number relation and candidate-group features separate the generator's nearby-number decoys that the test holds more of",
+    "stage1": "v110 (cached mock + test stage-1 outputs, blocking db1f33c4)",
+    "new_columns": [
+      "hn_eq",
+      "hn_substr",
+      "hn_onedigit",
+      "hn_near",
+      "hn_absdiff",
+      "hn_missing",
+      "grp_num_n",
+      "grp_num_p1max",
+      "grp_num_xsrc",
+      "grp_s1num_n",
+      "grp_name_n",
+      "grp_name_p1max",
+      "grp_addr_n",
+      "uidf_max_l",
+      "uidf_max_r",
+      "uidf_sum_l",
+      "uidf_sum_r",
+      "uidf_share",
+      "unum_conflict"
+    ],
+    "stage2": {
+      "floor": 0.01,
+      "max_cands": 16,
+      "folds": 2,
+      "seed": 6161,
+      "n_stop_s1": 50000,
+      "anchors": true,
+      "cohesion": false,
+      "rivals": true,
+      "train_roles": [
+        "fit",
+        "tune"
+      ],
+      "model": {
+        "backend": "xgb",
+        "num_leaves": 127,
+        "learning_rate": 0.1,
+        "n_estimators": 3000,
+        "early_stopping": 60,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 1,
+        "min_data_in_leaf": 200,
+        "lambda_l2": 1.0,
+        "max_bin": 255,
+        "scale_pos_weight": 1.0,
+        "seed": 42,
+        "num_threads": 12,
+        "device": "cuda",
+        "min_child_weight": 1.0
+      },
+      "extra_groups": [],
+      "drop_columns": []
+    },
+    "stage2_fit_info": {
+      "fold0": {
+        "rows": 2275182,
+        "positive_rate": 0.7696052447672318,
+        "best_iteration": 598,
+        "tune_logloss": 0.043240265595271075,
+        "tune_auc": 0.9978800088258298,
+        "fit_seconds": 118.62
+      },
+      "fold1": {
+        "rows": 2272479,
+        "positive_rate": 0.7699692714432125,
+        "best_iteration": 528,
+        "tune_logloss": 0.0447615869196099,
+        "tune_auc": 0.9976701203008397,
+        "fit_seconds": 103.81
+      },
+      "rows": 4547661,
+      "positive_rate": 0.7697871499216851
+    },
+    "new_gain_share": 0.02484714893631529,
+    "top_importance": {
+      "pool_gap": 0.6702501193831178,
+      "p1": 0.1642519493150926,
+      "s1_gap": 0.06599615109994084,
+      "s1_p1_sum": 0.006860731078627519,
+      "grp_num_p1max": 0.00512482040810288,
+      "pool_p1_sum": 0.005116789934697437,
+      "hn_absdiff": 0.004819084259695194,
+      "pool_best_other": 0.004446651359484576,
+      "uidf_max_r": 0.0042561037789457384,
+      "s1_n_likely": 0.0040939981372539345,
+      "pool_rank": 0.0031017969807204514,
+      "uidf_sum_r": 0.0025219047751697454,
+      "sim_name_addr_word": 0.0017946414187407775,
+      "num_first_eq": 0.001639441923966699,
+      "riv_addr_gap": 0.0016090607450603097,
+      "grp_num_n": 0.001530544019514133,
+      "anc_p1": 0.0014314224400633216,
+      "riv_name_ts": 0.0013845753899934074,
+      "nm_token_set": 0.001382137754334239,
+      "s1_best_other": 0.0013270001938516982,
+      "nm_token_sort": 0.0012768098867115803,
+      "fq_first_pool_l": 0.001255544013563053,
+      "nm_ratio": 0.0012040297919501692,
+      "idf_name_top": 0.0011916201274835866,
+      "nm_jw": 0.0011871641863452308
+    },
+    "arms": {
+      "x3": {
+        "w": 4.0,
+        "miss": 0.4,
+        "f_beta": 0.9828066464327964,
+        "pair_precision": 0.9987349050152043,
+        "pair_recall": 0.950786190249541,
+        "tight1.45": 0.9822291770572157,
+        "tight3": 0.9802401158746596,
+        "tight6": 0.9763903200374549,
+        "errors": {
+          "false_merge": 1259,
+          "singleton_merge": 158,
+          "missed": 56205,
+          "false_singleton": 1698
+        }
+      },
+      "x6": {
+        "w": 8.0,
+        "miss": 0.4,
+        "f_beta": 0.9812573274971742,
+        "pair_precision": 0.9991575324421939,
+        "pair_recall": 0.9445094172842864,
+        "tight1.45": 0.9808814541511585,
+        "tight3": 0.9795867792926599,
+        "tight6": 0.9770809569858884,
+        "errors": {
+          "false_merge": 839,
+          "singleton_merge": 98,
+          "missed": 63337,
+          "false_singleton": 1951
+        }
+      }
+    },
+    "arms_v110_control": {
+      "x3": {
+        "w": 4.0,
+        "miss": 0.4,
+        "f_beta": 0.9804531416973304,
+        "pair_precision": 0.9980630201253646,
+        "pair_recall": 0.9442076902155436,
+        "tight1.45": 0.9796007680966745,
+        "tight3": 0.9766648145833043,
+        "tight6": 0.9709823239122649,
+        "errors": {
+          "false_merge": 1928,
+          "singleton_merge": 228,
+          "missed": 63816,
+          "false_singleton": 1827
+        }
+      },
+      "x6": {
+        "w": 8.0,
+        "miss": 0.4,
+        "f_beta": 0.9782734178091949,
+        "pair_precision": 0.9987165137065451,
+        "pair_recall": 0.9358222275107092,
+        "tight1.45": 0.9777282339627419,
+        "tight3": 0.9758503784916265,
+        "tight6": 0.9722158195152737,
+        "errors": {
+          "false_merge": 1275,
+          "singleton_merge": 140,
+          "missed": 73291,
+          "false_singleton": 2218
+        }
+      }
+    },
+    "test": {
+      "x3": {
+        "pairs": 5686273,
+        "by_country": {
+          "France": 819245,
+          "India": 2652987,
+          "US": 2214041
+        },
+        "s1_matched": 1629743,
+        "dir": "/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v126"
+      },
+      "x6": {
+        "pairs": 5621515,
+        "by_country": {
+          "France": 806166,
+          "India": 2628213,
+          "US": 2187136
+        },
+        "s1_matched": 1627768,
+        "dir": "/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v126_fp6"
+      }
+    },
+    "peak_rss_gb": 5.95
+  }
+}
