@@ -15,13 +15,23 @@ Blueprint: docs/plan/08_MODEL_SELECTION.md. ``Matcher`` takes the float32 featur
 The fitted column order is a contract: ``predict_proba`` refuses a frame whose columns
 are missing, unexpected or reordered, because two swapped similarity columns would
 otherwise score garbage without any error.
+
+``SeedEnsemble`` averages matchers that differ only in their seed (08 §9) behind the same
+interface, and ``fit_matcher`` fits one ``Matcher`` or such an ensemble from one call.
+``reliability`` measures calibration (08 §5) of any probabilities against 0/1 labels:
+ECE over equal-count bins, Brier score and the reliability table, because the decision
+layer's thresholds assume the probabilities mean what they say.
 """
 from __future__ import annotations
 
 import json
+import math
+import os
 import time
 import warnings
 from collections import Counter
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
@@ -36,6 +46,12 @@ from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+try:  # scikit-learn's compiled tree walker (BSD-3, pinned): a private API, so optional
+    from sklearn.ensemble._hist_gradient_boosting._predictor import _predict_from_binned_data
+    from sklearn.ensemble._hist_gradient_boosting.common import PREDICTOR_RECORD_DTYPE
+except ImportError:  # pragma: no cover - another scikit-learn: LightGBM predicts alone
+    _predict_from_binned_data = PREDICTOR_RECORD_DTYPE = None
+
 BACKENDS = ("lgbm", "xgb", "logreg", "heuristic")
 HEURISTIC_SIMS = ("sim_name_char", "sim_name_addr_word", "sim_addr_char")
 EXACT_FLAG = "pass_exact"
@@ -44,6 +60,16 @@ FEATURES_FILE = "feature_names.json"
 MODEL_FILES = {"lgbm": "model.txt", "xgb": "model.ubj",
                "logreg": "model.joblib"}  # heuristic: JSON files only
 TUNE = "tune"  # name of the early-stopping set in LightGBM's evaluation log
+CALIBRATION_BINS = 20  # equal-count bins of the reliability table (08 §5)
+# prediction only: a row's value does not depend on the thread count, so every logical CPU
+# is used; training keeps MatcherParams.num_threads, which does change LightGBM's trees
+PREDICT_THREADS = os.cpu_count() or 1
+TREE_WALK = True          # lgbm: predict through TreeWalker when the model allows it
+WALK_BLOCK = 8192         # rows per TreeWalker task: their bins stay in the core's cache
+GUARD_ROWS = 64           # rows of every TreeWalker chunk re-predicted by LightGBM itself
+MISSING_BIN = 255         # TreeWalker's bin for NaN (thresholds use ranks 0..254)
+ZERO_THRESHOLD = float(np.float32(1e-35))  # LightGBM's kZeroThreshold: |x| <= it reads as 0
+EXP_LIMIT = 709.0         # math.exp raises past ~709.78 where C's exp returns inf
 
 
 @dataclass
@@ -150,6 +176,159 @@ def heuristic_proba(X: pd.DataFrame) -> np.ndarray:
     return prob
 
 
+def _libm_exp(values: np.ndarray) -> np.ndarray:
+    """exp of each value through ``math.exp`` (the C library's exp, which LightGBM's
+    ``std::exp`` calls too; numpy may use its own SIMD exp); inf past the float64 range."""
+    big = values > EXP_LIMIT
+    out = np.fromiter(map(math.exp, np.where(big, 0.0, values).tolist()), dtype=np.float64,
+                      count=len(values))
+    for i in np.flatnonzero(big):   # raw scores beyond +-709: never seen, kept exact anyway
+        try:
+            out[i] = math.exp(values[i])
+        except OverflowError:
+            out[i] = math.inf
+    return out
+
+
+class TreeWalker:
+    """A LightGBM binary model predicted tree by tree over row blocks, bit-identical to
+    ``Booster.predict`` (about 3.5x faster on 2000 trees here).
+
+    Why: ``Booster.predict`` walks every tree for one row before the next row, and the nodes
+    of 2000+ trees do not fit a core's cache, so most node reads miss. Here each block of
+    ``WALK_BLOCK`` rows goes through one tree at a time (scikit-learn's compiled walker),
+    blocks spread over ``PREDICT_THREADS`` threads.
+
+    Exact by construction: a split sends x left iff ``x <= threshold``, and a feature's
+    thresholds are at most 254 distinct floats (LightGBM bin edges), so x is replaced by its
+    rank ``#{thresholds < x}`` (uint8) and the split by ``rank <= k`` with k the threshold's
+    own rank: the same decision for every x. NaN gets ``MISSING_BIN`` and each split's NaN
+    direction is LightGBM's (``default_left`` for missing type NaN or Zero, ``0 <= t`` for
+    None, which reads NaN as 0); |x| <= ``ZERO_THRESHOLD`` reads as 0, as LightGBM's dense
+    row reader drops it. Leaf values are summed from 0.0 in tree order in float64 (as
+    ``GBDT::PredictRaw``) and turned into ``1 / (1 + exp(-sigmoid * raw))`` with libm's exp
+    (``BinaryLogloss::ConvertOutput``). ``from_booster`` returns None for what it cannot
+    express (categorical or linear trees, other objectives, > 254 thresholds on a feature, a
+    Zero-missing split whose zero side differs from its default side); ``Matcher`` also
+    re-predicts ``GUARD_ROWS`` rows of every chunk with LightGBM and falls back on a mismatch.
+    """
+
+    def __init__(self, trees: list[np.ndarray], edges: list[np.ndarray], sigmoid: float) -> None:
+        """Node tables (``PREDICTOR_RECORD_DTYPE``), per-feature sorted thresholds, sigmoid."""
+        self.trees, self.edges, self.sigmoid = trees, edges, sigmoid
+        self.used = [j for j, e in enumerate(edges) if len(e)]   # features some split reads
+        self._no_bitsets = np.zeros((0, 8), dtype=np.uint32)      # no categorical splits
+
+    @classmethod
+    def from_booster(cls, booster: lgb.Booster, num_iteration: int) -> TreeWalker | None:
+        """The walker of ``booster``'s first ``num_iteration`` trees, or None if unsupported.
+
+        Reads the text model (``model_to_string``), whose floats round-trip exactly (it is
+        what ``Matcher.save`` writes and ``load`` predicts bit-identically from).
+        """
+        if _predict_from_binned_data is None:
+            return None
+        blocks = booster.model_to_string(num_iteration=num_iteration).split("\nTree=")
+        head = dict(line.split("=", 1) for line in blocks[0].splitlines() if "=" in line)
+        objective = head.get("objective", "").split()
+        if not objective or objective[0] != "binary":
+            return None
+        sigmoid = next((float(t.split(":", 1)[1]) for t in objective if t.startswith("sigmoid:")),
+                       1.0)
+        n_features = int(head["max_feature_idx"]) + 1
+        parsed = []
+        for block in blocks[1:]:
+            body = block.split("\nend of trees", 1)[0].splitlines()[1:]
+            t = dict(line.split("=", 1) for line in body if "=" in line)
+            if int(t.get("num_cat", 0)) or int(t.get("is_linear", 0)):
+                return None
+            parsed.append(t)
+        splits = [t for t in parsed if int(t["num_leaves"]) > 1]
+        feats = [np.array(t["split_feature"].split(), dtype=np.int64) for t in splits]
+        thrs = [np.array(t["threshold"].split(), dtype=np.float64) for t in splits]
+        all_f = np.concatenate(feats) if feats else np.zeros(0, np.int64)
+        all_t = np.concatenate(thrs) if thrs else np.zeros(0)
+        edges = [np.unique(all_t[all_f == j]) for j in range(n_features)]
+        if any(len(e) >= MISSING_BIN for e in edges):
+            return None
+        all_rank = np.zeros(len(all_f), dtype=np.int64)   # each threshold's rank in its edges
+        for j, e in enumerate(edges):
+            at = all_f == j
+            all_rank[at] = np.searchsorted(e, all_t[at])
+        ranks = np.split(all_rank, np.cumsum([len(f) for f in feats])[:-1]) if feats else []
+        trees, s = [], 0
+        for t in parsed:
+            leaf_value = np.array(t["leaf_value"].split(), dtype=np.float64)
+            n_leaves = len(leaf_value)
+            nodes = np.zeros(2 * n_leaves - 1, dtype=PREDICTOR_RECORD_DTYPE)
+            nodes["is_leaf"][n_leaves - 1:] = 1   # internal nodes first, then the leaves
+            nodes["value"][n_leaves - 1:] = leaf_value
+            if n_leaves > 1:
+                f, thr = feats[s], thrs[s]
+                s += 1
+                dtype = np.array(t["decision_type"].split(), dtype=np.int64)
+                if (dtype & 1).any():   # kCategoricalMask
+                    return None
+                default_left, missing = (dtype & 2) > 0, (dtype >> 2) & 3  # 0 None 1 Zero 2 NaN
+                zero_left = thr >= 0.0
+                if ((missing == 1) & (default_left != zero_left)).any():
+                    return None
+                rank = ranks[s - 1]
+                child = [np.array(t[k].split(), dtype=np.int64) for k in ("left_child",
+                                                                        "right_child")]
+                left, right = (np.where(c >= 0, c, n_leaves - 1 + ~c) for c in child)
+                inner = slice(0, n_leaves - 1)
+                nodes["feature_idx"][inner], nodes["num_threshold"][inner] = f, thr
+                nodes["bin_threshold"][inner] = rank
+                nodes["missing_go_to_left"][inner] = np.where(missing > 0, default_left,
+                                                              zero_left)
+                nodes["left"][inner], nodes["right"][inner] = left, right
+            trees.append(nodes)
+        return cls(trees, edges, sigmoid)
+
+    def _bins(self, X: np.ndarray) -> np.ndarray:
+        """uint8 threshold ranks of a float32 block (C order); unused features stay 0."""
+        B = np.zeros(X.shape, dtype=np.uint8)
+        for j in self.used:
+            v = X[:, j].astype(np.float64)
+            v[np.abs(v) <= ZERO_THRESHOLD] = 0.0
+            b = np.searchsorted(self.edges[j], v)   # NaN sorts last; overwritten below
+            b[np.isnan(v)] = MISSING_BIN
+            B[:, j] = b
+        return B
+
+    def _block(self, X: np.ndarray) -> np.ndarray:
+        """Probabilities of one block: every tree over all its rows, summed in tree order."""
+        B = self._bins(X)
+        raw = np.zeros(len(B), dtype=np.float64)
+        leaf = np.empty(len(B), dtype=np.float64)
+        for nodes in self.trees:
+            _predict_from_binned_data(nodes, B, self._no_bitsets, MISSING_BIN, 1, leaf)
+            raw += leaf
+        return 1.0 / (1.0 + _libm_exp(-self.sigmoid * raw))
+
+    def predict(self, X: np.ndarray, n_threads: int = PREDICT_THREADS) -> np.ndarray:
+        """float64 probabilities of a float32 matrix, equal to ``Booster.predict``'s."""
+        out = np.empty(len(X), dtype=np.float64)
+        blocks = max(1, -(-len(X) // WALK_BLOCK))
+        if n_threads > 1:   # whole rounds: no thread idles through the last round of a call
+            blocks = -(-blocks // n_threads) * n_threads
+        size = max(1, -(-len(X) // blocks))
+        starts = range(0, len(X), size)
+
+        def task(a: int) -> None:
+            """One block into its slice of ``out`` (blocks never overlap)."""
+            out[a:a + size] = self._block(X[a:a + size])
+
+        if n_threads <= 1 or len(starts) <= 1:
+            for a in starts:
+                task(a)
+        else:   # the walker releases the GIL; blocks go to whichever thread is free
+            with ThreadPoolExecutor(min(n_threads, len(starts))) as pool:
+                list(pool.map(task, starts))
+        return out
+
+
 class Matcher:
     """Pair classifier with a fixed column contract (02 §5, 08 §1).
 
@@ -171,6 +350,8 @@ class Matcher:
         self.best_iteration_: int = 0
         self.model_: lgb.Booster | xgb.Booster | Pipeline | None = None
         self.fit_info_: dict[str, float | int | None] = {}
+        self._walker: TreeWalker | None = None   # lgbm fast path, see _tree_walker
+        self._walker_of: tuple | None = None     # (model_, best_iteration_) it was built for
 
     def fit(
         self,
@@ -188,10 +369,13 @@ class Matcher:
         (tests only). ``weight`` (one value >= 0 per row of ``X``; None = unweighted) goes
         to the LightGBM Dataset or the logistic regression, for hard-negative experiments.
         The heuristic learns nothing: it only checks and records the columns, so an empty
-        ``X`` is fine.
+        ``X`` is fine. ``lgbm`` bins ``X`` before boosting and drops its own reference, so a
+        caller that passes its only reference (``fit_matcher`` with a loader) frees the raw
+        matrix for the whole boosting run.
         """
         t0 = time.perf_counter()
         backend = self.params.backend
+        n_rows = len(X)
         names = _feature_columns(X, "X")
         labels = _aligned_vector(y, X, "y", labels=True)
         w = None if weight is None else _aligned_vector(weight, X, "weight", labels=False)
@@ -212,7 +396,9 @@ class Matcher:
         elif len(X) == 0:
             raise ValueError(f"cannot fit the {backend} backend on an empty X")
         elif backend == "lgbm":
-            model, best = self._fit_lgbm(X, labels, w, X_val, val_labels)
+            train = self._lgbm_train_set(X, labels, w)
+            del X   # the Dataset holds the binned rows; the float matrix is not needed again
+            model, best = self._fit_lgbm(train, X_val, val_labels)
         elif backend == "xgb":
             model, best = self._fit_xgb(X, labels, w, X_val, val_labels)
         else:
@@ -225,7 +411,7 @@ class Matcher:
         if X_val is not None and len(X_val):
             tune_logloss, tune_auc = _tune_scores(val_labels, self.predict_proba(X_val))
         self.fit_info_ = {
-            "rows": len(X),
+            "rows": n_rows,
             "positive_rate": float(labels.mean()) if len(labels) else None,
             "best_iteration": best,
             "tune_logloss": tune_logloss,
@@ -234,18 +420,26 @@ class Matcher:
         }
         return self
 
+    def _lgbm_train_set(self, X: pd.DataFrame, y: np.ndarray,
+                        weight: np.ndarray | None) -> lgb.Dataset:
+        """The binned LightGBM training set, constructed now rather than inside ``lgb.train``.
+
+        It is built with the training parameters, which are all ``lgb.train`` would pass to
+        the lazy construction (it adds only boosting settings), so the bins and the model are
+        the same; ``free_raw_data`` then drops the Dataset's view of the float matrix.
+        """
+        return lgb.Dataset(_to_float32(X), y, weight=weight, feature_name=list(X.columns),
+                           params=lgbm_params(self.params), free_raw_data=True).construct()
+
     def _fit_lgbm(
         self,
-        X: pd.DataFrame,
-        y: np.ndarray,
-        weight: np.ndarray | None,
+        train: lgb.Dataset,
         X_val: pd.DataFrame | None,
         y_val: np.ndarray | None,
     ) -> tuple[lgb.Booster, int]:
-        """Train the booster; return it with the number of rounds to predict with."""
+        """Train the booster on the constructed ``train`` set; return it with the number of
+        rounds to predict with."""
         p = self.params
-        train = lgb.Dataset(_to_float32(X), y, weight=weight, feature_name=list(X.columns),
-                            free_raw_data=True)
         valid_sets, callbacks = [], []
         if X_val is None:
             warnings.warn("no tune set (X_val): training all n_estimators rounds without "
@@ -328,8 +522,13 @@ class Matcher:
             return heuristic_proba(chunk)
         data = _to_float32(chunk)  # LightGBM reads float32 without a float64 copy
         if backend == "lgbm":
+            walker = self._tree_walker()
+            if walker is not None:
+                prob = walker.predict(data)
+                if self._guard(data, prob):
+                    return prob
             return self.model_.predict(data, num_iteration=self.best_iteration_,
-                                       num_threads=self.params.num_threads)
+                                       num_threads=PREDICT_THREADS)
         if backend == "xgb":
             return self.model_.inplace_predict(
                 data, iteration_range=(0, self.best_iteration_)).astype(np.float32)
@@ -422,6 +621,33 @@ class Matcher:
         matcher.best_iteration_, matcher.fit_info_ = best_iteration, fit_info
         return matcher
 
+    def _tree_walker(self) -> TreeWalker | None:
+        """The ``TreeWalker`` of the fitted booster (built once), or None when ``TREE_WALK``
+        is off, the model is unsupported or a guard check failed for this model."""
+        if not TREE_WALK:
+            return None
+        of = self._walker_of
+        if of is None or of[0] is not self.model_ or of[1] != self.best_iteration_:
+            self._walker = TreeWalker.from_booster(self.model_, self.best_iteration_)
+            self._walker_of = (self.model_, self.best_iteration_)
+        return self._walker
+
+    def _guard(self, data: np.ndarray, prob: np.ndarray) -> bool:
+        """True when LightGBM itself gives exactly ``prob`` on ``GUARD_ROWS`` spread rows.
+
+        On a mismatch the walker is dropped for this model, with a warning, and the caller
+        predicts with LightGBM: the fast path may be off, never wrong.
+        """
+        rows = np.unique(np.linspace(0, len(data) - 1, min(len(data), GUARD_ROWS)).astype(int))
+        ref = self.model_.predict(data[rows], num_iteration=self.best_iteration_,
+                                  num_threads=PREDICT_THREADS)
+        if np.array_equal(ref, prob[rows]):
+            return True
+        warnings.warn("TreeWalker disagrees with LightGBM on this model: predicting with "
+                      "LightGBM from now on", RuntimeWarning, stacklevel=4)
+        self._walker = None
+        return False
+
     def _fitted_names(self) -> list[str]:
         """The fitted column order; raises when neither ``fit`` nor ``load`` ran."""
         if self.feature_names_ is None:
@@ -429,6 +655,118 @@ class Matcher:
         return self.feature_names_
 
 
+class SeedEnsemble:
+    """Mean probability of matchers that differ only in their seed (08 §9, the v068 idea).
+
+    Duck-types the parts of ``Matcher`` the pipeline and snapshot.py use: ``predict_proba``,
+    ``importance``, ``feature_names_``, ``best_iteration_``, ``fit_info_``, ``params``,
+    ``save``. The mean is accumulated in float64 in seed order, so it is deterministic.
+    """
+
+    def __init__(self, matchers: Sequence[Matcher]) -> None:
+        """Keep the fitted matchers; they must share one column order."""
+        if not matchers:
+            raise ValueError("an ensemble needs at least one matcher")
+        names = matchers[0].feature_names_
+        if any(m.feature_names_ != names for m in matchers):
+            raise ValueError("ensemble members were fitted on different columns")
+        self.matchers = list(matchers)
+        self.feature_names_ = names
+        self.params = matchers[0].params
+        self.best_iteration_ = int(round(np.mean([m.best_iteration_ for m in matchers])))
+        self.fit_info_: dict = {}
+
+    def predict_proba(self, X: pd.DataFrame, chunk_rows: int = 2_000_000) -> np.ndarray:
+        """Mean of the members' probabilities, float32."""
+        acc = np.zeros(len(X), dtype=np.float64)
+        for m in self.matchers:
+            acc += m.predict_proba(X, chunk_rows)
+        return (acc / len(self.matchers)).astype(np.float32)
+
+    def importance(self) -> pd.Series:
+        """Mean of the members' importance shares, largest first (ties in column order)."""
+        share = pd.concat([m.importance().reindex(self.feature_names_) for m in self.matchers],
+                          axis=1).mean(axis=1)
+        return share.rename("importance").sort_values(ascending=False, kind="stable")
+
+    def save(self, dir: Path) -> Path:
+        """Each member under ``seed_<seed>/`` plus ``ensemble.json`` listing them."""
+        dir = Path(dir)
+        dir.mkdir(parents=True, exist_ok=True)
+        seeds = [m.params.seed for m in self.matchers]
+        for m in self.matchers:
+            m.save(dir / f"seed_{m.params.seed}")
+        _write_json(dir / "ensemble.json", {"seeds": seeds, "fit_info": self.fit_info_})
+        return dir
+
+    @classmethod
+    def load(cls, dir: Path) -> SeedEnsemble:
+        """Rebuild an ensemble written by ``save``."""
+        dir = Path(dir)
+        meta = json.loads((dir / "ensemble.json").read_text(encoding="utf-8"))
+        ens = cls([Matcher.load(dir / f"seed_{s}") for s in meta["seeds"]])
+        ens.fit_info_ = meta["fit_info"]
+        return ens
+
+
+def fit_matcher(params: MatcherParams, X: pd.DataFrame | Callable[[], pd.DataFrame],
+                y: np.ndarray, X_stop: pd.DataFrame, y_stop: np.ndarray,
+                weight: np.ndarray | None = None,
+                seeds: Sequence[int] | None = None) -> Matcher | SeedEnsemble:
+    """``Matcher(params).fit`` exactly as ``pipeline.fit`` calls it, or one fit per seed.
+
+    With ``seeds`` every member is ``params`` with that ``seed``; the ensemble's tune logloss
+    and AUC are recomputed on its mean probabilities over the stop set. ``X`` may be a
+    loader (no argument, returns the frame) called once per fit: its frame is then
+    referenced by ``Matcher.fit`` alone, so ``lgbm`` frees it once binned (the snapshot's
+    evaluation keeps ~2 GB of fit rows out of memory during boosting this way).
+    """
+    load = X if callable(X) else (lambda: X)
+    if not seeds:
+        return Matcher(params).fit(load(), y, X_stop, y_stop, weight=weight)
+    t0 = time.perf_counter()
+    members = [Matcher(replace(params, seed=int(s))).fit(load(), y, X_stop, y_stop,
+                                                          weight=weight)
+               for s in seeds]
+    ens = SeedEnsemble(members)
+    logloss = auc = None
+    if len(X_stop):
+        logloss, auc = _tune_scores(np.asarray(y_stop, dtype=np.int8), ens.predict_proba(X_stop))
+    ens.fit_info_ = {"rows": len(y), "positive_rate": members[0].fit_info_["positive_rate"],
+                     "best_iteration": ens.best_iteration_,
+                     "best_iterations": [m.best_iteration_ for m in members],
+                     "tune_logloss": logloss, "tune_auc": auc,
+                     "fit_seconds": round(time.perf_counter() - t0, 2)}
+    return ens
+
+
+def reliability(prob: np.ndarray, label: np.ndarray,
+                bins: int = CALIBRATION_BINS) -> tuple[float, float, pd.DataFrame]:
+    """``(ece, brier, table)`` of probabilities against 0/1 labels (08 §5).
+
+    Equal-count bins: pairs sorted by ``prob`` (stable) and cut into ``bins`` runs of equal
+    size, so every bin has the same weight whatever the skew of the scores. ECE is the
+    bin-size-weighted mean |mean prob - positive rate|; Brier the mean squared error. NaN
+    and an empty table without rows.
+    """
+    p = np.asarray(prob, dtype=np.float64)
+    y = np.asarray(label, dtype=np.float64)
+    cols = ["bin", "n", "p_mean", "y_rate", "gap", "p_lo", "p_hi"]
+    if len(p) == 0:
+        return float("nan"), float("nan"), pd.DataFrame(columns=cols)
+    order = np.argsort(p, kind="stable")
+    ps, ys = p[order], y[order]
+    edges = np.linspace(0, len(p), bins + 1).round().astype(np.int64)
+    rows = []
+    for b in range(bins):   # 20 bins: a loop over bins, never over pairs
+        lo, hi = edges[b], edges[b + 1]
+        if hi > lo:
+            pm, yr = ps[lo:hi].mean(), ys[lo:hi].mean()
+            rows.append((b, int(hi - lo), pm, yr, pm - yr, ps[lo], ps[hi - 1]))
+    table = pd.DataFrame(rows, columns=cols)
+    ece = float((table["n"] * table["gap"].abs()).sum() / len(p))
+    brier = float(np.mean((p - y) ** 2))
+    return ece, brier, table
 
 
 def _feature_columns(X: pd.DataFrame, what: str) -> list[str]:

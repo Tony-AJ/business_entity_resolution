@@ -5,14 +5,26 @@ two threads, so each takes milliseconds.
 """
 import json
 import warnings
+import weakref
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from entity_resolution.model import BACKENDS, HEURISTIC_SIMS, Matcher, MatcherParams
+from entity_resolution import model as model_module
+from entity_resolution.model import (
+    BACKENDS,
+    CALIBRATION_BINS,
+    HEURISTIC_SIMS,
+    Matcher,
+    MatcherParams,
+    SeedEnsemble,
+    fit_matcher,
+    reliability,
+)
 
 FAST = {"n_estimators": 60, "num_threads": 2}
+FAST_SEED = MatcherParams().seed  # the seed every FAST matcher uses unless told otherwise
 SAVED_FILES = {"lgbm": {"model.txt"}, "xgb": {"model.ubj"}, "logreg": {"model.joblib"},
                "heuristic": set()}
 
@@ -252,6 +264,104 @@ def test_unfitted_and_unknown_backend_raise(data):
         MatcherParams(backend="xgboost")
 
 
+def test_reliability_separates_calibrated_from_overconfident():
+    rng = np.random.default_rng(0)
+    p = rng.random(100_000)
+    ece, brier, table = reliability(p, rng.random(100_000) < p)  # calibrated by construction
+    assert ece < 0.02 and 0.0 < brier < 0.25
+    assert list(table.columns) == ["bin", "n", "p_mean", "y_rate", "gap", "p_lo", "p_hi"]
+    assert len(table) == CALIBRATION_BINS and table["n"].sum() == 100_000
+    assert table["p_mean"].is_monotonic_increasing
+    ece_bad, brier_bad, _ = reliability(np.full(1000, 0.9), np.zeros(1000))
+    assert ece_bad == pytest.approx(0.9) and brier_bad == pytest.approx(0.81)
+
+
+def test_reliability_by_hand():
+    # sorted: (0.1, 0) (0.2, 1) | (0.8, 1) (0.9, 1) -> gaps -0.35 and -0.15, two pairs each
+    ece, brier, table = reliability(np.array([0.1, 0.9, 0.2, 0.8]), np.array([0, 1, 1, 1]),
+                                    bins=2)
+    assert ece == pytest.approx(0.25) and brier == pytest.approx(0.175)
+    assert table["n"].tolist() == [2, 2]
+    assert table["gap"].tolist() == pytest.approx([-0.35, -0.15])
+    assert table[["p_lo", "p_hi"]].to_numpy().tolist() == [[0.1, 0.2], [0.8, 0.9]]
+    # fewer pairs than bins: empty bins are dropped, never divided by zero
+    ece, _, table = reliability(np.array([0.3, 0.7]), np.array([0, 1]), bins=5)
+    assert table["n"].tolist() == [1, 1] and ece == pytest.approx(0.3)
+    ece, brier, table = reliability(np.zeros(0), np.zeros(0))
+    assert np.isnan(ece) and np.isnan(brier) and table.empty
+
+
+def test_seed_ensemble_is_the_mean_of_its_members(data, tmp_path):
+    X, y, Xt, yt = data
+    ens = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(1, 2))
+    members = [fitted(data, seed=1), fitted(data, seed=2)]
+    assert isinstance(ens, SeedEnsemble) and [m.params.seed for m in ens.matchers] == [1, 2]
+    expected = (members[0].predict_proba(Xt).astype(np.float64)
+                + members[1].predict_proba(Xt)) / 2
+    prob = ens.predict_proba(Xt)
+    assert prob.dtype == np.float32 and np.array_equal(prob, expected.astype(np.float32))
+    assert np.array_equal(ens.predict_proba(Xt, chunk_rows=7), prob)
+    info = ens.fit_info_
+    assert info["best_iterations"] == [m.best_iteration_ for m in members]
+    assert info["rows"] == len(X) and 0 < info["tune_logloss"] < 0.69 and info["tune_auc"] > 0.8
+    imp = ens.importance()
+    assert sorted(imp.index) == sorted(X.columns) and imp.sum() == pytest.approx(1.0)
+    assert imp.is_monotonic_decreasing
+    saved = ens.save(tmp_path / "ens")
+    assert {p.name for p in saved.iterdir()} == {"ensemble.json", "seed_1", "seed_2"}
+    again = SeedEnsemble.load(saved)
+    assert np.array_equal(again.predict_proba(Xt), prob)  # bit for bit
+    assert again.fit_info_ == info and again.feature_names_ == ens.feature_names_
+
+
+def test_fit_matcher_without_seeds_is_matcher_fit(data):
+    X, y, Xt, yt = data
+    single = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt)
+    assert type(single) is Matcher
+    assert np.array_equal(single.predict_proba(Xt), fitted(data).predict_proba(Xt))
+    one = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(FAST_SEED,))
+    assert np.array_equal(one.predict_proba(Xt), single.predict_proba(Xt))
+    assert one.fit_info_["tune_logloss"] == single.fit_info_["tune_logloss"]
+
+
+def test_fit_matcher_loader_frees_the_fit_rows_before_boosting(data, monkeypatch):
+    """A loader's frame is referenced by Matcher.fit alone, so lgbm releases the float
+    matrix once binned (the snapshot's memory plan); the models equal fits on the frame."""
+    X, y, Xt, yt = data
+    single = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt).predict_proba(Xt)
+    pair = fit_matcher(MatcherParams(**FAST), X, y, Xt, yt, seeds=(1, 2)).predict_proba(Xt)
+    buffers, alive = [], []
+
+    def load():
+        """A fresh frame over its own float32 buffer, watched through a weak reference."""
+        values = X.to_numpy(dtype=np.float32, copy=True)
+        buffers.append(weakref.ref(values))
+        return pd.DataFrame(values, columns=X.columns, index=X.index, copy=False)
+
+    boost = Matcher._fit_lgbm
+
+    def spy(self, train, X_val, y_val):
+        """Record whether the buffer of this fit still exists when boosting starts."""
+        alive.append(buffers[-1]() is not None)
+        return boost(self, train, X_val, y_val)
+
+    monkeypatch.setattr(Matcher, "_fit_lgbm", spy)
+    got = fit_matcher(MatcherParams(**FAST), load, y, Xt, yt)
+    ens = fit_matcher(MatcherParams(**FAST), load, y, Xt, yt, seeds=(1, 2))
+    assert len(buffers) == 3 and alive == [False, False, False]
+    assert np.array_equal(got.predict_proba(Xt), single)
+    assert np.array_equal(ens.predict_proba(Xt), pair) and ens.fit_info_["rows"] == len(X)
+
+
+def test_seed_ensemble_rejects_bad_members(data):
+    X, y = data[:2]
+    with pytest.raises(ValueError, match="at least one"):
+        SeedEnsemble([])
+    narrow = Matcher(MatcherParams(backend="heuristic")).fit(X.drop(columns="is_s3"), y)
+    with pytest.raises(ValueError, match="different columns"):
+        SeedEnsemble([fitted(data, "heuristic"), narrow])
+
+
 def _cuda_available() -> bool:
     """True when XGBoost can train on a CUDA device here."""
     import xgboost as xgb
@@ -273,3 +383,16 @@ def test_xgb_cuda_matches_cpu(data, tmp_path):
     assert np.corrcoef(gpu.predict_proba(Xv), cpu.predict_proba(Xv))[0, 1] > 0.95
     again = Matcher.load(gpu.save(tmp_path / "m"))
     assert np.allclose(again.predict_proba(Xv), gpu.predict_proba(Xv), atol=1e-6)
+
+
+def test_predict_threads_do_not_change_probabilities(data, monkeypatch):
+    """Prediction runs on PREDICT_THREADS (every CPU), training on num_threads: a row's
+    probability is the same whatever the predict thread count, with or without TreeWalker."""
+    matcher, Xt = fitted(data), data[2]
+    for walk in (False, True):
+        monkeypatch.setattr(model_module, "TREE_WALK", walk)
+        outs = []
+        for n in (1, 3, 16):
+            monkeypatch.setattr(model_module, "PREDICT_THREADS", n)
+            outs.append(matcher.predict_proba(Xt))
+        assert all(np.array_equal(outs[0], o) for o in outs[1:])
