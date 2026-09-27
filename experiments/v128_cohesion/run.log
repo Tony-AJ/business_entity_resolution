@@ -1,0 +1,41 @@
+[18:49:20 +  1.4 min] mock built
+[18:50:57 +  3.0 min] mock India: stage-2 frame (3200325, 122) (97 s)
+[18:52:11 +  4.2 min] mock US: stage-2 frame (2843479, 122) (74 s)
+/home/suryaguru/StudioProjects/aws/business_entity_resolution/.venv/lib64/python3.12/site-packages/xgboost/core.py:774: UserWarning: [18:57:06] WARNING: /workspace/src/common/error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+[19:00:31 + 12.6 min] stage 2 fit 501 s: {'fold0': 1615, 'fold1': 1005}; extra columns' gain {'coh_addr': 0.0011, 'coh_name': 0.0018, 'coh_support': 0.0003, 'hn2_eq': 0.0008, 'nums_set_eq': 0.0, 'n_only_l': 0.0001, 'n_only_r': 0.0003}
+[19:03:15 + 15.3 min] mock India: stage-3 frame (3200325, 139)
+[19:05:27 + 17.5 min] mock US: stage-3 frame (2843479, 139)
+[19:07:52 + 19.9 min] stage 3 fit 145 s; top
+feature
+pool_gap_2            0.776356
+p1_2                  0.194958
+pool_gap              0.007016
+s1_gap_2              0.003328
+p1                    0.003104
+pool_p1_sum_2         0.001322
+pool_best_other_2     0.000802
+s1_p1_sum_2           0.000777
+pool_degree_2         0.000450
+pool_p1_sum           0.000434
+sim_name_addr_word    0.000357
+s1_n_likely_2         0.000309
+dtype: float64
+[19:09:33 + 21.6 min] v128 arm x3: {"w": 4.0, "miss": 0.05, "f_beta": 0.9832721730078664, "pair_precision": 0.9988274119867921, "pair_recall": 0.9520432447134017, "tight1.45": 0.9827464876430352, "tight3": 0.9809357936086164, "tight6": 0.9774312245097411, "errors": {"false_merge": 1176, "singleton_merge": 139, "missed": 54747, "false_singleton": 1677}}
+[19:09:48 + 21.8 min] v128 arm x6: {"w": 6.0, "miss": 0.0, "f_beta": 0.982124104034441, "pair_precision": 0.9991449536581015, "pair_recall": 0.9474867410076834, "tight1.45": 0.9817461676735784, "tight3": 0.9804443868750506, "tight6": 0.9779248111359654, "errors": {"false_merge": 858, "singleton_merge": 96, "missed": 59938, "false_singleton": 1847}}
+[19:09:48 + 21.8 min] val tight@6: v127 0.97749 -> v128 0.97792; tight@3: v127 0.98065 -> v128 0.98094; better at x6
+[19:12:23 + 24.4 min] test France: 1,590,100 pairs scored (155 s)
+[19:19:05 + 31.1 min] test India: 3,889,020 pairs scored (401 s)
+[19:24:27 + 36.5 min] test US: 3,339,480 pairs scored (322 s)
+[19:25:38 + 37.7 min] test arm x6: {'pairs': 5632743, 'by_country': {'France': 803500, 'India': 2636025, 'US': 2193218}, 's1_matched': 1627796, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v128'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[19:26:47 + 38.8 min] test arm x3: {'pairs': 5678917, 'by_country': {'France': 811911, 'India': 2654710, 'US': 2212296}, 's1_matched': 1629143, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v128_x3'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[19:26:47 + 38.8 min] x6 arm copied to output/
+[19:26:47 + 38.8 min] logged {'version': 'v128', 'date': '2026-09-27', 'group': 'C5', 'change': 'v127 + cohesion, unit-number and name-difference columns (stage 2), cohesion from p2 (stage 3); decoded at x6', 'local_f05': '', 'mock_f05': '0.9821', 'cand_recall': '', 'public_f05': '', 'commit': '1670490', 'notes': 'val tight@6 0.9779 (v127 x6 0.9775); tight@3 of the x3 arm 0.9809 (v127 0.9807); false merges 858', 'owner': 'M1', 'parent': 'v127', 'decision': 'INVESTIGATE'}; done, peak RSS 6.26 GB
