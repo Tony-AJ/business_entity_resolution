@@ -130,7 +130,8 @@ def main() -> None:
     token_map = json.loads((V122 / "artifacts" / "stage1" / "token_map.json").read_text())
     fillers = json.loads((V122 / "artifacts" / "stage1" / "fillers.json").read_text())
     del val, fit_fold, tune_fold
-    cols = [C.ENTITY_ID, "name_core", "addr_norm"]
+    # name_norm, non_latin and country: apply_token_map recomputes non-Latin rows
+    cols = [C.ENTITY_ID, C.COUNTRY, "name_core", "addr_norm", "name_norm", "non_latin"]
 
     # mock: new features per country on the cached kept pairs
     outs = {}
@@ -193,8 +194,7 @@ def main() -> None:
 
     # test: same features on the cached test stage-1 outputs, refit models, decode
     test_parts, cands = [], []
-    s1n_all = load_normalised("test", (1,), cfg, token_map=token_map, columns=[*cols,
-                                                                              C.COUNTRY],
+    s1n_all = load_normalised("test", (1,), cfg, token_map=token_map, columns=cols,
                               fillers=fillers)
     for country in ("France", "India", "US"):
         t0 = time.time()
