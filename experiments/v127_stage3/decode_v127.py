@@ -1,12 +1,14 @@
-"""v127 decode at the false-merge weight the public uploads imply (x4.3), next to x3 and x6.
+"""v127 decode at the false-merge weight the public uploads imply (x6), next to x3 and x7.5.
 
 v122 -> v123 is the one public step that changed only the decision rule: 923 fewer false
 merges on mock val for 5,808 more misses, public 0.966 -> 0.968. In per-entity loss terms
 (mock val: L_FP 0.00266 -> 0.00184, L_FN 0.01428 -> 0.01582) a public gain of +0.002 means
 the public board charges a false merge about 4.3 times a miss (3.1 to 5.5 over the rounding
-of the two public scores). v126/v127 select their decoder by tight@3; this script selects it
-by tight@4.3 as well, on the same tune entities, reports every arm on val with the public
-estimate of that loss model, and writes the x4.3 arm to ``submissions/v127_fp43/``.
+of the two public scores). v123 -> v126 (0.968 -> 0.972: false merges -34 %, misses flat)
+implies about 7.4, so the board's weight is taken as 6. v126/v127 select their decoder by
+tight@3; this script also selects it by tight@4.5, @6 and @7.5 on the same tune entities,
+reports every arm on val with the public estimate of that loss model (anchored on v123), and
+writes the x6 arm to ``submissions/<version>_fp60/``.
 
 Reads a version's ``mock_scored.parquet`` and ``test_scored.parquet`` (v127 by default,
 v126 with ``--version v126``: same frames, same decoder).
@@ -36,8 +38,8 @@ _spec = importlib.util.spec_from_file_location("run_v127", V127_DIR / "run_v127.
 v127 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(v127)
 v126, v124 = v127.v126, v127.v126.v124
-PUBLIC_W = 4.3                   # false-merge weight implied by public v122 -> v123
-SELECT = (3.0, PUBLIC_W, 6.0)
+PUBLIC_W = 6.0                   # public false-merge weight: 4.3 (v122->v123), 7.4 (v123->v126)
+SELECT = (3.0, 4.5, PUBLIC_W, 7.5)
 V123 = {"public": 0.968, "l_fn": 0.015818, "l_fp": 0.001836}   # mock val loss split of v123 x3
 T0 = time.time()
 
@@ -96,12 +98,12 @@ def main() -> None:
     s1_ids = load_source("test", 1, v126.CFG.dataset_dir, columns=[C.ENTITY_ID])[C.ENTITY_ID]
     key = f"x{PUBLIC_W:g}"
     info = v127.write_arms(test, {key: arms[key]}, iso, s1_ids,
-                           {key: f"{args.version}_fp43"}, copy_x3=False)
+                           {key: f"{args.version}_fp60"}, copy_x3=False)
     out = {"version": args.version, "public_w": PUBLIC_W, "v123_reference": V123,
-           "arms": arms, "test_fp43": info[key]}
+           "arms": arms, "test_public_arm": info[key]}
     path = V127_DIR / f"decode_arms_{args.version}.json"
     path.write_text(json.dumps(out, indent=1) + "\n")
-    log(f"wrote {path.name}; x{PUBLIC_W:g} arm files in submissions/{args.version}_fp43")
+    log(f"wrote {path.name}; x{PUBLIC_W:g} arm files in submissions/{args.version}_fp60")
 
 
 if __name__ == "__main__":
