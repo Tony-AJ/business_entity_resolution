@@ -11,7 +11,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-27 18:25 IST (day 3): final-stretch plan with ETAs below; best public 0.968 (v123, x3 rule).
+Last updated: 2026-09-27 18:55 IST (day 3): final-stretch plan with ETAs below; best public **0.972** (v126, x3 arm).
 
 ## Day 1 — Fri 25 Sep
 
@@ -167,13 +167,14 @@ refits the later stages: ~25–40 min instead of v122's 5.3 h.
 |---|---|---|---|---|---|---|
 | 77 | Diagnose the mock→public gap on unlabelled test pairs; decoy signature; no ID or row-order leak in train (correlations ~0) | M1 | E | 17:50 | done | Mock (US, kept pairs): differing first numbers are true 0.97 when one contains the other, 0.65 one-digit change, 0.41 within 20; uncertain pairs with a number no other candidate holds are true 0.37, shared with one other 0.81 |
 | 78 | **v126**: stage 2 refit on v110's caches + house-number relation (`hn_*`), candidate groups (`grp_*`), v125's unmatched IDF; fit + tune, 127 leaves; isotonic + tight decode; arms x3 and x6 | M1 | C4 / E5 | 18:17 | done | 22 min run. Mock val tight@3 **0.9802** (v123 x3 0.9787, v110 control 0.9767), F0.5 0.9828; false merges 1,259 (v123 1,904), missed 56.2k (v123 57.2k); new columns 2.5 % of the gain. `submissions/v126/` (= `output/`) and `submissions/v126_fp6/`, both validators PASS |
-| 79 | **Upload #9**: v126 x3 (`output/matching_results.tsv`) | M1 | INT | 18:35 | ready | Entry in LEADERBOARD.md (submission 09); record the score with `make public V=v126 SCORE=...` |
-| 80 | **v127**: stage 3, competition + group features recomputed from v126's stage-2 probabilities | M1 | D3 | 18:45 | doing | Started 18:17 (commit d4f0fc8); ~25 min from v126's models |
-| 81 | **Upload #10**: v127 x3 if it beats v126 on val tight@3, else the stricter arm of the better one | M1 | INT | 19:20 | todo | Choice also reads #9's public score |
-| 82 | Last model iteration by #9–#10's public result (decode strictness per arm, or more stage-2 seeds) | M1 | D3 / E5 | 21:00 | todo | Only from cached stage-1 outputs; no new blocking run fits the time left |
-| 83 | **Upload #11** (last): best arm | M1 | INT | 21:30 | todo | Leaves 2.5 h of buffer before 23:59 |
-| 84 | Freeze: final files in `output/` from the best upload; both validators PASS; git tag | M1 | INT | 22:00 | todo | |
-| 85 | Package: methodology update (decoy features, stage 3), README reproduction, `make package`, zip check | M1 | INT | 22:45 | todo | Organisers' template, 1–2 pages |
+| 79 | **Upload #9**: v126 x3 (`output/matching_results.tsv`) | M1 | INT | 18:27 | done | **Public 0.972** (+0.004 over v123, best so far). A teammate's 16:31 upload scored 0.969: day 3 has **1 upload left** |
+| 80 | **v127**: stage 3, competition + group features recomputed from v126's stage-2 probabilities | M1 | D3 | 18:37 | done | Mock val tight@3 0.9807 (v126 0.9802), false merges 1,154 (1,259), misses 56.1k (56.2k); `submissions/v127/` (x3), `v127_fp6/` (x6) |
+| 81 | Public-weight decode: v122 -> v123 -> v126 imply false merges cost about 6x a miss on the board; v127 decoded at x3 / x4.5 / x6 / x7.5 | M1 | E5 | 18:48 | done | All arms within 0.0003 of estimated public (0.9721-0.9724 anchored on v123, ~0.973 after v126's calibration): strictness is spent |
+| 82 | Error audit of v127 on the mock (57.8k missed true pairs) | M1 | E | 18:45 | done | Never a candidate 24.9k (blocking + stage-1 filter), lost in the 1-to-1 10.7k (mostly empty-address records), below the rule 22.2k (probabilities 0.4-0.95); re-blocking dropped (~3.5 h for about +0.0013) |
+| 83 | **v128**: v127 + cohesion (fit with the entity's other candidates), unit-number and name-difference columns in stage 2, cohesion from p2 in stage 3, lr 0.05; decoded at x6 | M1 | C5 | 19:40 | doing | Started 18:48 (commit 97b0ff0) |
+| 83a | **Final upload (#11)**: v128 x6 if its val tight@6 beats v127's, else v127 x6 (`submissions/v127_fp6/`) | M1 | INT | 20:00 | todo | Expected ~0.973 public; 0.99 is out of reach for this pipeline (mock F0.5 0.983) |
+| 84 | Freeze: final files in `output/` from the final upload; both validators PASS; git tag | M1 | INT | 20:30 | todo | |
+| 85 | Package: methodology update (decoy features, stage 3, public-weight decode), README reproduction, `make package`, zip check | M1 | INT | 22:00 | todo | Organisers' template, 1–2 pages |
 | 86 | Buffer: re-uploads only on a validator failure | – | – | 23:59 | – | Portal closes 23:59 IST |
 
 ## Versions
