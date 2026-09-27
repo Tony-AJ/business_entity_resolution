@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from entity_resolution import model as model_module
 from entity_resolution.model import (
     BACKENDS,
     CALIBRATION_BINS,
@@ -382,3 +383,16 @@ def test_xgb_cuda_matches_cpu(data, tmp_path):
     assert np.corrcoef(gpu.predict_proba(Xv), cpu.predict_proba(Xv))[0, 1] > 0.95
     again = Matcher.load(gpu.save(tmp_path / "m"))
     assert np.allclose(again.predict_proba(Xv), gpu.predict_proba(Xv), atol=1e-6)
+
+
+def test_predict_threads_do_not_change_probabilities(data, monkeypatch):
+    """Prediction runs on PREDICT_THREADS (every CPU), training on num_threads: a row's
+    probability is the same whatever the predict thread count, with or without TreeWalker."""
+    matcher, Xt = fitted(data), data[2]
+    for walk in (False, True):
+        monkeypatch.setattr(model_module, "TREE_WALK", walk)
+        outs = []
+        for n in (1, 3, 16):
+            monkeypatch.setattr(model_module, "PREDICT_THREADS", n)
+            outs.append(matcher.predict_proba(Xt))
+        assert all(np.array_equal(outs[0], o) for o in outs[1:])
