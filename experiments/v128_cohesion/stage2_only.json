@@ -1,0 +1,58 @@
+{
+ "arms": {
+  "x3": {
+   "w": 4.0,
+   "miss": 0.2,
+   "f_beta": 0.9829141520716578,
+   "pair_precision": 0.9987590726076437,
+   "pair_recall": 0.9508567348881485,
+   "tight1.45": 0.9823485083886917,
+   "tight3": 0.9804001801473636,
+   "tight6": 0.9766292222609225,
+   "errors": {
+    "false_merge": 1236,
+    "singleton_merge": 154,
+    "missed": 56134,
+    "false_singleton": 1686
+   }
+  },
+  "x6": {
+   "w": 8.0,
+   "miss": 0.2,
+   "f_beta": 0.9812816509101566,
+   "pair_precision": 0.9991640810104373,
+   "pair_recall": 0.944803494934385,
+   "tight1.45": 0.9809050592049198,
+   "tight3": 0.9796079099979922,
+   "tight6": 0.9770972986297456,
+   "errors": {
+    "false_merge": 828,
+    "singleton_merge": 102,
+    "missed": 63012,
+    "false_singleton": 1930
+   }
+  }
+ },
+ "test": {
+  "x3": {
+   "pairs": 5689543,
+   "by_country": {
+    "France": 821987,
+    "India": 2652570,
+    "US": 2214986
+   },
+   "s1_matched": 1629820,
+   "dir": "/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v128s2"
+  },
+  "x6": {
+   "pairs": 5626660,
+   "by_country": {
+    "France": 808383,
+    "India": 2628866,
+    "US": 2189411
+   },
+   "s1_matched": 1628068,
+   "dir": "/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v128s2_fp6"
+  }
+ }
+}

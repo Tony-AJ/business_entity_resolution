@@ -38,6 +38,21 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
+## Submission 11: 2026-09-27 ~19:45 IST (planned final)
+- Version: v126_decoy_groups, x6 arm (`submissions/v126_fp6/`, also in `output/`)
+- Commit: 3db87ac (v126 results, both arms written by the same run)
+- Change vs submission 09 (v126 x3, public 0.972): the same probabilities, decoded for the
+  false-merge weight the public uploads imply (selected by tight@6 on tune: w 8, miss 0.4)
+  instead of tight@3; 64,758 fewer predicted pairs (5,621,515)
+- Why not v127/v128: stage 3 scored 0.971 public against v126's 0.972 while the mock
+  promised +0.0004, and v128 without stage 3 equals v126 on the mock (tight@6 0.97710 vs
+  0.97708), so v128's mock gain is stage 3's
+- Mock F0.5 0.9813, tight@6 0.9771 (x3 arm 0.9764); false merges 839 (x3 arm 1,259), missed
+  63,337 (56,205)
+- Expected public: 0.972-0.974 (the public-weight model gives +0.0003 to +0.0013 over x3)
+- Public F0.5: pending
+- Notes: both checkers PASS (ids checked).
+
 ## Submission 10: 2026-09-27 18:56 IST
 - Version: v127_stage3, x3 arm (`output/` at 18:56 = `submissions/v127/`; to be confirmed by
   the uploader)

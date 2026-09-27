@@ -1,0 +1,16 @@
+[19:30:51 +  4.0 min] mock stage-2 frames built
+/home/suryaguru/StudioProjects/aws/business_entity_resolution/.venv/lib64/python3.12/site-packages/xgboost/core.py:774: UserWarning: [19:30:52] WARNING: /workspace/src/common/error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+[19:36:24 +  9.5 min] v128 stage 2 only arm x3: {"w": 4.0, "miss": 0.2, "f_beta": 0.9829141520716578, "pair_precision": 0.9987590726076437, "pair_recall": 0.9508567348881485, "tight1.45": 0.9823485083886917, "tight3": 0.9804001801473636, "tight6": 0.9766292222609225, "errors": {"false_merge": 1236, "singleton_merge": 154, "missed": 56134, "false_singleton": 1686}}
+[19:36:39 +  9.8 min] v128 stage 2 only arm x6: {"w": 8.0, "miss": 0.2, "f_beta": 0.9812816509101566, "pair_precision": 0.9991640810104373, "pair_recall": 0.944803494934385, "tight1.45": 0.9809050592049198, "tight3": 0.9796079099979922, "tight6": 0.9770972986297456, "errors": {"false_merge": 828, "singleton_merge": 102, "missed": 63012, "false_singleton": 1930}}
+[19:37:49 + 10.9 min] test arm x3: {'pairs': 5689543, 'by_country': {'France': 821987, 'India': 2652570, 'US': 2214986}, 's1_matched': 1629820, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v128s2'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[19:38:58 + 12.1 min] test arm x6: {'pairs': 5626660, 'by_country': {'France': 808383, 'India': 2628866, 'US': 2189411}, 's1_matched': 1628068, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v128s2_fp6'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[19:38:58 + 12.1 min] wrote stage2_only.json
