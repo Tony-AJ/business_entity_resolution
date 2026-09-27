@@ -55,6 +55,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -534,16 +535,26 @@ def load_snapshot(path: Path, sides: Sequence[str] | None = None,
 
 
 # --------------------------------------------------------------- evaluate ----
-def _score_side(snap: Snapshot, side: str, model: Matcher | SeedEnsemble,
-                batch_rows: int) -> tuple[pd.DataFrame, np.ndarray]:
+def score_side(snap: Snapshot, side: str, model: Matcher | SeedEnsemble,
+               batch_rows: int = BATCH_ROWS) -> tuple[pd.DataFrame, np.ndarray]:
     """``(scored, labels)`` of ``side``: SCORED_COLUMNS in the pipeline's pair order.
 
     Features stream through the model ``batch_rows`` at a time and only the float32
     probability stays; the ids are read afterwards, so they never sit beside read buffers.
+    One reader thread decodes the next batch while the current one is scored (both release
+    the GIL), so reading costs no wall time; results do not depend on it.
     """
     prob = np.empty(snap.rows(side), dtype=np.float32)
-    for sl, X in snap.iter_features(side, batch_rows):
-        prob[sl] = model.predict_proba(X)
+    batches = snap.iter_features(side, batch_rows)
+    try:
+        with ThreadPoolExecutor(1) as reader:
+            ahead = reader.submit(next, batches, None)
+            while (item := ahead.result()) is not None:
+                ahead = reader.submit(next, batches, None)
+                sl, X = item
+                prob[sl] = model.predict_proba(X)
+    finally:   # after the reader has stopped: a running generator cannot be closed
+        batches.close()
     meta = snap.meta(side, [C.S1_ID, C.ENTITY_ID, LABEL])
     scored = pd.DataFrame({C.S1_ID: meta[C.S1_ID], C.ENTITY_ID: meta[C.ENTITY_ID],
                            "prob": prob})
@@ -580,7 +591,7 @@ def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
                     weight_fn: WeightFn | None = None, grid: Grid | None = None,
                     calibration: bool = True, seeds: Sequence[int] | None = None,
                     harder: bool = True, batch_rows: int = BATCH_ROWS,
-                    artifacts: dict | None = None
+                    artifacts: dict | None = None, model: Matcher | SeedEnsemble | None = None
                     ) -> tuple[dict, Matcher | SeedEnsemble, DecisionRule]:
     """Train on fit/stop, tune the rule on tune, score val (and harder) with it frozen.
 
@@ -591,7 +602,10 @@ def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
     country, pass, label), for hard-negative experiments. ``seeds`` trains one model per
     seed and averages their probabilities. ``grid`` defaults to ``decision.DEFAULT_GRID``
     (pass ``cfg.grid`` to match a pipeline run with another grid). ``harder`` scores the
-    harder side when the snapshot has it (``harder_f_beta``).
+    harder side when the snapshot has it (``harder_f_beta``). Fit rows given a weight of 0
+    are left out of the training set (``fit_rows`` counts the rows trained on). ``model``
+    skips training and evaluates that already fitted matcher (``fit_snapshot``; its own
+    params and seeds are logged, ``params``, ``weight_fn`` and ``seeds`` are ignored).
 
     Returns ``(metrics, matcher, rule)``: ``metrics`` holds the 13 §2.2 keys this stage
     produces (val scores, blocking, ``tune_f_beta``, ``harder_f_beta``, errors, timings,
@@ -605,30 +619,51 @@ def evaluate_params(snap: Snapshot, params: MatcherParams | None = None, *,
     LightGBM has binned it (re-read per seed); ``batch_rows`` bounds the read buffers and
     does not change any result.
     """
+    if model is not None:   # log what the given model was trained with
+        params, weight_fn = model.params, None
+        seeds = ([m.params.seed for m in model.matchers] if isinstance(model, SeedEnsemble)
+                 else None)
     with _system_pool():
         return _evaluate(snap, MatcherParams() if params is None else params, weight_fn,
                          DEFAULT_GRID if grid is None else grid, calibration, seeds, harder,
-                         batch_rows, artifacts)
+                         batch_rows, artifacts, model)
 
 
-def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None, grid: Grid,
-              calibration: bool, seeds: Sequence[int] | None, harder: bool, batch_rows: int,
-              artifacts: dict | None) -> tuple[dict, Matcher | SeedEnsemble, DecisionRule]:
-    """``evaluate_params`` with its defaults resolved (run inside ``_system_pool``)."""
-    timings: dict[str, float] = {}
-    P.mem_guard("evaluate start")
+def fit_snapshot(snap: Snapshot, params: MatcherParams | None = None, *,
+                 weight_fn: WeightFn | None = None, seeds: Sequence[int] | None = None,
+                 batch_rows: int = BATCH_ROWS) -> tuple[Matcher | SeedEnsemble, dict]:
+    """``(model, timings)``: the matcher ``evaluate_params`` trains, without evaluating it.
 
+    For callers that fit more than one model before choosing (hard-negative round 2,
+    ``hardneg.py``); pass the chosen one to ``evaluate_params(model=...)``. ``timings`` holds
+    ``load_seconds``, ``fit_seconds`` and ``fit_rows`` (rows trained on: fit rows with a
+    weight of 0 are dropped before fitting, so a 0 means "not in the training set").
+    """
+    with _system_pool():
+        return _fit(snap, MatcherParams() if params is None else params, weight_fn, seeds,
+                    batch_rows)
+
+
+def _fit(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None,
+         seeds: Sequence[int] | None, batch_rows: int) -> tuple[Matcher | SeedEnsemble, dict]:
+    """``fit_snapshot`` with its defaults resolved (run inside ``_system_pool``)."""
+    timings: dict = {}
     t0 = time.perf_counter()
     n_fit, y_fit = snap.rows("fit"), snap.labels("fit")
     X_stop, y_stop = snap.features("stop", batch_rows=batch_rows), snap.labels("stop")
-    weight, first = None, []
+    weight, keep, first = None, None, []
     if weight_fn is not None:
         X_fit = snap.features("fit", batch_rows=batch_rows)
         weight = np.asarray(weight_fn(snap.meta("fit"), X_fit), dtype=np.float64)
-        first.append(X_fit)   # handed to the first fit instead of being read again
-        del X_fit
         if weight.shape != (n_fit,):
             raise ValueError(f"weight_fn returned shape {weight.shape}, expected ({n_fit},)")
+        if (weight < 0).any() or not np.isfinite(weight).all():
+            raise ValueError("weight_fn returned a negative or non-finite weight")
+        if not (weight > 0).all():   # HN2: a dropped row is left out, not boosted at weight 0
+            keep = weight > 0
+            y_fit, weight = y_fit[keep], weight[keep]
+        first.append(X_fit)   # handed to the first fit instead of being read again
+        del X_fit
     load_seconds = time.perf_counter() - t0
     P.mem_guard("evaluate load")
 
@@ -637,6 +672,8 @@ def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None,
         nonlocal load_seconds
         t = time.perf_counter()
         X = first.pop() if first else snap.features("fit", batch_rows=batch_rows)
+        if keep is not None:   # the full frame is released when this returns
+            X = X[keep].reset_index(drop=True)
         load_seconds += time.perf_counter() - t
         return X
 
@@ -645,11 +682,27 @@ def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None,
     model = fit_matcher(params, load_fit, y_fit, X_stop, y_stop, weight, seeds)
     timings["load_seconds"] = round(load_seconds, 2)
     timings["fit_seconds"] = round(time.perf_counter() - t0 - (load_seconds - loaded), 2)
+    timings["fit_rows"] = int(len(y_fit))
     del y_fit, X_stop, y_stop, weight
     P.mem_guard("evaluate fit")
+    return model, timings
+
+
+def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None, grid: Grid,
+              calibration: bool, seeds: Sequence[int] | None, harder: bool, batch_rows: int,
+              artifacts: dict | None, model: Matcher | SeedEnsemble | None
+              ) -> tuple[dict, Matcher | SeedEnsemble, DecisionRule]:
+    """``evaluate_params`` with its defaults resolved (run inside ``_system_pool``)."""
+    P.mem_guard("evaluate start")
+    if model is None:
+        model, timings = _fit(snap, params, weight_fn, seeds, batch_rows)
+    else:   # fitted by the caller (fit_snapshot): nothing is trained here
+        timings = {"load_seconds": 0.0, "fit_seconds": 0.0,
+                   "fit_rows": model.fit_info_.get("rows")}
+    fit_rows = timings.pop("fit_rows")
 
     t0 = time.perf_counter()
-    scored_tune, y_tune = _score_side(snap, "tune", model, batch_rows)
+    scored_tune, y_tune = score_side(snap, "tune", model, batch_rows)
     score_seconds = time.perf_counter() - t0
     t0 = time.perf_counter()
     rule, table = tune(scored_tune, snap.s1("tune")[C.ENTITY_ID], snap.truth("tune"), grid)
@@ -669,7 +722,7 @@ def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None,
     P.mem_guard("evaluate tune")
 
     t0 = time.perf_counter()
-    scored_val, y_val = _score_side(snap, "val", model, batch_rows)
+    scored_val, y_val = score_side(snap, "val", model, batch_rows)
     score_seconds += time.perf_counter() - t0
     val = snap.fold("val")
     t0 = time.perf_counter()
@@ -687,7 +740,7 @@ def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None,
     metrics: dict = {
         "snapshot": snap.key, "model_params": asdict(params),
         "seeds": [int(s) for s in seeds] if seeds else None, "weighted": weight_fn is not None,
-        "n_features": len(snap.columns), "rule": asdict(rule),
+        "n_features": len(snap.columns), "fit_rows": fit_rows, "rule": asdict(rule),
         **score_pairs(matches, val),
         "cand_recall": blocking.get("pair_recall"),
         "entity_recall": blocking.get("entity_recall"),
@@ -704,7 +757,7 @@ def _evaluate(snap: Snapshot, params: MatcherParams, weight_fn: WeightFn | None,
     if harder and "harder" in snap.sides:
         hard = snap.fold("harder")
         t0 = time.perf_counter()
-        scored_h, _ = _score_side(snap, "harder", model, batch_rows)
+        scored_h, _ = score_side(snap, "harder", model, batch_rows)
         score_seconds += time.perf_counter() - t0
         t0 = time.perf_counter()
         matches_h = P.decide_by_country(scored_h, hard.s1, rule)
