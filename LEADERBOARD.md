@@ -10,7 +10,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
 | 2 | 2026-09-26 | 4 | 1 (expired) |
-| 3 | 2026-09-27 | 5 | 2 (per the portal at 19:00) |
+| 3 | 2026-09-27 | 6 | 1 (per the portal at 19:55) |
 
 ## Before every upload
 
@@ -38,7 +38,16 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
-## Submission 11: 2026-09-27 ~19:45 IST (planned final)
+## Submission 11: 2026-09-27 19:53 IST
+- Version: v128_cohesion, x6 arm (`submissions/v128/`)
+- Commit: 13f84b4 (results), 97b0ff0 (script)
+- Change vs submission 10 (v127 x3): cohesion, unit-number and name-difference columns in
+  stage 2, cohesion from p2 in stage 3, decoded at x6 (w 6, miss 0) instead of x3
+- Mock F0.5 0.9821, tight@6 0.9779 (v127 x6 0.9775, v126 x6 0.9771); false merges 858
+- Public F0.5: **0.972** (v127 x3 0.971): the stricter decode gained +0.001 on the stage-3
+  model; v128's stage 2 alone equals v126 on the mock, so v126 x6 is expected ~0.973
+
+## Submission 12: 2026-09-27 (planned final)
 - Version: v126_decoy_groups, x6 arm (`submissions/v126_fp6/`, also in `output/`)
 - Commit: 3db87ac (v126 results, both arms written by the same run)
 - Change vs submission 09 (v126 x3, public 0.972): the same probabilities, decoded for the
@@ -49,7 +58,8 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
   0.97708), so v128's mock gain is stage 3's
 - Mock F0.5 0.9813, tight@6 0.9771 (x3 arm 0.9764); false merges 839 (x3 arm 1,259), missed
   63,337 (56,205)
-- Expected public: 0.972-0.974 (the public-weight model gives +0.0003 to +0.0013 over x3)
+- Expected public: ~0.973: x3 -> x6 on the stage-3 model gave +0.001 (v127 0.971 -> v128
+  0.972), and v126 without stage 3 is 0.001 above it at x3
 - Public F0.5: pending
 - Notes: both checkers PASS (ids checked).
 
