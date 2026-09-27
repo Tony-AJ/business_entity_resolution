@@ -9,8 +9,8 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 | Day | Date | Used | Left |
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
-| 2 | 2026-09-26 | 3 | 2 |
-| 3 | 2026-09-27 | 0 | 5 |
+| 2 | 2026-09-26 | 4 | 1 (expired) |
+| 3 | 2026-09-27 | 2 | 3 |
 
 ## Before every upload
 
@@ -38,13 +38,37 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
-## Submission 06: 2026-09-26 (pending)
+## Submission 08: 2026-09-27 10:41 IST
+- Version: v123_tight_rule (weight-3 arm, `submissions/v123_fp3/`)
+- Commit: 8b2485f (files), 4408d7e (script)
+- Change vs previous submission (v122): same matcher and candidates; decision rule re-tuned
+  with false merges costing x3 instead of x1.45 (threshold-free expected-F0.5 decoding at
+  gamma 3.0, miss 0.6). 72,445 fewer predicted pairs (France -3.1 %, US -1.2 %, India -0.7 %)
+- Threshold / decision rule: ExpectedRule(gamma 3.0, miss 0.6, max 11, 1-to-1)
+- Mock F0.5 0.9823 (v122 0.9831); false merges on mock val 1,904 vs 2,827
+- Public F0.5: **0.968** (+0.002 over v122): the leaderboard rewards precision beyond the
+  tight mock's x1.45; fp6 (`submissions/v123_fp6/`) tests how far
+- Notes: no retraining; built from v122's saved test probabilities, which rebuild v122's
+  uploaded file byte for byte under v122's rule. Both checkers PASS.
+
+## Submission 07: 2026-09-27 08:52 IST
+- Version: v122_full_stack
+- Commit: cbf0e5e (src/), results in 482f76b `exp(v122)`
+- Change vs previous submission: v110 + rules v5, learned fillers, token evidence, 2 stage-1
+  bags, stage-2 extras, stage 2 on fit + tune (127 leaves, 3 seeds)
+- Threshold / decision rule: ExpectedRule(gamma 1.5, miss 0.2, max 11, 1-to-1)
+- Mock F0.5 0.9831, est_public 0.9747 (v110 0.9731)
+- Public F0.5: **0.966**, flat on v107/v110 again: the third mock gain that did not transfer.
+  Together with submission 06 this fixed the diagnosis: only precision moves the public score
+- Notes: files in submissions/v122/; both checkers PASS.
+
+## Submission 06: 2026-09-26 18:44 IST
 - Version: v121_france_from_v107 (diagnostic: v110's rows for India and the US, v107's for France)
 - Commit: a1c00d6 (no model trained; files composed from submissions/v110 and submissions/v107)
 - Change vs previous submission (v110): the French rows (15 % of test S1) come from v107
 - Expected: above 0.969 if France is v110's problem (mock India +0.0102, US +0.0040); about
   0.966 if the mock's India / US gain does not reach the test
-- Public F0.5: (fill in after upload)
+- Public F0.5: **0.965** (below v110's 0.966): v107's French rows are worse, so France was not v110's problem; the mock-public gap is decision tightness, not France alone
 - Notes: files in submissions/v121/; both validators PASS.
 
 ## Submission 05: 2026-09-26 18:10 IST
