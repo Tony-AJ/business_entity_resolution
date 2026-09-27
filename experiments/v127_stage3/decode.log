@@ -1,0 +1,8 @@
+[18:44:23 +  1.4 min] mock built, isotonic fitted on tune
+[18:46:19 +  3.3 min] arm x3: {"w": 4.0, "miss": 0.05, "f_beta": 0.9828962838685998, "l_fn": 0.015980873407477558, "l_fp": 0.0011228427239223793, "est_public": 0.9721160702489882}
+[18:46:24 +  3.4 min] arm x4.5: {"w": 6.0, "miss": 0.4, "f_beta": 0.9821492234023195, "l_fn": 0.016929089629395766, "l_fp": 0.0009216869682847628, "est_public": 0.9723747885608957}
+[18:46:28 +  3.5 min] arm x6: {"w": 8.0, "miss": 0.2, "f_beta": 0.9811048360685471, "l_fn": 0.0181714687745943, "l_fp": 0.0007236951568584393, "est_public": 0.9723203602842551}
+[18:46:32 +  3.5 min] arm x7.5: {"w": 8.0, "miss": 0.0, "f_beta": 0.9809574850022096, "l_fn": 0.018335501568544355, "l_fp": 0.0007070134292458397, "est_public": 0.9722564178559806}
+[18:47:45 +  4.7 min] test arm x6: {'pairs': 5606873, 'by_country': {'France': 799266, 'India': 2625603, 'US': 2182004}, 's1_matched': 1626728, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v127_fp60'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[18:47:45 +  4.7 min] wrote decode_arms_v127.json; x6 arm files in submissions/v127_fp60
