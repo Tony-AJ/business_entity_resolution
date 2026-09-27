@@ -11,7 +11,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 16:30 IST (day 2): night-build strategy below; v110 est_public 0.9731.
+Last updated: 2026-09-27 18:10 IST (day 3): final-stretch plan with ETAs below; best public 0.968 (v123, x3 rule).
 
 ## Day 1 — Fri 25 Sep
 
@@ -143,12 +143,38 @@ each) no longer fits, so the strategy changes:
 
 | # | Task | Owner | Plan | ETA | Status | Notes |
 |---|---|---|---|---|---|---|
-| 38 | Error-driven fixes from the mock report (blocking misses at density, empty-address pairs) | M1 | A / C | 11:00 | todo | Was #14, #16 |
-| 39 | Final matcher: more training S1, 3 seeds, rule re-tuned on the mock | M1 | D3 / E2 | 14:00 | todo | XGBoost (#19) only if LightGBM plateaus |
-| 40 | **Uploads #6–#8**: best mock versions, one change each | M1 | INT | 16:00 | todo | |
-| 41 | Freeze 18:00; final `run_test`; `make validate` | M1 | INT | 18:30 | todo | Checklist in doc 16 |
-| 42 | Package: README reproduction, `requirements.txt`, `Documentation_template.md` (1–2 pages), zip | M1 | INT | 21:00 | todo | |
-| 43 | **Uploads #9–#10** (last by 22:00 IST); git tag of the submitted commit | M1 | INT | 22:00 | todo | |
+| 38 | Error-driven fixes from the mock report (blocking misses at density, empty-address pairs) | M1 | A / C | 11:00 | dropped | Replaced by the decoy analysis of the test's uncertain pairs (#77) |
+| 39 | Final matcher: more training S1, 3 seeds, rule re-tuned on the mock | M3 | D3 / E2 | 14:00 | done | v122 (fit + tune, 127 leaves, 3 seeds = 1 seed), v123 x3 rule, v124 tight decode, v125 unmatched-IDF features |
+| 40 | **Uploads #6–#8**: best mock versions, one change each | M1 | INT | 16:00 | done | v121 0.965, v122 0.966, v123 **0.968** |
+| 41 | Freeze; final files from the best upload; `make validate` | M1 | INT | 22:00 | todo | Moved: see the final stretch (#84) |
+| 42 | Package: README reproduction, `requirements.txt`, `Documentation_template.md` (1–2 pages), zip | M1 | INT | 22:45 | todo | Moved: see the final stretch (#85) |
+| 43 | **Uploads #9–#11** (3 left today, last by 23:30 IST); git tag of the submitted commit | M1 | INT | 23:30 | todo | See the final stretch (#79, #81, #83) |
+
+## Final stretch — Sun 27 Sep, 17:50–23:59 IST (target: public ≥ 0.99)
+
+Where the public score stands: 0.968 (v123). Mock-only gains (v110, v122) never reached the
+public score; only precision moved it (+0.002 for the x3 rule). The test is less certain than
+the mock: uncertain candidates (0.2 < p1 < 0.8) per S1 are 0.15 on the mock, 0.19 India, 0.37
+US and 0.80 France on test. Reading them shows the generator's decoy: the S1 name plus or
+minus a word ("Holdings", "Comite") at a **nearby house number** (7541 vs 7532, 26 vs 23), with
+its own S2 and S3 records. No stage-1 feature reads that. 0.99 is a stretch goal: 3 uploads
+remain, and each is chosen by the mock tight@3 score first.
+
+All v126+ runs use v110's stage-1 caches on M1's machine (mock + test), so each run only
+refits the later stages: ~25–40 min instead of v122's 5.3 h.
+
+| # | Task | Owner | Plan | ETA | Status | Notes |
+|---|---|---|---|---|---|---|
+| 77 | Diagnose the mock→public gap on unlabelled test pairs; decoy signature; no ID or row-order leak in train (correlations ~0) | M1 | E | 17:50 | done | Mock (US, kept pairs): differing first numbers are true 0.97 when one contains the other, 0.65 one-digit change, 0.41 within 20; uncertain pairs with a number no other candidate holds are true 0.37, shared with one other 0.81 |
+| 78 | **v126**: stage 2 refit on v110's caches + house-number relation (`hn_*`), candidate groups (`grp_*`), v125's unmatched IDF; fit + tune, 127 leaves; isotonic + tight decode; arms x3 and x6 | M1 | C4 / E5 | 18:25 | doing | Started 17:54; stage-2 fit 240 s; new columns carry 2.5 % of the gain (v125's alone: 0.4 %); files in `submissions/v126/` and `submissions/v126_fp6/` |
+| 79 | **Upload #9**: v126 x3 if its val tight@3 beats the v110 control, else v126 x6 | M1 | INT | 18:35 | todo | Portal upload is manual; log in LEADERBOARD.md, `make public` |
+| 80 | **v127**: stage 3, competition + group features recomputed from v126's stage-2 probabilities | M1 | D3 | 19:15 | todo | Script ready (`experiments/v127_stage3/run_v127.py`), ~40 min from v126's models |
+| 81 | **Upload #10**: v127 x3 if it beats v126 on val tight@3, else the stricter arm of the better one | M1 | INT | 19:20 | todo | Choice also reads #9's public score |
+| 82 | Last model iteration by #9–#10's public result (decode strictness per arm, or more stage-2 seeds) | M1 | D3 / E5 | 21:00 | todo | Only from cached stage-1 outputs; no new blocking run fits the time left |
+| 83 | **Upload #11** (last): best arm | M1 | INT | 21:30 | todo | Leaves 2.5 h of buffer before 23:59 |
+| 84 | Freeze: final files in `output/` from the best upload; both validators PASS; git tag | M1 | INT | 22:00 | todo | |
+| 85 | Package: methodology update (decoy features, stage 3), README reproduction, `make package`, zip check | M1 | INT | 22:45 | todo | Organisers' template, 1–2 pages |
+| 86 | Buffer: re-uploads only on a validator failure | – | – | 23:59 | – | Portal closes 23:59 IST |
 
 ## Versions
 
