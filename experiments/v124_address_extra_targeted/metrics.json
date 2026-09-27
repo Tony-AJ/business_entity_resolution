@@ -1,0 +1,118 @@
+{
+  "version": "v124",
+  "date": "2026-09-27",
+  "group": "C3",
+  "change": "v001 + address_extra feature group only (addr_empty_l, reverse containment, numeric containment, postcode-prefix, addr length ratio); everything else identical to v001",
+  "local_f05": "0.9844",
+  "mock_f05": "",
+  "cand_recall": "0.9905",
+  "public_f05": "",
+  "commit": "9210b05",
+  "notes": "below the template's own keep bar (parent + 0.002): delta only +0.00022 F0.5, +0.00023 precision. Real effect is FEWER FALSE MERGES (6656 vs v001 7019, -363/-5.2%), NOT the hypothesized addr_empty recall fix (addr_empty pair_recall unchanged: 0.8967 vs v001 0.8968; missed count flat 53236 vs 53231). Do not adopt as the new baseline; the false-merge reduction may be worth a closer look (which specific pairs it resolves) before folding into a two-stage version. Val-density only, no mock/public run.",
+  "owner": "",
+  "parent": "v001",
+  "decision": "DROP",
+  "metrics": {
+    "hypothesis": "v001 + the already-existing address_extra feature group (addr_empty_l, reverse containment, numeric containment, postcode-prefix, address length ratio) fixes the largest measured slice loss: addr_empty pair recall 0.8968 vs 0.9783 elsewhere, at no measured precision cost",
+    "feature_groups": [
+      "blocking",
+      "name_fuzzy",
+      "name_tokens",
+      "legal",
+      "numeric",
+      "address",
+      "context",
+      "meta",
+      "address_extra"
+    ],
+    "added_group": "address_extra",
+    "v001_baseline_reproduced_on_this_machine": {
+      "f_beta": 0.9842209994205344,
+      "f_beta_singletons": 0.9845243882677037,
+      "f_beta_matched": 0.9842030254177082,
+      "pair_precision": 0.9949945547457485,
+      "pair_recall": 0.9641054142020355,
+      "entities": 441333,
+      "singletons": 24684,
+      "cand_recall": 0.9904687839582302,
+      "entity_recall": 0.9993231713024632,
+      "ceiling_f_beta": 0.9970362946256683,
+      "cands_mean": 33.06026515125767,
+      "cands_p95": 60.0,
+      "normalise_seconds": 7.61,
+      "blocking_seconds": 425.26,
+      "score_seconds": 162.27,
+      "decide_seconds": 10.37
+    },
+    "v124_metrics": {
+      "f_beta": 0.9844452639237778,
+      "f_beta_singletons": 0.983957219251337,
+      "f_beta_matched": 0.9844741776969888,
+      "pair_precision": 0.9952273608785495,
+      "pair_recall": 0.9641394542593277,
+      "entities": 441333,
+      "singletons": 24684,
+      "cand_recall": 0.9904687839582302,
+      "entity_recall": 0.9993231713024632,
+      "ceiling_f_beta": 0.9970362946256683,
+      "cands_mean": 33.06026515125767,
+      "cands_p95": 60.0,
+      "normalise_seconds": 7.41,
+      "blocking_seconds": 429.57,
+      "score_seconds": 179.55,
+      "decide_seconds": 10.54
+    },
+    "v124_blocking_report": {
+      "pair_recall": 0.9904687839582302,
+      "entity_recall": 0.9993231713024632,
+      "ceiling_f_beta": 0.9970362946256683,
+      "candidates_mean": 33.06026515125767,
+      "candidates_p95": 60.0,
+      "candidates_max": 60,
+      "candidate_pairs": 14590586,
+      "reduction_ratio": 0.9999839829340882
+    },
+    "errors": {
+      "false_merge": 6656,
+      "missed": 53236,
+      "false_singleton": 1545,
+      "singleton_merge": 407
+    },
+    "addr_empty_slice": {
+      "family": "addr_empty",
+      "slice": "yes",
+      "entities": 62530,
+      "f_beta": 0.9582110853285747,
+      "pair_precision": 0.9960038329727716,
+      "pair_recall": 0.8966642180407225,
+      "n_true": 265455,
+      "n_pred": 238979,
+      "tp": 238024
+    },
+    "timings": {
+      "normalise_seconds": 17.11,
+      "fit_load_seconds": 16.22,
+      "fit_blocking_seconds": 300.99,
+      "stop_load_seconds": 7.56,
+      "stop_blocking_seconds": 93.91,
+      "features_seconds": 165.33,
+      "fit_seconds": 326.7,
+      "tune_load_seconds": 7.41,
+      "tune_blocking_seconds": 438.05,
+      "score_seconds": 179.02,
+      "tune_seconds": 25.1
+    },
+    "fit_info": {
+      "rows": 6730918,
+      "positive_rate": 0.09955387957482174,
+      "best_iteration": 2000,
+      "tune_logloss": 0.010259446001253622,
+      "tune_auc": 0.9998071415196038,
+      "fit_seconds": 326.68
+    },
+    "decision_rule": {
+      "delta_f05": 0.00022426450324342095,
+      "delta_precision": 0.00023280613280096674
+    }
+  }
+}
