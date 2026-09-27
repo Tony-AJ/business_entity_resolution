@@ -10,7 +10,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
 | 2 | 2026-09-26 | 4 | 1 (expired) |
-| 3 | 2026-09-27 | 4 | 1 (the final upload) |
+| 3 | 2026-09-27 | 5 | 2 (per the portal at 19:00) |
 
 ## Before every upload
 
@@ -37,6 +37,16 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 ```
 
 <!-- Add submissions below this line, newest first. -->
+
+## Submission 10: 2026-09-27 18:56 IST
+- Version: v127_stage3, x3 arm (`output/` at 18:56 = `submissions/v127/`; to be confirmed by
+  the uploader)
+- Commit: 5a40304 (results), d4f0fc8 (script)
+- Change vs previous submission (v126): a third stage that recomputes the competition and
+  group features from v126's stage-2 probabilities; same decoder (w 4, miss 0.05)
+- Mock F0.5 0.9829, tight@3 0.9807 (v126 0.9828 / 0.9802); false merges 1,154 (1,259)
+- Public F0.5: **0.971** (v126 0.972): the stage-3 gain (+0.0004 on the mock) did not reach
+  the test; v126 stays the best upload
 
 ## Submission 09: 2026-09-27 18:27 IST
 - Version: v126_decoy_groups (x3 arm, `submissions/v126/`, also in `output/`)
