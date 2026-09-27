@@ -1,0 +1,162 @@
+{
+  "version": "v124",
+  "date": "2026-09-27",
+  "group": "E5",
+  "change": "v122 probabilities, isotonic calibration, tight-objective expected decode (w 4, miss 0.4); no retraining",
+  "local_f05": "",
+  "mock_f05": "0.9819",
+  "cand_recall": "",
+  "public_f05": "",
+  "commit": "7583167",
+  "notes": "val tight@3 0.9786 vs v123-x3 rule; F0.5 0.9819; judged by the public upload",
+  "owner": "M3",
+  "parent": "v123",
+  "decision": "INVESTIGATE",
+  "metrics": {
+    "hypothesis": "decoding for the tight objective on calibrated probabilities beats rule families whose set score is plain expected F0.5",
+    "stage1_stage2": "v122 (no retraining)",
+    "calibration": "isotonic on mock tune pairs",
+    "select_weight": 3.0,
+    "decode_w": 4.0,
+    "decode_miss": 0.4,
+    "grid": [
+      {
+        "w": 4.0,
+        "miss": 0.4,
+        "tune_tight3": 0.9785549166370113
+      },
+      {
+        "w": 3.0,
+        "miss": 0.0,
+        "tune_tight3": 0.9785428899906642
+      },
+      {
+        "w": 3.0,
+        "miss": 0.2,
+        "tune_tight3": 0.978536615492923
+      },
+      {
+        "w": 3.0,
+        "miss": 0.05,
+        "tune_tight3": 0.9785355134152195
+      },
+      {
+        "w": 3.0,
+        "miss": 0.1,
+        "tune_tight3": 0.9785332680765628
+      },
+      {
+        "w": 3.0,
+        "miss": 0.4,
+        "tune_tight3": 0.9784906459416081
+      },
+      {
+        "w": 4.0,
+        "miss": 0.2,
+        "tune_tight3": 0.9784827874519078
+      },
+      {
+        "w": 4.0,
+        "miss": 0.0,
+        "tune_tight3": 0.9784325645164397
+      },
+      {
+        "w": 4.0,
+        "miss": 0.1,
+        "tune_tight3": 0.9784241579770608
+      },
+      {
+        "w": 4.0,
+        "miss": 0.05,
+        "tune_tight3": 0.978415185893839
+      },
+      {
+        "w": 5.0,
+        "miss": 0.4,
+        "tune_tight3": 0.9783211765354002
+      },
+      {
+        "w": 5.0,
+        "miss": 0.2,
+        "tune_tight3": 0.9783155413202448
+      },
+      {
+        "w": 2.0,
+        "miss": 0.1,
+        "tune_tight3": 0.9782994383581421
+      },
+      {
+        "w": 2.0,
+        "miss": 0.05,
+        "tune_tight3": 0.9782988348326503
+      },
+      {
+        "w": 2.0,
+        "miss": 0.0,
+        "tune_tight3": 0.9782959145156406
+      },
+      {
+        "w": 5.0,
+        "miss": 0.1,
+        "tune_tight3": 0.9782945606356487
+      },
+      {
+        "w": 5.0,
+        "miss": 0.05,
+        "tune_tight3": 0.9782704439003392
+      },
+      {
+        "w": 5.0,
+        "miss": 0.0,
+        "tune_tight3": 0.9782578295074333
+      },
+      {
+        "w": 2.0,
+        "miss": 0.2,
+        "tune_tight3": 0.97822997158978
+      },
+      {
+        "w": 2.0,
+        "miss": 0.4,
+        "tune_tight3": 0.9780916429372379
+      }
+    ],
+    "arms": {
+      "v124 tight decode": {
+        "f_beta": 0.9819276098059088,
+        "f_beta_singletons": 0.9903186979957088,
+        "f_beta_matched": 0.9814280528179224,
+        "pair_precision": 0.9983386444197787,
+        "pair_recall": 0.9479363568368804,
+        "entities": 340084.0,
+        "singletons": 19109.0,
+        "tight_1.45": 0.9811887839752729,
+        "tight_3": 0.978643939447527
+      },
+      "v124 uncalibrated": {
+        "f_beta": 0.9819057773916787,
+        "f_beta_singletons": 0.9904233607200795,
+        "f_beta_matched": 0.98139868961281,
+        "pair_precision": 0.9983437156992474,
+        "pair_recall": 0.9477697694975182,
+        "entities": 340084.0,
+        "singletons": 19109.0,
+        "tight_1.45": 0.9811683314692153,
+        "tight_3": 0.9786282399585083
+      }
+    },
+    "v123_fp3_val": {
+      "f_beta": 0.9823459653548922,
+      "f_tight": 0.9815197489033329,
+      "est_public": 0.974319748903333
+    },
+    "v123_fp3_val_tight3": 0.978673892236851,
+    "delta_tight3_vs_v123": -2.99527893239393e-05,
+    "test_pairs": 5701277,
+    "test_pairs_by_country": {
+      "France": 831229,
+      "India": 2644183,
+      "US": 2225865
+    }
+  }
+}
