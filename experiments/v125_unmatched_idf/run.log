@@ -1,0 +1,24 @@
+[15:11:28 +  2.5 min] mock India: 3,107,336 kept pairs featured (51 s)
+[15:12:07 +  3.2 min] mock US: 2,789,901 kept pairs featured (39 s)
+C:\Users\user\OneDrive\Documents\projects\business_entity_resolution\.venv\Lib\site-packages\xgboost\core.py:774: UserWarning: [15:16:37] WARNING: C:\actions-runner\_work\xgboost\xgboost\src\common\error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+[15:20:59 + 12.0 min] stage 2 refit: {'fold0': {'rows': 2219185, 'positive_rate': 0.7894330576315178, 'best_iteration': 1014, 'tune_logloss': 0.04821794657090793, 'tune_auc': 0.9973462407678625, 'fit_seconds': 255.73}, 'fold1': {'rows': 2218006, 'positive_rate': 0.78929452850894, 'best_iteration': 960, 'tune_logloss': 0.04948540897798878, 'tune_auc': 0.9971028923214214, 'fit_seconds': 241.1}, 'rows': 4437191, 'positive_rate': 0.7893638114744216}
+[15:24:28 + 15.5 min] new columns' gain share 0.00373; {'uidf_max_l': 0.00066, 'uidf_max_r': 0.00138, 'uidf_sum_l': 0.00047, 'uidf_sum_r': 0.00099, 'uidf_share': 0.00023, 'unum_conflict': 0.0}
+[15:25:41 + 16.7 min] tune grid (top 3):
+  w  miss  tune_tight3
+4.0  0.10     0.978791
+3.0  0.00     0.978777
+4.0  0.05     0.978774
+[15:26:01 + 17.1 min] val: F0.5 0.98185, tight@1.45 0.98117, tight@3 0.97884, errors {'false_merge': 1497, 'singleton_merge': 185, 'missed': 60514, 'false_singleton': 1709} (v123 x3: F0.5 0.98235, false merges 1904)
+[15:27:47 + 18.8 min] test France: 1,600,939 pairs, 831,507 matches (104 s)
+[15:31:49 + 22.9 min] test India: 3,587,255 pairs, 2,641,276 matches (242 s)
+[15:35:05 + 26.1 min] test US: 3,032,833 pairs, 2,220,803 matches (196 s)
+[15:35:59 + 27.0 min] wrote C:\Users\user\OneDrive\Documents\projects\business_entity_resolution\submissions\v125 (5,693,586 pairs): checker PASS
+[15:35:59 + 27.0 min] copied to output/
+[15:35:59 + 27.0 min] logged {'version': 'v125', 'date': '2026-09-27', 'group': 'C4', 'change': 'unmatched-token IDF + number-conflict features in stage 2; isotonic + tight decode; one seed', 'local_f05': '', 'mock_f05': '0.9818', 'cand_recall': '', 'public_f05': '', 'commit': '61417b0', 'notes': "val tight@3 0.9788, F0.5 0.9818, false merges 1497 (v123 x3: 1904); new columns' gain share 0.0037; judged by the public upload", 'owner': 'M3', 'parent': 'v124', 'decision': 'INVESTIGATE'}
