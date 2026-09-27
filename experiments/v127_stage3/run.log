@@ -1,0 +1,43 @@
+[18:18:37 +  1.4 min] mock built; v126 stage-2 models loaded
+/home/suryaguru/StudioProjects/aws/business_entity_resolution/.venv/lib64/python3.12/site-packages/xgboost/core.py:774: UserWarning: [18:19:42] WARNING: /workspace/src/common/error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+[18:20:54 +  3.6 min] mock India: 3,200,325 pairs, stage-3 frame (3200325, 129) (137 s)
+[18:22:46 +  5.5 min] mock US: 2,843,479 pairs, stage-3 frame (2843479, 129) (112 s)
+[18:24:26 +  7.2 min] stage 3 fit 101 s: {'fold0': 74, 'fold1': 93}
+[18:24:57 +  7.7 min] stage-3 columns' gain share 0.9897
+top
+feature
+pool_gap_2            0.821029
+p1_2                  0.160800
+s1_gap_2              0.003961
+s1_p1_sum_2           0.000978
+pool_p1_sum_2         0.000846
+pool_gap              0.000835
+pool_best_other_2     0.000639
+pool_degree_2         0.000471
+p1                    0.000443
+pool_p1_sum           0.000352
+sim_name_addr_word    0.000328
+pool_best_other       0.000270
+pool_rank_2           0.000267
+s1_p1_sum             0.000253
+fq_first_pool_l       0.000237
+dtype: float64
+[18:26:40 +  9.4 min] v127 arm x3: {"w": 4.0, "miss": 0.05, "f_beta": 0.9828962838685998, "pair_precision": 0.998857148979559, "pair_recall": 0.9508448357924798, "tight1.45": 0.9823910046428349, "tight3": 0.9806505984207552, "tight6": 0.9772820702489884, "errors": {"false_merge": 1154, "singleton_merge": 126, "missed": 56103, "false_singleton": 1731}}
+[18:26:57 +  9.7 min] v127 arm x6: {"w": 8.0, "miss": 0.2, "f_beta": 0.9811048360685471, "pair_precision": 0.9992480756673329, "pair_recall": 0.9442595362752431, "tight1.45": 0.9807791732479608, "tight3": 0.9796574457548304, "tight6": 0.9774863602842554, "errors": {"false_merge": 757, "singleton_merge": 79, "missed": 63541, "false_singleton": 2041}}
+[18:26:57 +  9.7 min] val tight@3 v126 0.98024 -> v127 0.98065; better
+[18:28:17 + 11.0 min] test France: 1,590,100 pairs scored (80 s)
+[18:31:58 + 14.7 min] test India: 3,889,020 pairs scored (220 s)
+[18:34:55 + 17.7 min] test US: 3,339,480 pairs scored (177 s)
+[18:36:08 + 18.9 min] test arm x3: {'pairs': 5675496, 'by_country': {'France': 811194, 'India': 2653532, 'US': 2210770}, 's1_matched': 1628495, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v127'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[18:36:08 + 18.9 min] x3 arm copied to output/
+[18:37:16 + 20.0 min] test arm x6: {'pairs': 5606873, 'by_country': {'France': 799266, 'India': 2625603, 'US': 2182004}, 's1_matched': 1626728, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v127_fp6'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[18:37:16 + 20.0 min] logged {'version': 'v127', 'date': '2026-09-27', 'group': 'D3', 'change': 'stage 3 on v126: competition + group features from p2; isotonic + tight decode (x3)', 'local_f05': '', 'mock_f05': '0.9829', 'cand_recall': '', 'public_f05': '', 'commit': '78d6b1c', 'notes': 'val tight@3 0.9807 (v126 0.9802); F0.5 0.9829; false merges 1154 (v126 1259); x6 arm in submissions/v127_fp6', 'owner': 'M1', 'parent': 'v126', 'decision': 'INVESTIGATE'}; done, peak RSS 6.1 GB

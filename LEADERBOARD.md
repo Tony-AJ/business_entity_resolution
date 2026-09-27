@@ -10,7 +10,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
 | 2 | 2026-09-26 | 4 | 1 (expired) |
-| 3 | 2026-09-27 | 2 | 3 |
+| 3 | 2026-09-27 | 4 | 1 (the final upload) |
 
 ## Before every upload
 
@@ -38,7 +38,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 
 <!-- Add submissions below this line, newest first. -->
 
-## Submission 09: 2026-09-27 ~18:30 IST
+## Submission 09: 2026-09-27 18:27 IST
 - Version: v126_decoy_groups (x3 arm, `submissions/v126/`, also in `output/`)
 - Commit: 3db87ac (results), b84d0fe (script)
 - Change vs previous submission (v123): v110's stage 1 and candidates; stage 2 refitted with
@@ -51,9 +51,17 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
   false merges on mock val 1,259 (v123 1,904), missed 56,205 (v123 57,220)
 - Test: 5,686,273 pairs (v123 fp3 5,723,885): France 819,245, India 2,652,987, US 2,214,041;
   1,629,743 S1 matched
-- Public F0.5: pending
-- Notes: both checkers PASS. If public rises, the decoy features transfer; the x6 arm
-  (`submissions/v126_fp6/`, 5,621,515 pairs, mock false merges 839) tests stricter decoding.
+- Public F0.5: **0.972** (+0.004 over v123, best so far): the decoy features transfer, 2.5x
+  their mock gain (tight@3 +0.0016). Read against v123 (false merges -34 %, misses flat), the
+  public board charges a false merge about 6-7 times a miss (v122 -> v123 alone implied 4.3)
+- Notes: both checkers PASS. The x6 arm (`submissions/v126_fp6/`, 5,621,515 pairs, mock false
+  merges 839) was not uploaded.
+
+## Submission 08b: 2026-09-27 16:31 IST (entry added from the portal list)
+- Version: not logged here; uploaded by a teammate between submissions 08 and 09 (likely
+  v124 or v125 from M3's machine, both ready by 15:36)
+- Public F0.5: **0.969**
+- Notes: seen on the portal's submissions page at 18:40; counts toward day 3's budget.
 
 ## Submission 08: 2026-09-27 10:41 IST
 - Version: v123_tight_rule (weight-3 arm, `submissions/v123_fp3/`)
