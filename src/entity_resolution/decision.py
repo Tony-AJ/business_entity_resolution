@@ -455,6 +455,51 @@ def tune_expected(scored: pd.DataFrame, s1_ids: Iterable[str], truth_pairs: pd.D
     return ExpectedRule(float(best["gamma"]), float(best["miss"]), max_matches, True), table
 
 
+# ------------------------------------------------------ tight decoding ----
+TIGHT_EPS = 1e-7  # calibrated probabilities are clipped to [eps, 1 - eps] (log1p(-1) is -inf)
+
+
+def decode_tight(scored: pd.DataFrame, w: float, miss: float,
+                 max_matches: int = 11) -> pd.DataFrame:
+    """Per-entity prefix maximising the plug-in expected *tight* score; pool-side 1-to-1 first.
+
+    The decision layer of the final version (v124, v126). With F the F0.5 of a prefix and F*
+    its F0.5 with the false positives removed, the tight score charges a false merge ``w``
+    times what plain F0.5 charges (``evaluate.entity_tight_from_counts``):
+
+        tight(prefix) = w * E[F] - (w - 1) * E[F*]
+
+    by plug-in expectations over ``prob`` (calibrated). ``miss`` is the expected number of
+    true matches the candidates lack; keeping nothing is worth P(no true match) =
+    prod(1 - prob) * exp(-miss). ``scored``: source1_entity_id, entity_id, prob. Returns the
+    kept pairs (with ``prob``), entity by entity, best first.
+    """
+    s = one_to_one_filter(scored[[C.S1_ID, C.ENTITY_ID, "prob"]])
+    s = s.sort_values([C.S1_ID, "prob"],
+                      ascending=[True, False], kind="stable").reset_index(drop=True)
+    s1, _ = pd.factorize(s[C.S1_ID], use_na_sentinel=False)
+    q = np.clip(s["prob"].to_numpy(np.float64), TIGHT_EPS, 1.0 - TIGHT_EPS)
+    n = s1.max() + 1 if len(s1) else 0
+    total = np.bincount(s1, weights=q, minlength=n) + miss     # E[n_true]
+    empty = np.exp(np.bincount(s1, weights=np.log1p(-q), minlength=n) - miss)
+    start = np.r_[True, s1[1:] != s1[:-1]] if len(s1) else np.zeros(0, dtype=bool)
+    starts = np.flatnonzero(start)
+    rank = np.arange(len(s1)) - np.maximum.accumulate(np.where(start, np.arange(len(s1)), 0))
+    cum = np.cumsum(q)
+    cum = cum - np.r_[0.0, cum][np.maximum.accumulate(np.where(start, np.arange(len(s1)), 0))]
+    ef = 1.25 * cum / (0.25 * total[s1] + rank + 1)            # E[F0.5] of the prefix
+    ef_star = 1.25 * cum / (0.25 * total[s1] + cum)            # E[F0.5] w/o false positives
+    tight = w * ef - (w - 1.0) * ef_star
+    tight[rank >= max_matches] = -np.inf
+    best = np.full(n, -np.inf)
+    best[s1[starts]] = np.maximum.reduceat(tight, starts)
+    at_best = np.where(tight >= best[s1] - 1e-12, rank, np.iinfo(np.int64).max)
+    k = np.zeros(n, dtype=np.int64)
+    k[s1[starts]] = np.minimum.reduceat(at_best, starts)
+    keep = (rank <= k[s1]) & (best[s1] > empty[s1])
+    return s.loc[keep, [C.S1_ID, C.ENTITY_ID, "prob"]].reset_index(drop=True)
+
+
 def apply_rule(scored: pd.DataFrame, rule: DecisionRule | ExpectedRule) -> pd.DataFrame:
     """``decide`` for a threshold rule, ``decide_expected`` for an expected-F0.5 rule."""
     return decide_expected(scored, rule) if isinstance(rule, ExpectedRule) else decide(scored,
