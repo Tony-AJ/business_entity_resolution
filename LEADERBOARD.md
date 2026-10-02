@@ -12,6 +12,19 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 | 2 | 2026-09-26 | 4 | 1 (expired) |
 | 3 | 2026-09-27 | 6 | 1 (per the portal at 19:55) |
 
+## Final package
+
+The final submission is **submission 09: `v126_decoy_groups`, x3 arm, public F0.5 0.972**,
+the team's best upload. The zip ships its exact files (`submissions/v126/`):
+
+| File | sha256 |
+|---|---|
+| `matching_results.tsv` | `617c9822921c959c6dbee6fceeda42642afb1974d23cbee4c86548ab86605fa5` |
+| `candidate_pairs.tsv` | `7164d366a0c00209003db6affadcacd1448479c76798a74ee7936e9ed6a12754` |
+
+`python -m entity_resolution.final` (`make reproduce`) rebuilds both files byte for byte from
+the organisers' data; `make verify OUT=<dir>` compares a folder's files with these hashes.
+
 ## Before every upload
 
 1. The version has a row in `experiments/experiments.csv` with its local F0.5 on the fixed
@@ -60,8 +73,9 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
   63,337 (56,205)
 - Expected public: ~0.973: x3 -> x6 on the stage-3 model gave +0.001 (v127 0.971 -> v128
   0.972), and v126 without stage 3 is 0.001 above it at x3
-- Public F0.5: pending
-- Notes: both checkers PASS (ids checked).
+- Public F0.5: not recorded in this log
+- Notes: both checkers PASS (ids checked). The final package ships submission 09 instead
+  (v126 x3, public 0.972): the team's best upload (see "Final package" above).
 
 ## Submission 10: 2026-09-27 18:56 IST
 - Version: v127_stage3, x3 arm (`output/` at 18:56 = `submissions/v127/`; to be confirmed by
