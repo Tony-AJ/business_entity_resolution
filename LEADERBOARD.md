@@ -2,7 +2,7 @@
 
 Auditable log of every upload to the challenge portal, newest first. Budget: **5 per day,
 15 in total** (25–27 Sep 2026, IST). Uploads are only for versions shortlisted by local
-F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
+F0.5, never for exploring ideas ([docs/plan/15](docs/plan/15_LEADERBOARD_STRATEGY.md)).
 
 ## Budget
 

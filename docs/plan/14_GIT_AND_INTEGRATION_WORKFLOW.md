@@ -43,7 +43,7 @@ make lint test                                # green before the first commit
 
 Verify with `git config --get core.hooksPath` (`.githooks`) and `git var GIT_AUTHOR_IDENT`.
 AI assistants work under your identity: the hooks reject `claude`/`anthropic` in author,
-committer or trailers; your `CLAUDE.md` and `.claude/settings.local.json` are gitignored.
+committer or trailers; your `CLAUDE.md` and `.claude/` are gitignored.
 
 ## 3. Commit rules, exactly as the hooks check them
 

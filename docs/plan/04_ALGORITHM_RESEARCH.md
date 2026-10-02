@@ -1,8 +1,8 @@
 # 04 — Algorithm research: technique cards and the chosen stack
 
 Audience: everyone, before deciding what to build in your module. One card per technique,
-grouped by pipeline stage (A–G, matching the plan groups in
-`.claude/rules/project-rules.md` §5 and the stages of `02_SYSTEM_ARCHITECTURE.md` §1). Every
+grouped by pipeline stage (A–G, matching the plan groups in the README, §9, and the
+stages of `02_SYSTEM_ARCHITECTURE.md` §1). Every
 claim about our data quotes a measurement from `01_PROBLEM_ANALYSIS.md` §3 (train, 220k true
 pairs); `[n]` resolves in `17_RESEARCH_REFERENCES.md`. §8 states what we build and why the
 rest is not built.
