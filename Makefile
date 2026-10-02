@@ -6,7 +6,7 @@ PY := $(VENV_BIN)/python
 DATASET = $(shell $(PY) -c 'from entity_resolution.config import DATASET; print(DATASET)')
 OFFICIAL_VALIDATOR := dataset/student_resource/utils/validate_submission.py
 
-.PHONY: setup hooks cache lint test score validate experiment nb public package
+.PHONY: setup hooks cache lint test score validate experiment nb public package reproduce verify
 
 setup:  ## .venv with pinned runtime deps + editable package + dev tools
 	$(PYTHON) -m venv .venv
@@ -37,6 +37,13 @@ public:  ## record a leaderboard score in experiments.csv: make public V=v004 SC
 
 score:  ## macro F0.5 breakdown: make score PRED=<matching.tsv> TRUTH=<ground_truth.tsv>
 	$(PY) -m entity_resolution.metrics --pred $(PRED) --truth $(TRUTH)
+
+reproduce:  ## the final submission end to end -> output/*.tsv (~3.5 h): make reproduce [STAGE=a|b] [DEVICE=cpu]
+	$(PY) -m entity_resolution.final $(if $(STAGE),--stage $(STAGE)) \
+		$(if $(DEVICE),--device $(DEVICE)) $(ARGS)
+
+verify:  ## sha256 of OUT's two TSVs vs the uploaded files: make verify [OUT=../../output]
+	$(PY) -m entity_resolution.final --verify $(or $(OUT),output)
 
 validate:  ## output/*.tsv vs submission rules: our checker, then the organisers' validator
 	$(PY) -m entity_resolution.submission --output-dir output

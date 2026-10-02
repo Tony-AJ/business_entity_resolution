@@ -20,6 +20,10 @@ the French pool's address abbreviations ``12B`` (``12 bis``), ``Crs``, ``Psg`` /
 ``Appt`` / ``App`` read like the full forms; and the record's own country name, which Source 1
 writes into names (``(France)``, ``(India)``) and the pool drops, leaves ``name_core``.
 
+``NormaliseConfig.rules`` runs an earlier rules version: every v4 and v5 rule, and every map
+entry they added (``token_maps.*_SINCE``), is off below its version. ``rules=3`` rebuilds the
+records of v110, whose stage 1 the final submission uses, under its cache key ``47a4dda7``.
+
 Learned filler tokens (opt-in, ``NormaliseConfig.learn_fillers``): the pool writes words into
 the names of true matches that Source 1 lacks ("center", "services", alias markers such as
 "dba"); ``fit_fillers`` learns them from train-fold true pairs and ``add_nofill`` adds
@@ -39,6 +43,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -59,6 +64,10 @@ NOFILL = "name_core_nofill"  # opt-in: name_core without the learned fillers (ad
 #    crs, psg / pass, appt / app / appartement), own country name out of name_core; US and
 #    India records change too.
 RULES_VERSION = 5
+# Oldest rules a version can still run (NormaliseConfig.rules): every rule of v4 and v5 is
+# switched by the version, so v110's normalisation (rules v3, the final submission's stage
+# 1) is rebuilt byte for byte by the current code.
+MIN_RULES = 3
 
 # Letters of non-Latin scripts (Greek to Indic to CJK): the rows anyascii must transliterate.
 NON_LATIN_RE = r"[\x{0370}-\x{1DBF}\x{2C00}-\x{2DFF}\x{3000}-\x{D7FF}]"
@@ -68,9 +77,11 @@ NUMBER_MARKER_RE = r"(?i)\bn\s*[°º]"
 
 from .token_maps import (  # noqa: E402  (re-exported: tests and features import them from here)
     ADDRESS_TOKENS,
+    ADDRESS_TOKENS_SINCE,
     HONORIFIC_RE,
     LEET,
     LEGAL_FORMS,
+    LEGAL_FORMS_SINCE,
     NAME_TOKENS,
     REGION_ABBREV,
     TRANSLIT_LEGAL,
@@ -85,6 +96,9 @@ class NormaliseConfig:
     strip_legal: bool = True        # legal forms out of name_core (R5)
     expand_abbrev: bool = True      # address token map (R7)
     own_country: bool = True        # the record's own country name out of name_core (v5)
+    # rules version to run, MIN_RULES..RULES_VERSION: each later rule (and each later map
+    # entry, token_maps.*_SINCE) is off below its version, so 3 rebuilds v110's records
+    rules: int = RULES_VERSION
     region_map: Mapping[str, str] | None = None  # None -> static REGION_ABBREV
     chunk_rows: int = 1_000_000     # rows normalised at a time (bounds peak memory)
     # learned transliterated-token -> Latin-token map for non-Latin names (fit_token_map);
@@ -101,8 +115,25 @@ class NormaliseConfig:
     filler_min_share: float = 1e-4
     filler_min_ratio: float = 1.0
 
+    def __post_init__(self) -> None:
+        """Refuse a rules version the code cannot rebuild."""
+        if not MIN_RULES <= self.rules <= RULES_VERSION:
+            raise ValueError(f"rules must be in {MIN_RULES}..{RULES_VERSION}, got {self.rules}")
+
 
 DEFAULT = NormaliseConfig()
+
+
+@lru_cache(maxsize=None)
+def _legal_forms(rules: int) -> dict[str, str]:
+    """``LEGAL_FORMS`` as rules version ``rules`` had it (shared: never mutate it)."""
+    return {k: v for k, v in LEGAL_FORMS.items() if LEGAL_FORMS_SINCE.get(k, 0) <= rules}
+
+
+@lru_cache(maxsize=None)
+def _address_tokens(rules: int) -> dict[str, str]:
+    """``ADDRESS_TOKENS`` as rules version ``rules`` had it (shared: never mutate it)."""
+    return {k: v for k, v in ADDRESS_TOKENS.items() if ADDRESS_TOKENS_SINCE.get(k, 0) <= rules}
 
 
 # --------------------------------------------------------------- primitives ----
@@ -274,7 +305,8 @@ def normalise_names(names: pd.Series, cfg: NormaliseConfig = DEFAULT,
     # a long single glued token ending in "com" is a domain written without its dot
     # ("orthopedichealthcom"); short words keep it ("intercom", "telecom")
     norm = pc.replace_substring_regex(norm, r"^([a-z0-9]{7,})com$", r"\1")
-    norm = _name_tokens(norm)  # v5: "et" / "+" -> "and", "frs" -> "freres"
+    if cfg.rules >= 5:
+        norm = _name_tokens(norm)  # v5: "et" / "+" -> "and", "frs" -> "freres"
     out = _name_columns(norm, non_latin, cfg, token_map, country)
     out.insert(1, "domain_form", raw_domain.to_numpy(zero_copy_only=False))
     out.index = names.index
@@ -287,18 +319,27 @@ def _name_columns(norm: pa.Array, non_latin: np.ndarray, cfg: NormaliseConfig,
     """Everything derived from ``name_norm``: the learned map, legal forms, keys (R5-R6)."""
     if token_map:  # learned transliteration fixes, on the rows written in a non-Latin script
         norm = _by_script(norm, non_latin, lambda a, m: map_tokens(a, _dict_fn(m)), {}, token_map)
-    latin_legal = {**LEGAL_FORMS}
-    translit_legal = {**LEGAL_FORMS, **TRANSLIT_LEGAL}
+    forms = _legal_forms(cfg.rules)
+    latin_legal = dict(forms)
+    translit_legal = {**forms, **TRANSLIT_LEGAL}
+    if cfg.rules >= 5:  # v5: legal forms written in leet are legal forms too
+        is_legal, legal_of = _legal_form, _legal_form
+    else:
+        def is_legal(t: str, m: Mapping[str, str]) -> bool:
+            return t in m
+
+        def legal_of(t: str, m: Mapping[str, str]) -> str:
+            return m.get(t, "")
     if cfg.strip_legal:
         core = _by_script(norm, non_latin, lambda a, m: map_tokens(
-            a, lambda t, m=m: "" if _legal_form(t, m) else _leet(t)), latin_legal, translit_legal)
+            a, lambda t, m=m: "" if is_legal(t, m) else _leet(t)), latin_legal, translit_legal)
         legal = _by_script(norm, non_latin, lambda a, m: map_tokens(
-            a, lambda t, m=m: _legal_form(t, m)), latin_legal, translit_legal)
+            a, lambda t, m=m: legal_of(t, m)), latin_legal, translit_legal)
     else:
         core = map_tokens(norm, _leet)
         legal = pa.array([""] * len(norm), type=pa.string())
-    if country is not None and cfg.own_country:  # v5: "(France)" / "(India)" leave the core
-        core = _drop_own_country(core, country)
+    if country is not None and cfg.own_country and cfg.rules >= 5:
+        core = _drop_own_country(core, country)  # v5: "(France)" / "(India)" leave the core
     core = _collapse(pc.replace_substring_regex(core, HONORIFIC_RE, ""))
     # "Dover & Co" loses "co" and keeps a dangling "and": drop it at either end
     core = _collapse(pc.replace_substring_regex(core, r"^(?:and )+|(?: and)+$|^and$", ""))
@@ -338,7 +379,7 @@ def normalise_addresses(addr: pd.Series, cfg: NormaliseConfig = DEFAULT) -> pd.D
     (``25233b`` -> ``25233 b``), leading zeros go, and street-type tokens are canonicalised.
     """
     regions = dict(cfg.region_map) if cfg.region_map is not None else REGION_ABBREV
-    arr, non_latin = fold(addr, cfg.transliterate, number_marker=True)
+    arr, non_latin = fold(addr, cfg.transliterate, number_marker=cfg.rules >= 4)
     arr = pc.replace_substring_regex(arr, r"<null>|\bn/a\b", " ")
     # --- region per comma component
     comps = pc.split_pattern(arr, ",")
@@ -369,7 +410,7 @@ def normalise_addresses(addr: pd.Series, cfg: NormaliseConfig = DEFAULT) -> pd.D
     text = pc.replace_substring_regex(text, r"\b0+(\d)", r"\1")                  # 0033 -> 33
     text = _collapse(text)
     if cfg.expand_abbrev:
-        text = map_tokens(text, _dict_fn(ADDRESS_TOKENS))
+        text = map_tokens(text, _dict_fn(_address_tokens(cfg.rules)))
 
     idx = addr.index
     norm = _series(text, idx)

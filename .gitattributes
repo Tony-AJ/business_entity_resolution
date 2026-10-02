@@ -1,3 +1,10 @@
 # Every branch appends its own version rows to experiments.csv: keep the lines of both
 # sides on merge, then re-sort and check for repeated versions (docs/plan/14 §8).
 experiments/experiments.csv merge=union
+
+# Editor and assistant settings stay in the repository but out of the submission zip, which
+# is `git archive HEAD` (scripts/package_submission.sh): they are not part of the pipeline.
+.vscode export-ignore
+.claude export-ignore
+.agents export-ignore
+skills-lock.json export-ignore

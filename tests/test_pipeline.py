@@ -281,6 +281,17 @@ def test_filler_switches_end_to_end(filler_dir: Path, tmp_path: Path) -> None:
     assert validate(matching, candidates, s1_ids, valid) == ([], [])
 
 
+def test_static_key_per_rules_version() -> None:
+    """Each rules version keeps the normalisation cache key it had when it was current:
+    rules 3 is v110's 47a4dda7 (the final submission's stage 1), the default is v5's."""
+    from entity_resolution.normalize import NormaliseConfig
+    from entity_resolution.pipeline import _static_key
+    assert _static_key(NormaliseConfig(rules=3)) == "47a4dda7"
+    assert _static_key(NormaliseConfig(rules=3, own_country=False)) == "47a4dda7"
+    assert _static_key(NormaliseConfig()) == _static_key(NormaliseConfig(rules=5)) == "d2f1da83"
+    assert _static_key(NormaliseConfig(rules=4)) not in ("47a4dda7", "d2f1da83")
+
+
 def test_learn_fillers_samples_whole_entities_past_the_cap(filler_dir: Path, tmp_path: Path,
                                                           monkeypatch) -> None:
     """Past FILLER_PAIRS pairs, fillers are learned on a hashed sample of S1 entities: a

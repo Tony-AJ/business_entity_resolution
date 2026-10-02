@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from entity_resolution import config as C
 from entity_resolution.normalize import (
@@ -409,6 +410,34 @@ def test_v5_own_country_leaves_name_core():
     off = normalise_records(_src(*rows), NormaliseConfig(own_country=False))
     assert off["name_core"].iloc[0] == "maeva france societe"
     assert normalise_names(_src(*rows)[C.NAME])["name_core"].iloc[3] == "tata motors india"
+
+
+# ------------------------------------------------------------- rules version ----
+def test_earlier_rules_versions_switch_the_later_rules_off():
+    """rules=3 rebuilds v110's records (no v4 or v5 rule); rules=4 adds v4's rules only."""
+    v3, v4 = NormaliseConfig(rules=3), NormaliseConfig(rules=4)
+    addrs = ("N° 32 R DES LAURIERS, PORNIC", "12 bis Rue Dade, Pessac", "88 CRS DE LA MARTINIQUE",
+             "4 Psg Birly", "9 R. Valles, Appt 11, Nantes")
+    assert _addrs(*addrs, cfg=v3)["addr_norm"].tolist() == [
+        "n 32 rue des lauriers pornic", "12 bis rue dade pessac", "88 crs de la martinique",
+        "4 psg birly", "9 rue valles appt 11 nantes"]
+    assert _addrs(*addrs, cfg=v4)["addr_norm"].tolist()[:2] == [
+        "32 rue des lauriers pornic", "12 bis rue dade pessac"]       # v4: the marker only
+    names = ("Aero et Cie EURL", "AERO + CIE", "Jumelage & Frs SAS", "Aide Fetes 5ARL",
+             "Bordeaux France Compagnie")
+    out = _names(*names, cfg=v3)
+    assert out["name_norm"].tolist()[:3] == ["aero et cie eurl", "aero + cie",
+                                             "jumelage and frs sas"]
+    assert out["name_core"].tolist() == ["aero et", "aero +", "jumelage and frs",
+                                         "aide fetes sarl", "bordeaux france compagnie"]
+    assert out["legal_form"].tolist() == ["co sarl", "co", "sas", "", ""]
+    assert _names(*names, cfg=v4)["name_core"].iloc[4] == "bordeaux france"  # v4: compagnie
+    own = _src(("S1-1", "Maeva (France) Societe", "", "France"))
+    assert normalise_records(own, v3)["name_core"].iloc[0] == "maeva france societe"
+    with pytest.raises(ValueError, match="rules"):
+        NormaliseConfig(rules=2)
+    with pytest.raises(ValueError, match="rules"):
+        NormaliseConfig(rules=6)
 
 
 # ----------------------------------------------------------- learned fillers ----

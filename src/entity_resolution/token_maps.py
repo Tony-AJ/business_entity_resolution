@@ -99,6 +99,14 @@ ADDRESS_TOKENS = {
     "null": "", "none": "", "nan": "", "nil": "",
 }
 
+# Entries a later rules version added (normalize.RULES_VERSION) -> that version. A version
+# that runs earlier rules (NormaliseConfig.rules) leaves them out, so its normalisation is
+# rebuilt as it ran: v110, whose stage 1 the final submission uses, ran rules v3.
+LEGAL_FORMS_SINCE = {"compagnie": 4}
+ADDRESS_TOKENS_SINCE = {
+    **dict.fromkeys(["appartement", "appt", "app", "bis", "crs", "passage", "psg", "pass"], 5),
+}
+
 # Regions: every written form (full name, postal code, anyascii of the native-script name)
 # -> one canonical code. A code shared by two countries (AR = Arkansas / Arunachal Pradesh,
 # CT = Connecticut / Chhattisgarh, OR = Oregon / Odisha) is harmless because true pairs

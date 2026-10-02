@@ -233,6 +233,12 @@ def entity_counts(pred_pairs: pd.DataFrame,
     return tp, n_pred, n_true
 
 
+def macro_tight(pred_pairs: pd.DataFrame, fold: Fold, fp_weight: float) -> float:
+    """Mean per-entity tight score of ``pred_pairs`` on ``fold`` (false merges x fp_weight)."""
+    tp, n_pred, n_true = entity_counts(pred_pairs, fold)
+    return float(entity_tight_from_counts(tp, n_pred, n_true, fp_weight).mean())
+
+
 def _fmean(f: np.ndarray) -> float:
     """``statistics.fmean`` of an array, NaN when empty (as ``breakdown`` reports it)."""
     return math.fsum(f.tolist()) / len(f) if len(f) else float("nan")

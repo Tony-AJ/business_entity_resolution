@@ -420,6 +420,44 @@ class TwoStage:
                    json.loads(info_path.read_text()) if info_path.exists() else {})
 
 
+def stage1_test_partition(cfg: PipelineConfig, stage1: Fitted, tcfg: TwoStageConfig,
+                          s1n: pd.DataFrame, country: str) -> Stage1Output:
+    """``stage1_partition`` of one test country: its rows of ``s1n`` (the test S1 records,
+    normalised with the stage-1 token map) against the country's whole test pool, with
+    frequencies counted over the country."""
+    s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
+    poolc = load_normalised("test", (2, 3), cfg, token_map=stage1.token_map,
+                            country=country, fillers=stage1.fillers)
+    s1c, poolc = _with_frequencies(cfg, s1c, poolc)
+    pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, stage1.token_map),
+                    fillers=stage1.fillers)
+    s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
+    return stage1_partition(pairs, s1c, poolc, stage1, cfg, tcfg)
+
+
+def stage1_test_outputs(cfg: PipelineConfig, stage1: Fitted, tcfg: TwoStageConfig,
+                        cache_dir: Path, timings: dict | None = None) -> list[str]:
+    """``stage1_test_partition`` of every test country, cached as ``cache_dir/test_<country>``.
+
+    What ``run_test_two_stage`` computes before stage 2, for a version whose stage 2 is
+    trained later. Returns the countries (sorted), each output already on disk.
+    """
+    timings = {} if timings is None else timings
+    s1n = load_normalised("test", (1,), cfg, token_map=stage1.token_map, fillers=stage1.fillers)
+    countries = sorted(s1n[C.COUNTRY].unique())
+    for country in countries:
+        t0 = time.perf_counter()
+
+        def compute(country: str = country) -> Stage1Output:
+            return stage1_test_partition(cfg, stage1, tcfg, s1n, country)
+
+        o = _cached_stage1(cache_dir, f"test_{country}", compute, stage1_key(tcfg))
+        timings[f"test_stage1_{country}_seconds"] = round(time.perf_counter() - t0, 2)
+        del o
+        mem_guard(f"test_stage1 {country}")
+    return countries
+
+
 def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTPUT,
                        timings: dict | None = None, cache_dir: Path | None = None
                        ) -> tuple[Path, Path, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -438,14 +476,7 @@ def run_test_two_stage(cfg: PipelineConfig, ts: TwoStage, out_dir: Path = C.OUTP
         t0 = time.perf_counter()
 
         def compute(country: str = country) -> Stage1Output:
-            s1c = s1n[(s1n[C.COUNTRY] == country).to_numpy()].reset_index(drop=True)
-            poolc = load_normalised("test", (2, 3), cfg, token_map=ts.stage1.token_map,
-                                    country=country, fillers=ts.stage1.fillers)
-            s1c, poolc = _with_frequencies(cfg, s1c, poolc)
-            pairs = prepare(s1c, poolc, cfg, _tag("test", s1c, poolc, ts.stage1.token_map),
-                            fillers=ts.stage1.fillers)
-            s1c, poolc = trim(s1c), trim(poolc)       # frees blocking's texts
-            return stage1_partition(pairs, s1c, poolc, ts.stage1, cfg, ts.tcfg)
+            return stage1_test_partition(cfg, ts.stage1, ts.tcfg, s1n, country)
 
         o = _cached_stage1(cache_dir, f"test_{country}", compute, stage1_key(ts.tcfg))
         names = ts.models[0].feature_names_
