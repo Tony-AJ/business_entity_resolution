@@ -488,6 +488,17 @@ documents: problem analysis, architecture, per-module strategy, validation, test
 appears twice in the registry (M3's `v124_tight_decode` and M2's
 `v124_address_extra_targeted`); both are kept as history.
 
+The registry's `group` column names the plan item each version tests:
+
+| Group | Plan items |
+|---|---|
+| A. Blocking | A1 exact normalised name, A2 name TF-IDF, A3 address TF-IDF, A4 character n-gram, A5 multi-pass blocking |
+| B. Normalisation | B1 basic normalisation, B2 legal suffixes, B3 abbreviations, B4 token canonicalisation, B5 address components |
+| C. Features | C1 string similarity, C2 TF-IDF, C3 address components, C4 numeric tokens, C5 country and context |
+| D. Models | D1 logistic regression, D2 random forest, D3 LightGBM, D4 XGBoost |
+| E. Decision layer | E1 global threshold, E2 threshold optimisation, E3 score gap, E4 singleton detection, E5 multi-match selection |
+| INT, HN | integrated runs (v1xx), hard-negative rounds |
+
 Other commands: `make experiment NAME=<slug>` (a new version from the template), `make nb
 NB=<notebook>` (run a notebook headless), `make score PRED=<tsv> TRUTH=<tsv>` (macro F0.5 of a
 matching file), `make package TEAM=<team> V=<version> OUT=<dir>` (the submission zip,

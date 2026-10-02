@@ -254,7 +254,7 @@ fi
 step "4/5 zip"
 # The stage's three entries go at the zip root, as in the organisers' tree (student_resource
 # README: the write-up is dropped "straight into the zip"), with no wrapping folder.
-# -r takes dotfiles too; -y stores symlinks (.claude/skills/caveman) as links, so nothing
+# -r takes dotfiles too; -y stores symlinks as links, so nothing
 # outside the stage can be pulled in. A stale zip was removed in step 2: zip would update it.
 run "(cd $(q "$STAGE") && zip -r -q -y $(q "../$NAME.zip") output code Documentation_template.md)"
 run "unzip -l $(q "$ZIP") > $(q "$LISTING")"

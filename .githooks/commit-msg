@@ -18,7 +18,7 @@ subject=$(printf '%s\n' "$msg" | sed -n '/[^[:space:]]/{p;q;}')
 
 if printf '%s\n' "$msg" \
   | grep -qiE '^co-authored-by:.*(claude|anthropic)|^claude-session:|generated with \[?claude|noreply@anthropic\.com'; then
-  fail "AI attribution is not allowed in commit messages (.claude/rules/project-rules.md, Git)"
+  fail "AI attribution is not allowed in commit messages (docs/plan/14_GIT_AND_INTEGRATION_WORKFLOW.md, section 3)"
 fi
 
 case "$subject" in
