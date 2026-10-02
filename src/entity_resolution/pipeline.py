@@ -68,7 +68,6 @@ from .features import DEFAULT_GROUPS, build_features, iter_chunks, pool_stats
 from .mock import FP_WEIGHT, PUBLIC_OFFSET, MockFold
 from .model import Matcher, MatcherParams, SeedMean
 from .normalize import (
-    RULES_VERSION,
     NormaliseConfig,
     add_nofill,
     apply_token_map,
@@ -219,13 +218,20 @@ def pool_of(fold: Fold) -> pd.DataFrame:
 
 
 def _static_key(cfg: NormaliseConfig) -> str:
-    """Cache key of the static normalisation (the learned-map switches are not part of it)."""
+    """Cache key of the static normalisation (the learned-map switches are not part of it).
+
+    Each rules version keeps the key it had when it was the current one: ``own_country``
+    arrived with rules v5, so earlier versions hash without it (rules 3 -> ``47a4dda7``, the
+    cache v110 wrote).
+    """
     d = asdict(cfg)
     for k in ("learn_token_map", "token_map_min_count", "token_map_min_share", "chunk_rows",
               "learn_fillers", "filler_min_share", "filler_min_ratio"):
         d.pop(k, None)
-    if RULES_VERSION != 1:  # version 1 keeps the original key (no cache rebuild)
-        d["rules_version"] = RULES_VERSION
+    rules = d.pop("rules")
+    if rules < 5:
+        d.pop("own_country")
+    d["rules_version"] = rules  # version 1 had no key entry; MIN_RULES is 3
     return _hash(d)
 
 
