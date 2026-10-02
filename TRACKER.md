@@ -11,7 +11,7 @@ normalisation + blocking, M3 features, M4 models + hard negatives, M5 decision +
 **From day 2 M1 owns every task** (the M2–M5 rows of the day-1 plan are folded into the
 day-2 and day-3 tables below). ETA = expected completion time, IST.
 
-Last updated: 2026-09-26 16:30 IST (day 2): night-build strategy below; v110 est_public 0.9731.
+Last updated: 2026-09-27 18:55 IST (day 3): final-stretch plan with ETAs below; best public **0.972** (v126, x3 arm).
 
 ## Day 1 — Fri 25 Sep
 
@@ -143,12 +143,39 @@ each) no longer fits, so the strategy changes:
 
 | # | Task | Owner | Plan | ETA | Status | Notes |
 |---|---|---|---|---|---|---|
-| 38 | Error-driven fixes from the mock report (blocking misses at density, empty-address pairs) | M1 | A / C | 11:00 | todo | Was #14, #16 |
-| 39 | Final matcher: more training S1, 3 seeds, rule re-tuned on the mock | M1 | D3 / E2 | 14:00 | todo | XGBoost (#19) only if LightGBM plateaus |
-| 40 | **Uploads #6–#8**: best mock versions, one change each | M1 | INT | 16:00 | todo | |
-| 41 | Freeze 18:00; final `run_test`; `make validate` | M1 | INT | 18:30 | todo | Checklist in doc 16 |
-| 42 | Package: README reproduction, `requirements.txt`, `Documentation_template.md` (1–2 pages), zip | M1 | INT | 21:00 | todo | |
-| 43 | **Uploads #9–#10** (last by 22:00 IST); git tag of the submitted commit | M1 | INT | 22:00 | todo | |
+| 38 | Error-driven fixes from the mock report (blocking misses at density, empty-address pairs) | M1 | A / C | 11:00 | dropped | Replaced by the decoy analysis of the test's uncertain pairs (#77) |
+| 39 | Final matcher: more training S1, 3 seeds, rule re-tuned on the mock | M3 | D3 / E2 | 14:00 | done | v122 (fit + tune, 127 leaves, 3 seeds = 1 seed), v123 x3 rule, v124 tight decode, v125 unmatched-IDF features |
+| 40 | **Uploads #6–#8**: best mock versions, one change each | M1 | INT | 16:00 | done | v121 0.965, v122 0.966, v123 **0.968** |
+| 41 | Freeze; final files from the best upload; `make validate` | M1 | INT | 22:00 | todo | Moved: see the final stretch (#84) |
+| 42 | Package: README reproduction, `requirements.txt`, `Documentation_template.md` (1–2 pages), zip | M1 | INT | 22:45 | todo | Moved: see the final stretch (#85) |
+| 43 | **Uploads #9–#11** (3 left today, last by 23:30 IST); git tag of the submitted commit | M1 | INT | 23:30 | todo | See the final stretch (#79, #81, #83) |
+
+## Final stretch — Sun 27 Sep, 17:50–23:59 IST (target: public ≥ 0.99)
+
+Where the public score stands: 0.968 (v123). Mock-only gains (v110, v122) never reached the
+public score; only precision moved it (+0.002 for the x3 rule). The test is less certain than
+the mock: uncertain candidates (0.2 < p1 < 0.8) per S1 are 0.15 on the mock, 0.19 India, 0.37
+US and 0.80 France on test. Reading them shows the generator's decoy: the S1 name plus or
+minus a word ("Holdings", "Comite") at a **nearby house number** (7541 vs 7532, 26 vs 23), with
+its own S2 and S3 records. No stage-1 feature reads that. 0.99 is a stretch goal: 3 uploads
+remain, and each is chosen by the mock tight@3 score first.
+
+All v126+ runs use v110's stage-1 caches on M1's machine (mock + test), so each run only
+refits the later stages: ~25–40 min instead of v122's 5.3 h.
+
+| # | Task | Owner | Plan | ETA | Status | Notes |
+|---|---|---|---|---|---|---|
+| 77 | Diagnose the mock→public gap on unlabelled test pairs; decoy signature; no ID or row-order leak in train (correlations ~0) | M1 | E | 17:50 | done | Mock (US, kept pairs): differing first numbers are true 0.97 when one contains the other, 0.65 one-digit change, 0.41 within 20; uncertain pairs with a number no other candidate holds are true 0.37, shared with one other 0.81 |
+| 78 | **v126**: stage 2 refit on v110's caches + house-number relation (`hn_*`), candidate groups (`grp_*`), v125's unmatched IDF; fit + tune, 127 leaves; isotonic + tight decode; arms x3 and x6 | M1 | C4 / E5 | 18:17 | done | 22 min run. Mock val tight@3 **0.9802** (v123 x3 0.9787, v110 control 0.9767), F0.5 0.9828; false merges 1,259 (v123 1,904), missed 56.2k (v123 57.2k); new columns 2.5 % of the gain. `submissions/v126/` (= `output/`) and `submissions/v126_fp6/`, both validators PASS |
+| 79 | **Upload #9**: v126 x3 (`output/matching_results.tsv`) | M1 | INT | 18:27 | done | **Public 0.972** (+0.004 over v123, best so far). A teammate's 16:31 upload scored 0.969: day 3 has **1 upload left** |
+| 80 | **v127**: stage 3, competition + group features recomputed from v126's stage-2 probabilities | M1 | D3 | 18:37 | done | Mock val tight@3 0.9807 (v126 0.9802), false merges 1,154 (1,259), misses 56.1k (56.2k); `submissions/v127/` (x3), `v127_fp6/` (x6) |
+| 81 | Public-weight decode: v122 -> v123 -> v126 imply false merges cost about 6x a miss on the board; v127 decoded at x3 / x4.5 / x6 / x7.5 | M1 | E5 | 18:48 | done | All arms within 0.0003 of estimated public (0.9721-0.9724 anchored on v123, ~0.973 after v126's calibration): strictness is spent |
+| 82 | Error audit of v127 on the mock (57.8k missed true pairs) | M1 | E | 18:45 | done | Never a candidate 24.9k (blocking + stage-1 filter), lost in the 1-to-1 10.7k (mostly empty-address records), below the rule 22.2k (probabilities 0.4-0.95); re-blocking dropped (~3.5 h for about +0.0013) |
+| 83 | **v128**: v127 + cohesion (fit with the entity's other candidates), unit-number and name-difference columns in stage 2, cohesion from p2 in stage 3, lr 0.05; decoded at x6 | M1 | C5 | 19:40 | doing | Started 18:48 (commit 97b0ff0) |
+| 83a | **Final upload (#11)**: v128 x6 if its val tight@6 beats v127's, else v127 x6 (`submissions/v127_fp6/`) | M1 | INT | 20:00 | todo | Expected ~0.973 public; 0.99 is out of reach for this pipeline (mock F0.5 0.983) |
+| 84 | Freeze: final files in `output/` from the final upload; both validators PASS; git tag | M1 | INT | 20:30 | todo | |
+| 85 | Package: methodology update (decoy features, stage 3, public-weight decode), README reproduction, `make package`, zip check | M1 | INT | 22:00 | todo | Organisers' template, 1–2 pages |
+| 86 | Buffer: re-uploads only on a validator failure | – | – | 23:59 | – | Portal closes 23:59 IST |
 
 ## Versions
 

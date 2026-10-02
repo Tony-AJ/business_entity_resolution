@@ -1,0 +1,44 @@
+[17:56:12 +  1.5 min] mock built; token map 536 tokens
+[17:57:26 +  2.7 min] mock India: 3,200,325 kept pairs featured (74 s); corr with label {"hn_eq": 0.526, "hn_substr": 0.45, "hn_onedigit": 0.414, "hn_near": 0.432, "hn_absdiff": 0.128, "hn_missing": -0.418, "grp_num_n": 0.453, "grp_num_p1max": 0.575, "grp_num_xsrc": 0.481, "grp_s1num_n": 0.1, "grp_name_n": -0.035, "grp_name_p1max": 0.147, "grp_addr_n": 0.448}
+[17:58:20 +  3.6 min] mock US: 2,843,479 kept pairs featured (54 s); corr with label {"hn_eq": 0.614, "hn_substr": 0.514, "hn_onedigit": 0.446, "hn_near": 0.444, "hn_absdiff": 0.102, "hn_missing": -0.553, "grp_num_n": 0.507, "grp_num_p1max": 0.623, "grp_num_xsrc": 0.567, "grp_s1num_n": 0.162, "grp_name_n": -0.095, "grp_name_p1max": 0.086, "grp_addr_n": 0.452}
+/home/suryaguru/StudioProjects/aws/business_entity_resolution/.venv/lib64/python3.12/site-packages/xgboost/core.py:774: UserWarning: [18:00:27] WARNING: /workspace/src/common/error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+[18:02:20 +  7.6 min] stage 2 fit 240 s: {'fold0': 598, 'fold1': 528}
+[18:04:14 +  9.5 min] new columns' gain share 0.0248; {'hn_eq': 0.0003, 'hn_substr': 0.0008, 'hn_onedigit': 0.0004, 'hn_near': 0.0003, 'hn_absdiff': 0.0048, 'hn_missing': 0.0, 'grp_num_n': 0.0015, 'grp_num_p1max': 0.0051, 'grp_num_xsrc': 0.0005, 'grp_s1num_n': 0.0005, 'grp_name_n': 0.0008, 'grp_name_p1max': 0.0008, 'grp_addr_n': 0.0004, 'uidf_max_l': 0.0009, 'uidf_max_r': 0.0043, 'uidf_sum_l': 0.0006, 'uidf_sum_r': 0.0025, 'uidf_share': 0.0002, 'unum_conflict': 0.0}
+top
+feature
+pool_gap              0.670250
+p1                    0.164252
+s1_gap                0.065996
+s1_p1_sum             0.006861
+grp_num_p1max         0.005125
+pool_p1_sum           0.005117
+hn_absdiff            0.004819
+pool_best_other       0.004447
+uidf_max_r            0.004256
+s1_n_likely           0.004094
+pool_rank             0.003102
+uidf_sum_r            0.002522
+sim_name_addr_word    0.001795
+num_first_eq          0.001639
+riv_addr_gap          0.001609
+dtype: float64
+[18:05:57 + 11.2 min] v126 arm x3: {"w": 4.0, "miss": 0.4, "f_beta": 0.9828066464327964, "pair_precision": 0.9987349050152043, "pair_recall": 0.950786190249541, "tight1.45": 0.9822291770572157, "tight3": 0.9802401158746596, "tight6": 0.9763903200374549, "errors": {"false_merge": 1259, "singleton_merge": 158, "missed": 56205, "false_singleton": 1698}}
+[18:06:13 + 11.5 min] v126 arm x6: {"w": 8.0, "miss": 0.4, "f_beta": 0.9812573274971742, "pair_precision": 0.9991575324421939, "pair_recall": 0.9445094172842864, "tight1.45": 0.9808814541511585, "tight3": 0.9795867792926599, "tight6": 0.9770809569858884, "errors": {"false_merge": 839, "singleton_merge": 98, "missed": 63337, "false_singleton": 1951}}
+[18:07:55 + 13.2 min] v110 control arm x3: {"w": 4.0, "miss": 0.4, "f_beta": 0.9804531416973304, "pair_precision": 0.9980630201253646, "pair_recall": 0.9442076902155436, "tight1.45": 0.9796007680966745, "tight3": 0.9766648145833043, "tight6": 0.9709823239122649, "errors": {"false_merge": 1928, "singleton_merge": 228, "missed": 63816, "false_singleton": 1827}}
+[18:08:10 + 13.5 min] v110 control arm x6: {"w": 8.0, "miss": 0.4, "f_beta": 0.9782734178091949, "pair_precision": 0.9987165137065451, "pair_recall": 0.9358222275107092, "tight1.45": 0.9777282339627419, "tight3": 0.9758503784916265, "tight6": 0.9722158195152737, "errors": {"false_merge": 1275, "singleton_merge": 140, "missed": 73291, "false_singleton": 2218}}
+[18:09:16 + 14.6 min] test France: 1,590,100 pairs scored (66 s)
+[18:12:16 + 17.6 min] test India: 3,889,020 pairs scored (180 s)
+[18:14:38 + 19.9 min] test US: 3,339,480 pairs scored (142 s)
+[18:15:50 + 21.1 min] test arm x3: {'pairs': 5686273, 'by_country': {'France': 819245, 'India': 2652987, 'US': 2214041}, 's1_matched': 1629743, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v126'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[18:15:50 + 21.1 min] x3 arm copied to output/
+[18:17:01 + 22.3 min] test arm x6: {'pairs': 5621515, 'by_country': {'France': 806166, 'India': 2628213, 'US': 2187136}, 's1_matched': 1627768, 'dir': '/home/suryaguru/StudioProjects/aws/business_entity_resolution/submissions/v126_fp6'}; check: PASS | official: ot checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.
+PASS — no blocking issues found. Safe to submit.
+[18:17:01 + 22.3 min] logged {'version': 'v126', 'date': '2026-09-27', 'group': 'C4', 'change': 'v110 caches; stage 2 + house-number relation, candidate-group and unmatched-IDF features; isotonic + tight decode (x3)', 'local_f05': '', 'mock_f05': '0.9828', 'cand_recall': '', 'public_f05': '', 'commit': 'd4f0fc8', 'notes': 'val tight@3 0.9802 (v110 control 0.9767); F0.5 0.9828; false merges 1259 (control 1928); x6 arm in submissions/v126_fp6', 'owner': 'M1', 'parent': 'v110', 'decision': 'INVESTIGATE'}; done, peak RSS 5.95 GB

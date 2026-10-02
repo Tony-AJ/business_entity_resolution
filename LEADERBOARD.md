@@ -10,7 +10,7 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 |---|---|---|---|
 | 1 | 2026-09-25 | 2 | 3 (expired) |
 | 2 | 2026-09-26 | 4 | 1 (expired) |
-| 3 | 2026-09-27 | 2 | 3 |
+| 3 | 2026-09-27 | 6 | 1 (per the portal at 19:55) |
 
 ## Before every upload
 
@@ -37,6 +37,66 @@ F0.5, never for exploring ideas (`.claude/rules/project-rules.md`, section 3).
 ```
 
 <!-- Add submissions below this line, newest first. -->
+
+## Submission 11: 2026-09-27 19:53 IST
+- Version: v128_cohesion, x6 arm (`submissions/v128/`)
+- Commit: 13f84b4 (results), 97b0ff0 (script)
+- Change vs submission 10 (v127 x3): cohesion, unit-number and name-difference columns in
+  stage 2, cohesion from p2 in stage 3, decoded at x6 (w 6, miss 0) instead of x3
+- Mock F0.5 0.9821, tight@6 0.9779 (v127 x6 0.9775, v126 x6 0.9771); false merges 858
+- Public F0.5: **0.972** (v127 x3 0.971): the stricter decode gained +0.001 on the stage-3
+  model; v128's stage 2 alone equals v126 on the mock, so v126 x6 is expected ~0.973
+
+## Submission 12: 2026-09-27 (planned final)
+- Version: v126_decoy_groups, x6 arm (`submissions/v126_fp6/`, also in `output/`)
+- Commit: 3db87ac (v126 results, both arms written by the same run)
+- Change vs submission 09 (v126 x3, public 0.972): the same probabilities, decoded for the
+  false-merge weight the public uploads imply (selected by tight@6 on tune: w 8, miss 0.4)
+  instead of tight@3; 64,758 fewer predicted pairs (5,621,515)
+- Why not v127/v128: stage 3 scored 0.971 public against v126's 0.972 while the mock
+  promised +0.0004, and v128 without stage 3 equals v126 on the mock (tight@6 0.97710 vs
+  0.97708), so v128's mock gain is stage 3's
+- Mock F0.5 0.9813, tight@6 0.9771 (x3 arm 0.9764); false merges 839 (x3 arm 1,259), missed
+  63,337 (56,205)
+- Expected public: ~0.973: x3 -> x6 on the stage-3 model gave +0.001 (v127 0.971 -> v128
+  0.972), and v126 without stage 3 is 0.001 above it at x3
+- Public F0.5: pending
+- Notes: both checkers PASS (ids checked).
+
+## Submission 10: 2026-09-27 18:56 IST
+- Version: v127_stage3, x3 arm (`output/` at 18:56 = `submissions/v127/`; to be confirmed by
+  the uploader)
+- Commit: 5a40304 (results), d4f0fc8 (script)
+- Change vs previous submission (v126): a third stage that recomputes the competition and
+  group features from v126's stage-2 probabilities; same decoder (w 4, miss 0.05)
+- Mock F0.5 0.9829, tight@3 0.9807 (v126 0.9828 / 0.9802); false merges 1,154 (1,259)
+- Public F0.5: **0.971** (v126 0.972): the stage-3 gain (+0.0004 on the mock) did not reach
+  the test; v126 stays the best upload
+
+## Submission 09: 2026-09-27 18:27 IST
+- Version: v126_decoy_groups (x3 arm, `submissions/v126/`, also in `output/`)
+- Commit: 3db87ac (results), b84d0fe (script)
+- Change vs previous submission (v123): v110's stage 1 and candidates; stage 2 refitted with
+  the decoy-signature columns: house-number relation (containment, one-digit change, gap),
+  candidate groups of the same S1 (who else holds the pair's number, name, address) and
+  v125's unmatched-token IDF; fit + tune entities, 127 leaves; isotonic calibration and the
+  tight decoder (w 4, miss 0.4) selected by tight@3 on tune
+- Threshold / decision rule: tight-objective expected decode, w 4.0, miss 0.4, max 11, 1-to-1
+- Mock F0.5 0.9828, tight@3 0.9802 (v123 x3: 0.9824 / 0.9787; v110 control 0.9805 / 0.9767);
+  false merges on mock val 1,259 (v123 1,904), missed 56,205 (v123 57,220)
+- Test: 5,686,273 pairs (v123 fp3 5,723,885): France 819,245, India 2,652,987, US 2,214,041;
+  1,629,743 S1 matched
+- Public F0.5: **0.972** (+0.004 over v123, best so far): the decoy features transfer, 2.5x
+  their mock gain (tight@3 +0.0016). Read against v123 (false merges -34 %, misses flat), the
+  public board charges a false merge about 6-7 times a miss (v122 -> v123 alone implied 4.3)
+- Notes: both checkers PASS. The x6 arm (`submissions/v126_fp6/`, 5,621,515 pairs, mock false
+  merges 839) was not uploaded.
+
+## Submission 08b: 2026-09-27 16:31 IST (entry added from the portal list)
+- Version: not logged here; uploaded by a teammate between submissions 08 and 09 (likely
+  v124 or v125 from M3's machine, both ready by 15:36)
+- Public F0.5: **0.969**
+- Notes: seen on the portal's submissions page at 18:40; counts toward day 3's budget.
 
 ## Submission 08: 2026-09-27 10:41 IST
 - Version: v123_tight_rule (weight-3 arm, `submissions/v123_fp3/`)

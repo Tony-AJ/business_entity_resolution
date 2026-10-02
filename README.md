@@ -107,28 +107,33 @@ The V1 pipeline of the research plan is in place (`src/entity_resolution/`, test
 
 ## Reproduce the final submission
 
-The final version is `v120_night_build` (the night build). From a clean clone with the organisers' zip
+The final upload is `v126_decoy_groups`'s x6 arm (`submissions/v126_fp6/`): v110's blocking,
+stage 1 and cached stage-1 outputs, then v126's stage 2 with the decoy columns, decoded for
+the false-merge weight the public uploads imply. From a clean clone with the organisers' zip
 unzipped into `dataset/` (see Setup), on Python 3.12, 12 CPU threads, 15 GB of RAM and a CUDA
 GPU for the XGBoost stages (a 4 GB RTX 2050 here):
 
 ```bash
 make setup                   # pinned environment (requirements.txt)
 make cache                   # raw TSVs -> Parquet, ~1 min
-make nb NB=experiments/v120_night_build/v120_night_build.ipynb
+# v110: normalisation, token map, blocking, GPU stage 1, and the cached stage-1 outputs of
+# the mock fold and the test split (dataset/.cache/pipeline/stage1/v110_db1f33c4_*), ~3 h
+make nb NB=experiments/v110_m3_features/v110_m3_features.ipynb
+# v126: stage 2 on those caches + house-number, candidate-group and unmatched-IDF columns;
+# isotonic calibration and the tight decoder at x3 (submissions/v126/) and x6
+# (submissions/v126_fp6/, the final), ~25 min
+.venv/bin/python experiments/v126_decoy_groups/run_v126.py > experiments/v126_decoy_groups/run.log 2>&1
+cp submissions/v126_fp6/*.tsv output/
 make validate                # our checker + the organisers' validator on output/
-make package TEAM=<team> V=v120_night_build OUT=submissions/v120   # the zip (Final package)
+make package TEAM=<team> V=v126_decoy_groups OUT=submissions/v126_fp6   # the zip (Final package)
 ```
 
-The notebook runs every stage through `entity_resolution`: normalisation and the token map
-learned from train-fold pairs, blocking per country, the GPU stage 1 trained on the train
-fold, the mock fold with the stage-1 filter, stage 2 and the rule tuned on it, then test
-inference. It writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`, copies
-both to `submissions/v120/` and runs both validators on them; its last cell prints the run
-time and peak RAM, and its scores go to `metrics.json` and `experiments/experiments.csv`.
-Models, rules and configuration are saved under `experiments/v120_night_build/artifacts/`,
-caches under `dataset/.cache/`. Seeds are fixed (split 42, inner split 4242, samples 7, mock
-5151 / 5152, cross-fitting 6161, stage-1 early stopping 7171). Without a GPU, set
-`device="cpu"` in the notebook's setup cell.
+`experiments/v126_decoy_groups/v126_decoy_groups.ipynb` documents the final version: its
+functions, the mock scores of both arms against v110's control, the logged row and a check of
+the submitted files. Models are saved under `experiments/v126_decoy_groups/artifacts/`, caches
+under `dataset/.cache/`. Seeds are fixed (split 42, inner split 4242, samples 7, mock 5151 /
+5152, cross-fitting 6161, stage-1 early stopping 7171, stage 2 seed 42). Without a GPU, set
+`device="cpu"` in the notebook's setup cell and in `run_v126.py`'s `TCFG`.
 
 ## Final package
 
