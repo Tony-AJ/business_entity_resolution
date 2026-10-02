@@ -8,10 +8,13 @@
 
 ## 1. Executive Summary
 
-Per-country multi-pass blocking, a two-stage gradient-boosted matcher and a one-owner set
-decision tuned for macro F0.5. Random validation hid the test's density of same-name decoys,
-so later versions were ranked on a leaderboard-calibrated, test-shaped mock fold: public F0.5
-rose from 0.954 to 0.966 (v107); v110 is estimated at 0.973; final v120: **TBD**.
+Per-country multi-pass blocking, a two-stage gradient-boosted matcher and a one-owner,
+calibrated set decision tuned for macro F0.5. Random validation hid the test's density of
+same-name decoys, so every change was ranked on a leaderboard-calibrated, test-shaped mock
+fold. The decisive step was reading the test's uncertain pairs: the generator's decoy is a
+second business with the S1 name plus or minus a word at a *nearby house number*, with its
+own records. Stage-2 features for that signature took public F0.5 from 0.968 to **0.972**
+(v126); the final version, v126 decoded at the false-merge weight the public uploads imply, is `submissions/v126_fp6/`.
 
 ---
 
@@ -20,118 +23,118 @@ rose from 0.954 to 0.966 (v107); v110 is estimated at 0.973; final v120: **TBD**
 ### 2.1 Problem Analysis
 
 - **Structure.** A Source 2/3 ("pool") record has at most one Source 1 (S1) owner; 5.6 % of
-  S1 are singletons; France, 15 % of test S1, is absent from train.
+  S1 are singletons; S1 average 3.46 true matches (1.67 S2, 1.79 S3); France, 15 % of test
+  S1, is absent from train.
 - **Noise.** True-pair names agree for 4.6 % as written, 48.4 % after folding case, accents,
-  punctuation and legal forms; 14.7 % share no token. 48 % of S1 core names recur in S1, so
-  addresses decide; 78–83 % of true pairs share an address number.
-- **Density.** Test entities meet 3× (US) to 6× (India) more same-name records than
-  validation ones, and ≈ 40 % of the test pool is unowned (26 % in train): both day-1
-  uploads lost 0.030 from validation to public.
+  punctuation and legal forms; 14.7 % share no token (acronyms, domains, handles, "X dba Y").
+  Each source writes its own view of a business (one S2 view can carry a corrupted house
+  number shared by all its S2 records).
+- **Decoys and density.** ≈ 40 % of the test pool has no S1 owner (26 % in train). The
+  test's candidates are far less certain than the mock's: candidates v122 scores between 0.2
+  and 0.8, per S1, are 0.15 on the mock, 0.19 India, 0.37 US, 0.80 France.
 
 ### 2.2 Solution Strategy
 
 - **Mock fold.** Per country, train is reshaped to the test's pool size and pool records per
   S1; dropped S1 leave their records as unowned decoys (40.2 % of the pool). All 1.37M S1
-  compete in the one-to-one, as on test.
-- **Tight mock.** Splitting mock loss into wrong pairs (L_FP) and the rest (L_FN),
-  public ≈ 1 − L_FN − 1.45·L_FP − 0.0072 fits uploads 2 and 3; this **est_public** ranks
-  versions since v107 and predicted its 0.966 as 0.9659.
+  compete in the one-owner step, as on test. Decisions are tuned on its tune entities and
+  scored on its val entities.
+- **Tight score.** The public score moved only with precision: splitting the mock loss into
+  false-merge (L_FP) and missed-match (L_FN) parts, the public steps v122→v123→v126 imply the
+  board charges a false merge about 6× a miss. Decoders are selected by `F − (w−1)·L_FP`.
 
-**Approach Type:** Blocking + Classifier (two-stage gradient-boosted trees) with a metric-tuned
-set decision.  
-**Core Innovation:** a leaderboard-calibrated, test-shaped mock fold that decides every change
-and trains a competition-aware stage 2.
+**Approach Type:** blocking + classifier (two-stage gradient-boosted trees) with a calibrated,
+metric-tuned set decision.  
+**Core Innovation:** decoy-aware candidate-group features, read from the unlabelled test and
+verified on a test-shaped mock fold.
 
 ---
 
 ## 3. Candidate Generation (Blocking)
 
 Normalisation: `anyascii` transliteration; case, punctuation, domain and leet folding; legal
-forms split off; a 536-token transliteration map learned from train-fold pairs; region codes,
-French départements included.
+forms split off; a 536-token transliteration map learned from train-fold pairs; region codes
+(French départements included).
 
 - **Blocking keys used** (per country): exact core name, sorted tokens or alphanumerics (pool
   groups ≤ 200); exact core name + a shared address number (≤ 100); TF-IDF top-k on core-name
   char 3-grams (10, short-address pool records), name + address word 1–2-grams (50) and
-  address words (10); from v120, exact core name without the learned filler words (≤ 50);
-  at most 120 per S1, best cosine first.
-- **Candidate pairs generated:** v107: 60.52M blocked test pairs (34.9 per S1), 4.8–6.0 per
-  S1 after the filter; v110: 69.3 per S1 blocked at mock density, 4.4 after the filter
-  (test 4.8–6.1); v120: **TBD**.
+  address words (10); at most 120 per S1, best cosine first.
+- **Candidate pairs generated:** 69.3 per S1 blocked at mock density; a learned filter then
+  keeps pairs with stage-1 probability p1 ≥ 0.01 among the entity's best 16, exactly
+  `candidate_pairs.tsv`: **5.09 per test S1** (8.82M pairs: France 6.13, India 4.80, US 5.04).
 - **How you ensured true matches were not lost:** address passes catch pairs sharing no name
   token; the cosine-ranked cap keeps same-name crowds from pushing out variants. Pair recall
-  at mock density: 0.9677 (v001–v107), 0.9780 (v105), 0.9829 (v109). A learned filter keeps
-  pairs with stage-1 probability p1 ≥ 0.01 in their entity's top 16, exactly
-  `candidate_pairs.tsv`: 34.5 → 4.6 per S1 for −0.0011 recall (v104); v110 keeps 0.9788
-  of true pairs (0.9829 before the filter) at 4.4 per S1.
+  at mock density: 0.9829 blocked, 0.9788 after the filter (4.4 kept per S1).
 
 ---
 
 ## 4. Matching Model
 
-**Features used** (76 per pair, no country feature):
-- Name features: rapidfuzz ratio, partial, token-sort, token-set, Jaro-Winkler, Levenshtein on
-  full, core and squashed names; token Jaccard, Dice; legal-form agreement.
-- Address features: token-set, partial, plain ratios; Jaccard, containment both ways; region,
-  number, house-number, postcode(-prefix) agreement.
-- Other: blocking cosines, IDF-weighted overlaps, rank and gap to the entity's best candidate,
-  and how many records share each name and address; v110's 23 new ones (`idf`,
-  `token_freq`, `ctx_idf`, `address_extra`) lifted single-stage validation F0.5 from 0.9844 to
-  0.9870 (v040); v120 adds 6 on the names without learned filler words (`center`,
-  `services`, `lnc`…). Stage 2 adds 20 from the stage-1 probabilities p1: competition (rank,
-  best rival, gap), anchor (vs the entity's best other candidate) and rival (vs the record's
-  best rival S1); v120 adds 12 learned word-evidence features: the log-odds that a word only one
-  name holds marks a true match's filler or a decoy (`holdings`, `group`, `midtown`…).
+**Features used** (no country feature):
+- **Stage 1 (76 per pair):** rapidfuzz ratio, partial, token-sort, token-set, Jaro-Winkler,
+  Levenshtein on full, core and squashed names; token Jaccard/Dice; legal-form agreement;
+  address token-set/partial ratios, Jaccard, containment, region, number, postcode agreement;
+  IDF-weighted overlaps; how many records share each name and address; blocking cosines.
+- **Stage 2 adds, from p1 (20):** competition (rank, best rival, gap on the S1 side and the
+  pool side; `pool_gap` carries 67 % of the gain), anchor (vs the entity's best other
+  candidate), rival (vs the record's best rival S1).
+- **Stage 2 adds, for decoys (v126, 19):** house-number relation of the first address numbers
+  (equal, one contains the other = truncation, one-digit change, gap ≤ 20 = the decoy's
+  neighbouring number, log gap); candidate groups of the same S1 (other candidates sharing the
+  pair's number, their best p1, from the other source; candidates holding the S1's number;
+  shared name, shared address); IDF of the name words only one side holds.
 
 **Model type:** stage 1: XGBoost on the GPU (127 leaves) on the candidate pairs of 213k
-train-fold entities absent from the mock (15M pairs): v110 one model on 7.0M rows (4 GB card),
-v120 two models on disjoint halves of the entities, averaged (12.9M rows); LightGBM up to
-v107. Stage 2: XGBoost on the GPU, cross-fitted in two parts on the mock (v110: fit entities,
-63 leaves; v120: fit + tune entities, 127 leaves, mean of 3 seeds); `pool_gap` (p1 minus the
-record's best rival) carried 72 % of its gain in v104.
+train-fold entities absent from the mock (7.0M rows). Stage 2: XGBoost on the GPU (127
+leaves), cross-fitted in two parts on the mock's fit + tune entities (4.4M kept pairs), each
+entity scored by the model that never saw it; one seed, learning rate 0.1, early stopping
+on each model's held-out part (598 and 528 trees). With stage 1 (396 trees), under 0.4M tree nodes in total.
 
 **Threshold selection method:** each pool record stays only with its highest-probability S1;
-expected-F0.5 decoding then keeps each entity's ranked prefix of highest expected F0.5 (pair
-probability p^γ, m expected misses), competing with a 3,906-rule threshold grid; both are tuned
-by exact macro F0.5 on the tight mock's tune entities (v107: γ 1.5, m 0.05, ≤ 11 matches;
-v110: γ 1.5, m 0.1; v120: **TBD**).
+probabilities are isotonic-calibrated on the mock's tune entities; each entity keeps the
+prefix of its ranked candidates that maximises the expected tight score
+`w·E[F0.5] − (w−1)·E[F0.5 without false positives]` (plug-in expectations, ≤ 11 matches).
+(w, expected misses) are selected on tune entities by the tight score at the public-implied
+weight: final w 8, 0.4 expected misses (selected at ×6; the ×3 selection gave w 4, 0.4).
 
 ---
 
 ## 5. Results & Error Analysis
 
-- **F_0.5 Score (macro):** validation fold 0.9858 (v101), best 0.9870 (v040); mock and public
-  below.
+- **F_0.5 Score (macro):** validation fold 0.9870 (single stage, v040); mock and public below.
 
-| Version | Change | Mock F0.5 | est_public | Public |
+| Version | Change | Mock F0.5 | Mock tight@3 | Public |
 |---|---|---|---|---|
 | v001 | 47 features, LightGBM, tuned rule | – | – | 0.954 |
-| v101 | + core-name frequencies (53 features) | 0.9677 | 0.955* | 0.955 |
-| v103 | rule tuned on the mock | 0.9704 | 0.961* | 0.961 |
-| v104 | two-stage, stage 2 trained on the mock | 0.9744 | 0.9654 | – |
-| v107 | rule tuned on the tight mock | 0.9745 | 0.9659 | 0.966 |
-| v110 | + 23 features, denser blocking, GPU stage 1, rival features | 0.9817 | 0.9731 | **TBD** |
-| **v120** | + rules v5, learned filler and decoy words, 2-bag stage 1, 3-seed stage 2 | **TBD** | **TBD** | **TBD** |
+| v103 | rule tuned on the mock | 0.9704 | – | 0.961 |
+| v107 | two-stage, stage 2 trained on the mock | 0.9745 | – | 0.966 |
+| v110 | + 23 features, denser blocking, GPU stage 1, rival features | 0.9817 | 0.9767† | 0.966 |
+| v123 | v122 matcher, decoder weighted for false merges ×3 | 0.9823 | 0.9787 | 0.968 |
+| v126 | + decoy columns (house number, candidate groups, unmatched IDF) | 0.9828 | 0.9802 | **0.972** |
+| v127 | + stage 3 (competition and groups from stage-2 probabilities) | 0.9829 | 0.9807 | 0.971 |
+| v128 | + group-fit columns, stage 3, ×6 decode | 0.9821 | 0.9804 | 0.972 |
+| **v126 ×6** | **final**: v126's probabilities, decoder selected at ×6 | 0.9813 | 0.9796 | **TBD** |
 
-\* tight-mock calibration points. Validation missed what mattered (v103: −0.0025 validation,
-+0.006 public).
+† through v126's decoder. Mock false merges (val entities): 3,169 (v110), 1,904 (v123), 1,259 (v126), 839 (final).
 
-- **Common false positives (wrong merges):** same-name decoys the address cannot separate: an
-  empty pool address, or a house number apart (`Osprey Group, 231 Silvermine Avenue` vs `232
-  Silvermine Ave`, a true singleton). Mock false-merge pairs: 15.9k (v101's rule), 3.5k
-  (v107), 3.2k (v110), **TBD** (v120).
-- **Common false negatives (missed matches):** misses rose in exchange (64k → 74k pairs), then
-  fell to 55k in v110 (v120 **TBD**): Indic-script names (`Baba Food` ↔ बाबा फूड), domain forms, truncations, renames,
-  pairs won by a rival S1 (0.94 % of true pairs).
+- **Common false positives (wrong merges):** an unrelated name at the S1's address (a
+  co-located business), the S1's name with an empty address, a differing unit number
+  (`225 Apt 225` vs `225 Apt 234`), a twin at the same address with a legal word added.
+- **Common false negatives (missed matches):** of 57.8k missed true pairs on the mock (v127),
+  24.9k never become candidates (heavily noised names with empty or partial addresses,
+  domains and handles), 10.7k are won by a rival S1 in the one-owner step (mostly
+  empty-address records of same-name businesses), 22.2k stay below the rule.
 
 ---
 
 ## 6. Conclusion
 
-Dense per-country blocking gives recall; the competition-aware stage 2 and one-owner decision
-give precision. Lesson: random validation hid a 0.03 drop from denser same-name decoys; a
-leaderboard-calibrated, test-shaped mock fold took public F0.5 from 0.954 to 0.966 (final
-**TBD**).
+Dense per-country blocking gives recall; a competition- and decoy-aware stage 2 and a
+calibrated one-owner decision give precision. Two lessons: random validation hid a 0.03 drop
+from denser decoys, and reading the unlabelled test's uncertain pairs found the decoy
+signature no feature read (+0.004 public, 2.5× its mock gain). Next: address-key and
+name-prefix blocking passes for the 2.1 % of true pairs never generated.
 
 ---
 
@@ -140,25 +143,29 @@ leaderboard-calibrated, test-shaped mock fold took public F0.5 from 0.954 to 0.9
 ### A. Code Artefacts
 
 `code/business_entity_resolution/` is this repository: the tested library
-`src/entity_resolution/`, one documented notebook per experiment in `experiments/` (registry
-`experiments.csv`, uploads `LEADERBOARD.md`); the final notebook is also in `src/notebooks/`.
-Entry point (`README.md`; Python 3.12, 15 GB RAM, CUDA GPU or `device="cpu"`):
+`src/entity_resolution/`, one folder per experiment in `experiments/` (registry
+`experiments.csv`, uploads `LEADERBOARD.md`); the final version's notebook and metrics are
+also in `src/notebooks/`. Entry point (`README.md`; Python 3.12, 15 GB RAM, CUDA GPU):
 
 ```bash
 make setup && make cache
-make nb NB=experiments/v120_night_build/v120_night_build.ipynb   # writes output/*.tsv
+# v110: blocking, stage 1 and the cached stage-1 outputs (mock + test)
+make nb NB=experiments/v110_m3_features/v110_m3_features.ipynb
+# final: stage 2 with the decoy columns, both decodes; the x6 arm is the final file
+.venv/bin/python experiments/v126_decoy_groups/run_v126.py > experiments/v126_decoy_groups/run.log
+cp submissions/v126_fp6/*.tsv output/
 make validate
 ```
 
 **Compliance.** Only the provided data: no external data, API, lookup or pretrained language
 model; dictionaries are hand-typed or learned from train pairs. Models: gradient-boosted trees
-from XGBoost 3.1.1 (Apache-2.0) and, up to v107, LightGBM 4.7.0 (MIT); v120 has **TBD**
-parameters (tree nodes), far below 8B; no GPL package. Country is only a partition key (no filter, feature
-or threshold): France, unseen in train, gets a row per entity (v107: 94.5 % of French S1
-matched; India 93.7 %, US 94.1 %).
+from XGBoost 3.1.1 (Apache-2.0) and, up to v107, LightGBM 4.7.0 (MIT); under 0.4M tree nodes,
+far below 8B parameters; no GPL package. Country is only a partition key (no filter, feature
+or threshold): France, unseen in train, gets a row per entity.
 
 ### B. Additional Results
 
-Mock F0.5 India / US: v107 0.9701 / 0.9792; v110 0.9802 / 0.9832; v120 **TBD**. Stage-2
-ablations (est_public): v110 without M3's groups −0.0005, without rival features −0.0001; v120
-without word evidence **TBD**.
+Mock F0.5 India / US: v110 0.9802 / 0.9832. Stage-2 gain shares (v126): `pool_gap` 0.67, p1
+0.16, the 19 decoy columns 0.025 (best: best p1 of the number group 0.005, log house-number
+gap 0.005). Public-weight decode (v127 on the mock val entities): arms selected at x3 / x4.5 /
+x6 / x7.5 land within 0.0003 of each other in estimated public score.
